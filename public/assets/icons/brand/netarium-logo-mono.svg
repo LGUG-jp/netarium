@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 254 64" width="254" height="64">
+  <!-- 原案の比率に寄せ、単体版と同じ倍率のNode Nを頭文字として使う。 -->
+  <g fill="currentColor">
+    <rect x="11" y="26.25" width="8" height="11.5" rx="0.5" />
+    <rect x="45" y="26.25" width="8" height="11.5" rx="0.5" />
+    <path d="M23 23 41 41" fill="none" stroke="currentColor" stroke-width="9" />
+    <circle cx="15" cy="15" r="10.5" />
+    <circle cx="49" cy="15" r="10.5" />
+    <circle cx="15" cy="49" r="10.5" />
+    <circle cx="49" cy="49" r="10.5" />
+  </g>
+  <g transform="translate(4.8 13.8) scale(0.85)" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M76 36 H98 C98 22 76 22 76 37 C76 50 91 53 98 46" />
+    <path d="M114 16 V42 Q114 50 124 47 M105 28 H123" />
+    <path d="M152 34 C152 25 133 25 132 37 C131 50 149 53 152 42 M152 28 V48" />
+    <path d="M169 48 V28 M169 35 Q173 27 182 28" />
+    <path d="M195 28 V48" />
+    <path d="M211 28 V40 Q211 51 226 47 Q232 44 232 36 V28 M232 36 V48" />
+    <path d="M249 48 V28 M249 34 C249 25 266 25 266 36 V48 M266 34 C266 25 283 25 283 36 V48" />
+  </g>
+  <circle cx="170.55" cy="28.25" r="3.825" fill="currentColor" />
+</svg>

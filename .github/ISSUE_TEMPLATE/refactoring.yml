@@ -1,0 +1,36 @@
+name: リファクタリング・技術改善
+description: 挙動を変えない構造改善、テスト整備、保守性向上を扱います。
+title: "[Refactor]: "
+labels:
+  - refactor
+body:
+  - type: textarea
+    id: target
+    attributes:
+      label: 対象と現状の課題
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: 方針
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲・対象外
+      description: 今回変更する範囲と、後続作業へ分ける範囲を記載してください。
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 維持する挙動と影響範囲
+      description: DB、バックアップ形式、API、画面、運用手順への影響を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: 回帰確認と完了条件
+    validations:
+      required: true

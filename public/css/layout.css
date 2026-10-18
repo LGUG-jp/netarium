@@ -1,0 +1,29 @@
+/* ========================================================
+   Global Layout & Responsive Root Tokens
+======================================================== */
+
+@media (max-width: 900px) {
+    :root {
+        --toolbar-height: 64px;
+        --panel-width: 300px;
+    }
+}
+
+@media (max-width: 820px) {
+    :root {
+        --toolbar-height: 58px;
+    }
+}
+
+@media (max-width: 640px) {
+    :root {
+        --toolbar-height: 96px;
+        --device-icon-box-size: 30px;
+        --device-icon-size: 20px;
+        --panel-width: 100%;
+    }
+
+    body {
+        overflow: hidden;
+    }
+}

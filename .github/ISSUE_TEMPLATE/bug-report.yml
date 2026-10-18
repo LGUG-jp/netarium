@@ -1,0 +1,61 @@
+name: 不具合報告
+description: 再現可能な不具合を登録します。
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        パスワード、トークン、実在のIPアドレス、機器名、DB、バックアップを記載・添付しないでください。
+        脆弱性の可能性がある場合は公開Issueを作成せず、SECURITY.mdの手順で報告してください。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 概要
+      description: 何が起きたかを簡潔に記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する結果と実際の結果
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: 影響度
+      options:
+        - 低（回避策あり）
+        - 中（主要操作に支障）
+        - 高（保存・復元・認証などに支障）
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲・対象外
+      description: 修正範囲を限定する必要がある場合に記載してください。
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      description: Netarium、PHP、IIS、ブラウザのバージョンを記載してください。実在環境の識別情報は除外します。
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件
+      description: 修正後に確認すべき結果を列挙してください。
+    validations:
+      required: true

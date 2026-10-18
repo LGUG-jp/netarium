@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 小サイズ専用: 原案の淡い縦線と色付き斜線を残し、外周の輪郭とノード間隔を調整。 -->
+  <defs>
+    <linearGradient id="netarium-compact-link" x1="14" y1="14" x2="50" y2="50" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4ade80" /><stop offset="1" stop-color="#0ea5ff" />
+    </linearGradient>
+    <radialGradient id="netarium-compact-green" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#b8ed58" /><stop offset="1" stop-color="#29ce98" />
+    </radialGradient>
+    <radialGradient id="netarium-compact-orange" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#ffd34a" /><stop offset="1" stop-color="#ff8a3c" />
+    </radialGradient>
+    <radialGradient id="netarium-compact-purple" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#d98bef" /><stop offset="1" stop-color="#983bf0" />
+    </radialGradient>
+    <radialGradient id="netarium-compact-blue" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#5cd8ef" /><stop offset="1" stop-color="#0ea5ff" />
+    </radialGradient>
+  </defs>
+  <g fill="#0b2a6b">
+    <rect x="8" y="14" width="12" height="36" />
+    <rect x="44" y="14" width="12" height="36" />
+    <path d="M14 14 50 50" fill="none" stroke="#0b2a6b" stroke-width="12" />
+    <circle cx="14" cy="14" r="11" />
+    <circle cx="50" cy="14" r="11" />
+    <circle cx="14" cy="50" r="11" />
+    <circle cx="50" cy="50" r="11" />
+  </g>
+  <g>
+    <rect x="10" y="14" width="8" height="36" fill="#e1f3fc" />
+    <rect x="46" y="14" width="8" height="36" fill="#e1f3fc" />
+    <path d="M14 14 50 50" fill="none" stroke="url(#netarium-compact-link)" stroke-width="8" />
+    <circle cx="14" cy="14" r="9" fill="url(#netarium-compact-green)" />
+    <circle cx="50" cy="14" r="9" fill="url(#netarium-compact-orange)" />
+    <circle cx="14" cy="50" r="9" fill="url(#netarium-compact-purple)" />
+    <circle cx="50" cy="50" r="9" fill="url(#netarium-compact-blue)" />
+  </g>
+</svg>

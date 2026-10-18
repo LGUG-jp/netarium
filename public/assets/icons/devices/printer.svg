@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- プリンタ・複合機: 給紙用紙、黄橙の筐体、排紙用紙。 -->
+  <g stroke="#9b6814" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 30 13 23 H51 L56 30 V46 Q56 50 52 50 H12 Q8 50 8 46 Z" fill="#ffe08a" />
+    <rect x="19" y="8" width="26" height="25" rx="2" fill="#ffffff" />
+    <rect x="8" y="30" width="48" height="20" rx="4" fill="#ffcc43" />
+    <path d="M18 43 H46 L48 57 H16 Z" fill="#fff3cc" />
+    <path d="M25 15 H39 M25 22 H35" fill="none" />
+  </g>
+</svg>

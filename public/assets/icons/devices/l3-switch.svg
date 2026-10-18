@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- L3スイッチ: L2と共通の筐体に、数字3の六角形バッジを追加。 -->
+  <g stroke="#08788a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 27 12 18 H52 L58 27 V45 Q58 49 54 49 H10 Q6 49 6 45 Z" fill="#68ced5" />
+    <rect x="6" y="27" width="52" height="22" rx="4" fill="#29b6c5" />
+    <path d="M12 49 V51 H16 M48 51 H52 V49" fill="none" />
+  </g>
+  <g fill="#08788a" stroke="#ffffff" stroke-width="2" stroke-linejoin="round">
+    <path d="M11 35 H13 V33 H17 V35 H19 V42 H11 Z" />
+    <path d="M21 35 H23 V33 H27 V35 H29 V42 H21 Z" />
+  </g>
+  <path d="M46 23 Q47 22 48 23 L58 29 Q59 30 59 32 V44 Q59 46 58 47 L48 53 Q47 54 46 53 L36 47 Q35 46 35 44 V32 Q35 30 36 29 Z" fill="#ffffff" stroke="#08788a" stroke-width="3" stroke-linejoin="round" />
+  <path d="M42 30 C44 28 51 28 51 33 C51 36 48 38 46 38 C49 38 52 40 52 43 C52 48 44 49 41 46" fill="none" stroke="#08788a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

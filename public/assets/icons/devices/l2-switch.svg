@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- L2スイッチ: 横長筐体とポート列。状態表示はUI側の外枠で行う。 -->
+  <g stroke="#1765a3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 27 12 18 H52 L58 27 V45 Q58 49 54 49 H10 Q6 49 6 45 Z" fill="#64b5f6" />
+    <rect x="6" y="27" width="52" height="22" rx="4" fill="#359cf0" />
+    <path d="M12 49 V51 H16 M48 51 H52 V49" fill="none" />
+  </g>
+  <g fill="#1765a3" stroke="#ffffff" stroke-width="2" stroke-linejoin="round">
+    <path d="M11 35 H13 V33 H17 V35 H19 V42 H11 Z" />
+    <path d="M21 35 H23 V33 H27 V35 H29 V42 H21 Z" />
+    <path d="M31 35 H33 V33 H37 V35 H39 V42 H31 Z" />
+    <path d="M41 35 H43 V33 H47 V35 H49 V42 H41 Z" />
+  </g>
+</svg>

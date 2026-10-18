@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 濃紺の下地に接続線とノードを重ね、輪郭はN全体の外周だけに残す。 -->
+  <defs>
+    <linearGradient id="netarium-mark-link" x1="15" y1="15" x2="49" y2="49" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4ade80" /><stop offset="1" stop-color="#0ea5ff" />
+    </linearGradient>
+    <linearGradient id="netarium-mark-stem" x2="100%">
+      <stop stop-color="#f1fbff" /><stop offset="1" stop-color="#cceafd" />
+    </linearGradient>
+    <radialGradient id="netarium-mark-green" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#b8ed58" /><stop offset="1" stop-color="#29ce98" />
+    </radialGradient>
+    <radialGradient id="netarium-mark-orange" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#ffd34a" /><stop offset="1" stop-color="#ff8a3c" />
+    </radialGradient>
+    <radialGradient id="netarium-mark-purple" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#d98bef" /><stop offset="1" stop-color="#983bf0" />
+    </radialGradient>
+    <radialGradient id="netarium-mark-blue" cx="28%" cy="24%" r="78%">
+      <stop stop-color="#5cd8ef" /><stop offset="1" stop-color="#0ea5ff" />
+    </radialGradient>
+  </defs>
+  <g fill="#0b2a6b">
+    <rect x="8.75" y="15" width="12.5" height="34" />
+    <rect x="42.75" y="15" width="12.5" height="34" />
+    <path d="M15 15 49 49" fill="none" stroke="#0b2a6b" stroke-width="12.5" />
+    <circle cx="15" cy="15" r="12.25" />
+    <circle cx="49" cy="15" r="12.25" />
+    <circle cx="15" cy="49" r="12.25" />
+    <circle cx="49" cy="49" r="12.25" />
+  </g>
+  <g>
+    <rect x="11" y="15" width="8" height="34" fill="url(#netarium-mark-stem)" />
+    <rect x="45" y="15" width="8" height="34" fill="url(#netarium-mark-stem)" />
+    <path d="M15 15 49 49" fill="none" stroke="url(#netarium-mark-link)" stroke-width="8" />
+    <circle cx="15" cy="15" r="10" fill="url(#netarium-mark-green)" />
+    <circle cx="49" cy="15" r="10" fill="url(#netarium-mark-orange)" />
+    <circle cx="15" cy="49" r="10" fill="url(#netarium-mark-purple)" />
+    <circle cx="49" cy="49" r="10" fill="url(#netarium-mark-blue)" />
+  </g>
+</svg>

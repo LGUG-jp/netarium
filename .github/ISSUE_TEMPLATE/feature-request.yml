@@ -1,0 +1,41 @@
+name: 機能提案
+description: 新機能または利用者に見える改善を提案します。
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景と解決したい課題
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 提案内容
+      description: 利用者の操作と期待結果を記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 対象範囲・対象外
+      placeholder: |
+        対象:
+        対象外:
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: DB・運用・セキュリティへの影響
+      description: 不明な場合は「要調査」と記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: 完了条件・確認方法
+    validations:
+      required: true

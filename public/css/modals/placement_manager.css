@@ -1,0 +1,12 @@
+/* ==============================
+   Placement Manager
+============================== */
+
+.placement-manager-device-info {
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: #f8fafc;
+    font-size: 13px;
+}

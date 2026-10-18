@@ -1,0 +1,41 @@
+MIT License
+
+Copyright (c) 2026 LGUG - Local Government Underground contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+### Third-Party Materials and Licenses
+
+This software includes the following third-party dataset:
+
+1. PWDB Most-Common 1M Passwords, Policy-Compatible Top 3,000 (redistributed by SecLists)
+   - Original Source: Ata Hakçıl / ignis-sec (Pwdb-Public)
+     Repository: https://github.com/ignis-sec/Pwdb-Public
+     Source Commit: https://github.com/ignis-sec/Pwdb-Public/commit/9b53917431ed5cd57cd6cbec8c3a19cf9a5cd8dd
+     License: MIT License (Copyright (c) 2020 Ata Hakçıl)
+   - Redistributor: Daniel Miessler (SecLists)
+     Repository: https://github.com/danielmiessler/SecLists
+     Source Commit: https://github.com/danielmiessler/SecLists/commit/3a5f62f0e18a1b8a36b25399aff0077f3706e5af
+     License: MIT License (Copyright (c) 2018 Daniel Miessler)
+   - Files: `resources/password-blocklist/pwdb-policy-top-3000.txt`, `resources/password-blocklist/pwdb-metadata.json`
+   - Reservations: Derived from historical aggregated breach dumps; compiled statistical dataset. Both MIT licenses are preserved.
+
+Complete license texts, source commits, hashes, and extraction metadata are preserved in `THIRD_PARTY_NOTICES.md` and the respective metadata JSON files under `resources/password-blocklist/`.

@@ -1,0 +1,57 @@
+# Runtime database and SQLite sidecar files
+/db/*.sqlite
+/db/*.sqlite-*
+/db/*.db
+/db/*.db-*
+
+
+# Separated application runtime data
+/data/
+/storage/
+# Administrator-managed additional password dictionaries
+**/password-blocklist.json
+**/password-blocklist/dictionary-*.txt
+# Temporary CSV imports
+/db/csv-import/*
+!/db/csv-import/.gitkeep
+
+# User-provided floor plans
+/uploads/floorplans/*
+!/uploads/floorplans/.gitkeep
+
+# Generated backups
+/backups/auto/*
+!/backups/auto/.gitkeep
+
+# Temporary backup data
+/temp/backup-export/*
+!/temp/backup-export/.gitkeep
+/temp/backup-restore/*
+!/temp/backup-restore/.gitkeep
+
+# Runtime logs
+/logs/*
+!/logs/.gitkeep
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+/config/app.php
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.tmp
+
+# Test and analysis output
+/coverage/
+/reports/
+
+# Local working documents and scratch files
+/work/

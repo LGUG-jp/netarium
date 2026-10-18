@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- ファイアウォール: 赤い筐体と独立した盾。赤は種別色であり異常表示ではない。 -->
+  <g stroke="#af3035" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 31 12 23 H52 L58 31 V46 Q58 50 54 50 H10 Q6 50 6 46 Z" fill="#ff9292" />
+    <rect x="6" y="31" width="52" height="19" rx="4" fill="#f3686d" />
+    <path d="M12 50 V52 H16 M48 52 H52 V50 M47 37 H52 M47 43 H52" fill="none" />
+  </g>
+  <path d="M32 14 Q37 19 43 20 V32 Q43 47 32 55 Q21 47 21 32 V20 Q27 19 32 14 Z" fill="#ee4e57" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" />
+  <path d="M32 14 Q37 19 43 20 V32 Q43 47 32 55 Q21 47 21 32 V20 Q27 19 32 14 Z" fill="none" stroke="#af3035" stroke-width="3" stroke-linejoin="round" />
+  <g fill="#ffffff">
+    <rect x="26" y="27" width="5" height="6" rx="1" />
+    <rect x="33" y="27" width="5" height="6" rx="1" />
+    <rect x="26" y="36" width="5" height="6" rx="1" />
+    <rect x="33" y="36" width="5" height="6" rx="1" />
+  </g>
+</svg>

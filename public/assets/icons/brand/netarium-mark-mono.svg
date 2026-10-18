@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 単色版: 原案のN字に合わせて接続線を長く・細くし、ノードとの境界に細い透過の隙間を残す。 -->
+  <g fill="currentColor">
+    <rect x="11" y="26.25" width="8" height="11.5" rx="0.5" />
+    <rect x="45" y="26.25" width="8" height="11.5" rx="0.5" />
+    <path d="M23 23 41 41" fill="none" stroke="currentColor" stroke-width="9" />
+    <circle cx="15" cy="15" r="10.5" />
+    <circle cx="49" cy="15" r="10.5" />
+    <circle cx="15" cy="49" r="10.5" />
+    <circle cx="49" cy="49" r="10.5" />
+  </g>
+</svg>

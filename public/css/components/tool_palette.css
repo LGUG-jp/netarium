@@ -1,0 +1,1050 @@
+/* ========================================================
+   Netarium Tool Palette Styles (Left Side, 56px Width)
+======================================================== */
+
+:root {
+    --palette-width: 56px;
+    --palette-panel-width: min(304px, calc(100vw - 72px));
+}
+
+#tool-palette {
+    position: fixed;
+    top: var(--toolbar-height);
+    left: 0;
+    bottom: var(--status-bar-height);
+    width: var(--palette-width);
+    background-color: var(--bg-panel-solid);
+    border-right: 1px solid var(--border-strong);
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.05);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: var(--space-2) 0;
+    box-sizing: border-box;
+    overflow: visible;
+}
+
+.tool-palette-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.palette-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+}
+
+.palette-separator {
+    width: 36px;
+    height: 1px;
+    background-color: var(--border-light);
+    margin: 2px 0;
+    flex-shrink: 0;
+}
+
+.palette-btn {
+    width: 48px;
+    min-height: 48px;
+    padding: 4px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    background-color: transparent;
+    color: var(--text-main);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    cursor: pointer;
+    box-sizing: border-box;
+    transition:
+        background-color var(--transition-fast),
+        color var(--transition-fast),
+        border-color var(--transition-fast);
+}
+
+.palette-icon {
+    width: 22px;
+    height: 22px;
+    display: block;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.palette-text {
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+
+.palette-btn:hover:not(:disabled) {
+    background-color: var(--primary-soft);
+    color: var(--primary-hover);
+}
+
+.palette-btn.active,
+.palette-btn[aria-pressed="true"] {
+    background-color: var(--primary);
+    color: #ffffff;
+    border-color: var(--primary);
+}
+
+.palette-btn.active .palette-text,
+.palette-btn[aria-pressed="true"] .palette-text {
+    color: #ffffff;
+}
+
+.palette-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* 低い画面でスクロールしても、フォーカス枠を操作領域の内側へ残す。 */
+.tool-palette-actions .palette-btn:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+}
+
+.palette-popover-anchor {
+    position: relative;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
+
+.palette-popover {
+    position: fixed;
+    left: 58px;
+    top: var(--toolbar-height);
+    width: 240px;
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-3);
+    z-index: 1500;
+    box-sizing: border-box;
+}
+
+.palette-popover[hidden] {
+    display: none !important;
+}
+
+.palette-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-2);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.palette-popover-close {
+    background-color: var(--neutral-bg);
+    border: 1px solid var(--neutral-border);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--neutral);
+    padding: 0 6px;
+    min-width: 32px;
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    border-radius: var(--radius-sm);
+    transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.palette-popover-close:hover {
+    color: var(--neutral-hover);
+    background-color: var(--neutral-bg-hover);
+}
+
+.palette-popover-close:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: 2px !important;
+    box-shadow: none !important;
+}
+
+.palette-select {
+    width: 100%;
+    margin-bottom: var(--space-3);
+    min-height: 40px;
+    font-size: 14px;
+}
+
+/* 機器配置ミニパレット (スタンプ・キュー配置) */
+.palette-place-panel {
+    position: fixed;
+    left: 58px;
+    top: var(--toolbar-height);
+    width: var(--palette-panel-width);
+    max-height: calc(100vh - var(--toolbar-height) - var(--status-bar-height) - 40px);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-3);
+    z-index: 1500;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+}
+
+.palette-place-panel[hidden] {
+    display: none !important;
+}
+
+.palette-place-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-2);
+}
+
+.palette-place-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.placement-mode-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: var(--radius-xs);
+    background-color: var(--primary-soft);
+    color: var(--primary);
+}
+
+.palette-place-tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: var(--space-3);
+}
+
+.palette-place-tab {
+    flex: 1;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    text-align: center;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.palette-place-tab:hover {
+    color: var(--text-main);
+}
+
+.palette-place-tab.is-active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.palette-place-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-width: 0;
+}
+
+.palette-place-guide {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-bottom: var(--space-1);
+}
+
+/* 新規機器種別グリッド */
+.placement-type-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    min-width: 0;
+}
+
+.placement-type-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 6px;
+    min-height: 64px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.15s;
+    min-width: 0;
+    box-sizing: border-box;
+}
+.placement-type-btn:hover {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+}
+
+.placement-type-btn.is-selected {
+    background-color: var(--primary-soft);
+    border: 2px solid var(--primary);
+    color: var(--primary);
+    font-weight: 700;
+}
+.placement-type-btn img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+}
+
+.placement-type-btn span {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    min-width: 0;
+    display: block;
+}
+
+.placement-current-status {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 6px 8px;
+    background-color: var(--bg-main);
+    border-radius: var(--radius-sm);
+    margin-top: 4px;
+}
+
+/* 未配置キュー表示 */
+.placement-queue-section {
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.placement-queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+}
+
+.placement-queue-next {
+    padding: 6px 10px;
+    background-color: var(--primary-soft);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.placement-queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 120px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-width: 0;
+}
+
+.placement-queue-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 6px;
+    font-size: 12px;
+    background-color: #ffffff;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+}
+
+.placement-queue-item:hover {
+    background-color: var(--primary-soft);
+}
+
+.placement-queue-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+.btn-text-action {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 1px 4px;
+}
+
+.btn-text-action:hover {
+    color: var(--danger);
+}
+
+.palette-place-separator {
+    height: 1px;
+    background-color: var(--border-light);
+    margin: var(--space-1) 0;
+}
+
+/* 未配置候補ツールバー */
+.placement-unplaced-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.placement-scope-toggle {
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+}
+
+.placement-scope-btn {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 6px;
+    font-size: 11px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    color: var(--text-muted);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
+}
+
+.placement-scope-btn.is-active {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    font-weight: 700;
+}
+
+.placement-search-bar {
+    padding: 2px 4px;
+    box-sizing: border-box;
+}
+
+.placement-search-bar input {
+    width: 100%;
+    height: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-sizing: border-box;
+    background-color: #ffffff;
+}
+
+.placement-search-bar input:hover {
+    border-color: var(--primary);
+}
+
+.placement-search-bar input:focus {
+    border-color: var(--primary);
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* 未配置機器一覧 */
+.placement-unplaced-list {
+    max-height: 180px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.placement-group-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 2px 4px;
+    background-color: var(--bg-main);
+    border-radius: var(--radius-xs);
+}
+
+.placement-unplaced-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 0.1s;
+    min-width: 0;
+    box-sizing: border-box;
+}
+.placement-unplaced-option:hover {
+    background-color: var(--primary-soft);
+}
+
+.placement-unplaced-option-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.placement-unplaced-option-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.placement-unplaced-option-sub {
+    font-size: 10px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.placement-recommend-badge {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--info);
+    background-color: var(--info-bg);
+    padding: 1px 4px;
+    border-radius: 2px;
+    margin-left: 4px;
+}
+
+.placement-unplaced-actions {
+    margin-top: 4px;
+}
+
+.btn-full {
+    width: 100%;
+}
+
+/* キャンバス上のゴーストプレビュー */
+.placement-ghost {
+    position: absolute;
+    width: var(--device-width);
+    height: var(--device-height);
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0.65;
+    border: 2px dashed var(--primary);
+    border-radius: 8px;
+    background-color: rgba(37, 99, 235, 0.12);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+}
+
+.placement-ghost-icon-wrap {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.placement-ghost-icon {
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+}
+
+.placement-ghost-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: calc(var(--device-width) - 8px);
+    text-align: center;
+}
+
+body.placement-mode #canvas {
+    cursor: crosshair;
+}
+/* ワークスペース機器・リンクナビゲーション (キーボード代替) */
+.workspace-nav-panel {
+    position: fixed;
+    left: 58px;
+    top: var(--toolbar-height);
+    width: var(--palette-panel-width);
+    max-height: calc(100vh - var(--toolbar-height) - var(--status-bar-height) - 40px);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    padding: var(--space-3);
+    z-index: 1500;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+}
+
+.workspace-nav-panel[hidden] {
+    display: none !important;
+}
+
+.workspace-nav-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-2);
+    padding-bottom: var(--space-1);
+    border-bottom: 1px solid var(--border-light);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text-main);
+}
+
+.workspace-nav-content {
+    overflow-y: auto;
+    max-height: calc(100vh - 200px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.workspace-nav-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 2px 4px;
+    box-sizing: border-box;
+}
+
+.workspace-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 6px 10px;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.3;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background-color: #ffffff;
+    color: var(--text-main);
+    cursor: pointer;
+    text-align: left;
+}
+
+.workspace-nav-item:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+}
+
+.workspace-nav-device-item {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 4px 6px;
+    border-radius: var(--radius-xs);
+    font-size: 12px;
+}
+
+.workspace-nav-device-info {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.workspace-nav-device-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workspace-nav-device-sub {
+    font-size: 10px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workspace-nav-item:hover {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+}
+
+.workspace-nav-item.is-selected {
+    background-color: var(--primary-soft);
+    border: 2px solid var(--primary);
+}
+
+.workspace-nav-empty {
+    font-size: 14px;
+    color: var(--text-muted);
+    padding: var(--space-2) 0;
+}
+
+
+.workspace-nav-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-light);
+    margin: 2px 4px 0;
+}
+
+.workspace-nav-tab {
+    flex: 1;
+    min-height: 40px;
+    background: transparent;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-weight: 700;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.workspace-nav-tab[aria-selected="true"] {
+    border-bottom-color: var(--primary);
+    color: var(--primary);
+}
+
+.workspace-nav-tab:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+}
+
+.workspace-nav-link-check:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: 2px !important;
+    box-shadow: none !important;
+}
+
+#workspace-nav-panel [hidden],
+#wiring-controls [hidden] {
+    display: none !important;
+}
+
+.workspace-nav-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+    padding: 0 4px;
+    box-sizing: border-box;
+}
+
+.workspace-nav-tools label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: 13px;
+}
+#workspace-nav-search {
+    width: 100%;
+    height: 32px;
+    min-height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-sizing: border-box;
+    background-color: #ffffff;
+}
+
+#workspace-nav-search:hover {
+    border-color: var(--primary);
+}
+
+#workspace-nav-search:focus {
+    border-color: var(--primary);
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.workspace-nav-bulk {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+}
+
+.workspace-nav-bulk-actions {
+    display: flex;
+    gap: var(--space-2);
+    width: 100%;
+}
+
+.workspace-nav-bulk-actions button {
+    flex: 1;
+}
+
+.workspace-nav-select-all-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 13px;
+    cursor: pointer;
+}
+.workspace-nav-selection-status {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: var(--space-2) 0;
+}
+
+.workspace-nav-link-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.workspace-nav-link-check {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.workspace-nav-bulk input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.workspace-nav-link-item {
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 4px 6px;
+    border-radius: var(--radius-xs);
+    font-size: 12px;
+}
+
+.workspace-nav-link-endpoints {
+    width: 100%;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workspace-nav-link-details {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 4px 6px;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workspace-nav-system-swatch {
+    width: 10px;
+    height: 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+#wiring-controls {
+    width: var(--palette-panel-width);
+    padding: var(--space-2) var(--space-3);
+}
+
+#wiring-controls .wiring-header {
+    gap: var(--space-2);
+    flex-wrap: nowrap;
+    line-height: 1.3;
+}
+
+.wiring-header-group {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: var(--space-1);
+    white-space: nowrap;
+}
+
+.wiring-header .wiring-header-action {
+    min-height: 32px;
+    padding: 0 var(--space-1);
+    gap: var(--space-1);
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.wiring-header .palette-popover-close {
+    min-width: 32px;
+    min-height: 32px;
+}
+
+.wiring-controls-content {
+    gap: var(--space-2);
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.wiring-source-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.wiring-source-label {
+    font-weight: 500;
+}
+
+.wiring-source-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-height: 2.6em;
+}
+
+.wiring-source-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.wiring-source-details {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.wiring-source-details strong {
+    font-weight: 700;
+}
+
+.wiring-source-details strong,
+.wiring-source-ip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wiring-source-details .wiring-source-unselected {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.wiring-source-ip {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.wiring-source-fixed {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 32px;
+    cursor: pointer;
+}
+
+.wiring-source-fixed-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.wiring-source-fixed-disabled input {
+    cursor: not-allowed;
+}
+
+.wiring-source-fixed input {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    flex-shrink: 0;
+    accent-color: var(--primary);
+}
+
+.wiring-controls-content p {
+    margin: 0;
+    font-weight: 500;
+}
+
+#wiring-reselect-source {
+    align-self: flex-start;
+    max-width: 100%;
+    margin-top: var(--space-2);
+}
+
+@media (max-width: 360px) {
+    #wiring-controls .wiring-header {
+        gap: var(--space-1);
+    }
+
+    .wiring-help-text {
+        display: none;
+    }
+
+    .wiring-controls-content p {
+        min-height: 2.8em;
+    }
+}

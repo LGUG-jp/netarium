@@ -1,0 +1,131 @@
+/* 表示専用UI。背景は操作を遮断しつつ、構成図を視認できる濃度にする。 */
+.hidden-terminal-overlay {
+    background: rgba(15, 23, 42, 0.08);
+    backdrop-filter: none;
+    padding: calc(var(--toolbar-height) + var(--space-3)) var(--space-3)
+        calc(var(--status-bar-height) + var(--space-3))
+        calc(var(--palette-width) + var(--space-3));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+}
+
+.hidden-terminal-overlay:has(.hidden-terminal-console:not([hidden])) {
+    place-items: start end;
+}
+
+.hidden-terminal-dialog {
+    width: min(500px, 100%);
+    height: auto;
+    max-height: max(0px, calc(100dvh - var(--toolbar-height) - var(--status-bar-height) - 24px));
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    border-radius: var(--radius-md);
+}
+
+.hidden-terminal-discovery {
+    padding: var(--space-4);
+}
+
+.hidden-terminal-discovery p {
+    margin: 0 0 var(--space-4);
+    overflow-wrap: anywhere;
+}
+
+.hidden-terminal-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
+.hidden-terminal-description {
+    margin: 0;
+    padding: var(--space-2) var(--space-4);
+    font-size: 12px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.hidden-terminal-console {
+    display: flex;
+    flex-direction: column;
+    min-height: 100px;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+}
+
+.hidden-terminal-output {
+    height: min(220px, 32dvh);
+    min-height: 48px;
+    padding: var(--space-3);
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.hidden-terminal-output > div + div {
+    margin-top: var(--space-2);
+}
+
+.hidden-terminal-form {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-top: 1px solid var(--border-strong);
+}
+
+.hidden-terminal-form input {
+    width: 0;
+    min-width: 0;
+    flex: 1;
+    padding: var(--space-1);
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font: inherit;
+}
+
+.hidden-terminal-submit {
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    min-width: 32px;
+    min-height: 32px;
+}
+
+.hidden-terminal-discovery[hidden],
+.hidden-terminal-console[hidden] {
+    display: none;
+}
+
+.hidden-packet-effect {
+    pointer-events: none;
+}
+
+.hidden-packet-dot {
+    fill: currentColor;
+    stroke: #0f172a;
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 5px currentColor);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hidden-packet-effect {
+        display: none;
+    }
+}
+
+@media print {
+    .hidden-terminal-overlay,
+    .hidden-packet-effect {
+        display: none !important;
+    }
+}

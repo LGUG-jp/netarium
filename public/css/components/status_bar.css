@@ -1,0 +1,321 @@
+/* ========================================================
+   Netarium Status Bar Styles (DADS Clean Surface, 14px Text)
+======================================================== */
+
+.status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 500;
+    width: 100%;
+    height: var(--status-bar-height);
+    min-height: var(--status-bar-height);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 180px;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+    background-color: var(--bg-panel-solid);
+    border-top: 1px solid var(--border-light);
+    box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.04);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--text-main);
+    box-sizing: border-box;
+    white-space: nowrap;
+}
+
+/* 左は内容幅、中央は残り幅。狭幅でも右のズームは動かさない。 */
+.status-bar-content {
+    display: grid;
+    grid-template-columns: max-content minmax(128px, 1fr);
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    height: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.status-bar-content::-webkit-scrollbar {
+    display: none;
+}
+
+.status-bar .btn {
+    min-height: 24px;
+    height: 24px;
+    padding: 0 var(--space-2);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+/* 32pxのバーと横スクロールの内側で、フォーカス枠を内側へ保持する。 */
+.status-bar :focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: -2px !important;
+    box-shadow: none !important;
+}
+
+/* Pingや処理中の状態は、台帳を開いていてもフッターで確認できる。 */
+body.busy .status-bar,
+body.has-ping-results .status-bar {
+    z-index: 4000;
+}
+
+#busy-label:empty,
+body.busy #status-ping-container,
+body.busy .status-toast-message {
+    display: none;
+}
+
+#status-ping-container {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    flex: 0 1 auto;
+}
+
+#status-ping-container[hidden] {
+    display: none;
+}
+
+#status-ping-message {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 400;
+}
+
+#status-ping-results-btn {
+    flex-shrink: 0;
+    min-height: 24px;
+    padding: 0 var(--space-2);
+}
+
+.status-bar-left {
+    display: inline-flex;
+    justify-self: start;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.status-save-group {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+
+.status-counts {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-main);
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.status-counts > span:not(.status-sep) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.status-sep {
+    color: var(--border-light);
+}
+
+.status-bar-center {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.status-bar-right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    width: 180px;
+}
+
+.canvas-view-controls {
+    display: grid;
+    grid-template-columns: 48px 32px 52px 32px;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+.canvas-view-controls .btn {
+    padding: 0;
+    min-width: 0;
+}
+
+#zoom-label {
+    font-variant-numeric: tabular-nums;
+}
+
+.status-save-state {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    flex-shrink: 0;
+    height: 24px;
+    min-height: 24px;
+    padding: 2px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 18px;
+    border: 1px solid currentColor;
+}
+.status-saved {
+    color: var(--text-muted);
+    background-color: transparent;
+    border-color: transparent;
+}
+
+.status-dirty {
+    color: var(--warning-text);
+    background-color: transparent;
+    border-color: transparent;
+}
+
+.status-saving {
+    color: var(--primary);
+    background-color: transparent;
+    border-color: transparent;
+}
+
+.status-error {
+    color: var(--danger);
+    background-color: var(--danger-bg);
+    border-color: var(--danger);
+    font-weight: 700;
+}
+
+.status-save-state.status-conflict {
+    color: var(--danger);
+    background-color: var(--danger-bg);
+    border: 2px solid var(--danger);
+    padding-block: 1px;
+    font-weight: 700;
+}
+
+.status-unconfirmed {
+    color: var(--unknown);
+    background-color: var(--unknown-bg);
+    border: 1px dotted var(--unknown);
+}
+
+.status-ok {
+    color: var(--success);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-ng {
+    color: var(--danger);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-unknown {
+    color: var(--unknown);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-bar strong {
+    font-weight: 900;
+}
+
+
+.status-toast-message {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    min-width: 0;
+    flex: 0 3 auto;
+}
+
+.status-toast-message:empty {
+    display: none;
+}
+
+.status-bar-center:has(#status-ping-container:not([hidden])) .status-toast-message {
+    max-width: 40%;
+}
+/* 認証失効永続バナー */
+.status-auth-banner {
+    /* footerの重層とoverflowから独立し、モーダルより前面に表示する。 */
+    position: fixed;
+    top: auto;
+    bottom: var(--status-bar-height);
+    left: 0;
+    right: 0;
+    height: 48px;
+    background-color: var(--danger-bg);
+    border-top: 2px solid var(--danger);
+    border-bottom: 2px solid var(--danger);
+    color: var(--danger);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-4);
+    font-size: 14px;
+    font-weight: 700;
+    z-index: 10001;
+    box-shadow: 0 -4px 12px rgba(206, 0, 0, 0.15);
+}
+
+.status-auth-banner[hidden] {
+    display: none !important;
+}
+
+.auth-banner-text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: var(--space-3);
+}
+
+.auth-relogin-link {
+    flex-shrink: 0;
+    min-height: 32px !important;
+    padding: 4px 12px !important;
+    font-size: 14px !important;
+}
+
+@media (max-width: 900px) {
+    .status-bar {
+        padding: 0 var(--space-2);
+        gap: var(--space-2);
+    }
+}
+
+#busy-label {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--primary);
+    white-space: nowrap;
+}
+

@@ -1,0 +1,228 @@
+/* ==============================
+   view
+============================== */
+.view-switcher {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.view-manager-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.56);
+    backdrop-filter: blur(4px);
+}
+
+.view-manager-overlay[hidden] {
+    display: none;
+}
+
+.view-manager-dialog {
+    width: min(980px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+    box-shadow:
+        0 24px 70px
+        rgba(15, 23, 42, 0.28);
+}
+
+.view-manager-header,
+.view-manager-toolbar,
+.view-manager-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 16px;
+}
+
+.view-manager-header,
+.view-manager-toolbar {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.view-manager-footer {
+    border-top: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.view-manager-header h2 {
+    margin: 0;
+}
+
+.view-manager-header p,
+.view-manager-footer p {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+
+.view-manager-toolbar {
+    justify-content: flex-start;
+}
+
+.view-manager-toolbar #view-manager-count {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-weight: 800;
+}
+
+.view-manager-body {
+    display: grid;
+    grid-template-columns:
+        minmax(240px, 0.8fr)
+        minmax(360px, 1.2fr);
+    min-height: 0;
+    max-height: calc(100vh - 200px);
+}
+
+.view-manager-list-area,
+.view-manager-form {
+    overflow: auto;
+    padding: 10px 14px;
+}
+
+.view-manager-list-area {
+    border-right: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgba(248, 250, 252, 0.88);
+}
+
+.view-manager-list-area label,
+.view-manager-form label {
+    display: block;
+    margin: 0 0 3px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.view-manager-list-area input,
+.view-manager-form input,
+.view-manager-form select,
+.view-manager-form textarea {
+    box-sizing: border-box;
+    width: 100%;
+    margin-bottom: 8px;
+    padding: 4px 8px;
+    min-height: 32px;
+    font-size: 13px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.view-manager-list {
+    display: grid;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.view-manager-list-item {
+    display: grid;
+    gap: 2px;
+    width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 8px 10px;
+    border: 1px solid rgba(148, 163, 184, 0.36);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    text-align: left;
+    background: #ffffff;
+}
+
+.view-manager-list-item span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.view-manager-list-item:hover:not(:disabled) {
+    background: var(--neutral-bg-hover);
+}
+
+.view-manager-list-item.selected {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+    box-shadow: inset 3px 0 var(--primary);
+}
+
+.view-manager-floor-plan-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.view-manager-floor-plan-actions button {
+    flex-shrink: 0;
+}
+
+.view-manager-floor-plan-actions span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.view-manager-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+
+.required {
+    color: #dc2626;
+}
+
+@media (max-width: 760px) {
+    .view-manager-overlay {
+        padding: 8px;
+    }
+
+    .view-manager-dialog {
+        max-height: calc(100vh - 16px);
+    }
+
+    .view-manager-body {
+        grid-template-columns: 1fr;
+        max-height: none;
+    }
+
+    .view-manager-form {
+        overflow: visible;
+    }
+
+    .view-manager-list-area {
+        max-height: 240px;
+        border-right: 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+    }
+
+    .view-manager-toolbar,
+    .view-manager-footer {
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-height: 600px) {
+    .view-manager-body {
+        max-height: none;
+    }
+
+    .view-manager-list-area {
+        max-height: 240px;
+    }
+
+    .view-manager-form {
+        overflow: visible;
+    }
+}
+

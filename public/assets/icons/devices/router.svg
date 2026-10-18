@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- ルータ: 円筒筐体と四方向矢印。 -->
+  <g stroke="#23834a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 27 V40 C8 49 19 54 32 54 S56 49 56 40 V27 Z" fill="#39ad60" />
+    <ellipse cx="32" cy="27" rx="24" ry="16" fill="#6dce7e" />
+  </g>
+  <path d="M32 17 V37 M19 27 H45 M28 21 32 17 36 21 M28 33 32 37 36 33 M23 23 19 27 23 31 M41 23 45 27 41 31" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

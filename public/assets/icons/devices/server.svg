@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- サーバ: 縦長ラックと三段のドライブ。 -->
+  <g stroke="#6741a5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="16" y="7" width="32" height="49" rx="5" fill="#ad89e5" />
+    <path d="M21 56 V58 H25 M39 58 H43 V56" fill="none" />
+    <rect x="21" y="14" width="22" height="9" rx="2" fill="#ffffff" />
+    <rect x="21" y="27" width="22" height="9" rx="2" fill="#ffffff" />
+    <rect x="21" y="40" width="22" height="9" rx="2" fill="#ffffff" />
+    <path d="M26 18.5 H35 M26 31.5 H35 M26 44.5 H35" fill="none" />
+  </g>
+</svg>

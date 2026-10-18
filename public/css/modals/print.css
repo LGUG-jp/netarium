@@ -1,0 +1,147 @@
+.print-palette-action {
+    border-top: 1px solid var(--border-light);
+    margin-top: var(--space-2);
+    padding-top: var(--space-2);
+}
+
+.print-dialog { width: min(1280px, 100%); height: calc(100vh - 48px); }
+.print-dialog .placement-manager-footer { justify-content: flex-end; flex-wrap: wrap; }
+.print-workspace {
+    display: grid;
+    grid-template-columns: 360px minmax(0, 1fr);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+.print-settings-body, .print-preview-body { overflow: auto; min-height: 0; min-width: 0; }
+.print-settings-body { padding: var(--space-3); font-size: 13px; border-right: 1px solid var(--border-light); }
+.print-settings-body .form-support { font-size: 12px; }
+.print-settings-body .btn-sm { font-size: 13px; padding: 4px 8px; }
+.print-preview-body { padding: var(--space-4); }
+.print-field {
+    margin: var(--space-3) 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+}
+.print-field legend { padding: 0 var(--space-2); font-weight: 700; }
+.print-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.print-choice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 40px;
+    padding: var(--space-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    background: var(--bg-panel);
+}
+.print-choice:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.print-choice:has(input:disabled) { color: var(--text-muted); background: var(--bg-toolbar-hover); cursor: default; }
+.print-choice input { width: 18px; height: 18px; flex-shrink: 0; margin: 0; accent-color: var(--primary); }
+.print-choice span { min-width: 0; }
+.print-choice strong { display: block; }
+.print-bulk-actions, .print-orientation-options, .print-preview-heading { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.print-bulk-actions { margin-bottom: var(--space-2); }
+.print-orientation-options .print-choice { flex: 1; }
+.print-preview-heading { justify-content: space-between; }
+.print-preview-heading h3 { margin: 0; font-size: 16px; }
+.print-neutral { color: var(--text-main); border-color: var(--border-strong); background: var(--bg-panel); }
+.print-neutral:hover:not(:disabled) { color: var(--text-main); border-color: var(--text-muted); background: var(--bg-toolbar-hover); }
+
+@media (max-width: 850px) {
+    .print-workspace { display: block; overflow: auto; }
+    .print-settings-body, .print-preview-body { overflow: visible; padding: var(--space-3); }
+    .print-settings-body { border-right: 0; border-bottom: 1px solid var(--border-light); }
+}
+@media (max-width: 380px) {
+    .print-options { grid-template-columns: 1fr; }
+}
+
+.print-sheet-container { padding: var(--space-4); background: var(--bg-toolbar-hover); overflow: auto; }
+.print-sheet {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: var(--space-4);
+    background: #ffffff;
+    color: #333333;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+}
+.print-sheet.print-landscape { aspect-ratio: 1.414 / 1; }
+.print-sheet.print-portrait { aspect-ratio: 1 / 1.414; }
+.print-sheet-title { flex: 0 0 auto; padding-bottom: var(--space-3); overflow-wrap: anywhere; }
+.print-sheet-title h3 { margin: 0; font-size: 18px; }
+.print-sheet-title p { margin: 0; font-size: 12px; }
+.print-diagram { display: block; width: 100%; height: 0; flex: 1 1 0; min-height: 0; overflow: hidden; }
+.print-wire { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+.print-floor-image { display: block; width: 100%; height: 100%; }
+.print-device {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 3px;
+    border: 1px solid #949494;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #333333;
+    line-height: 1.2;
+    overflow: hidden;
+}
+.print-device-icon { display: block; width: 36px; height: 36px; flex-shrink: 0; }
+.print-device-name { width: 100%; font-size: 12px; font-weight: 700; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.print-device-ip, .print-device-type { max-width: 100%; font-size: 10px; color: #666666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.print-note { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.print-note-background { position: absolute; inset: 0; }
+.print-note-text { position: relative; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+
+@media print {
+    body.print-preview-active {
+        width: 100%;
+        height: auto;
+        overflow: visible;
+        background: #ffffff;
+    }
+    body.print-preview-active > :not(#print-overlay) { display: none !important; }
+    body.print-preview-active #print-overlay {
+        position: static;
+        display: block;
+        padding: 0;
+        background: transparent;
+        backdrop-filter: none;
+    }
+    body.print-preview-active .print-dialog {
+        display: block;
+        width: 100%;
+        height: auto;
+        max-height: none;
+        overflow: visible;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+    }
+    body.print-preview-active .print-workspace { display: block; overflow: visible; }
+    body.print-preview-active .print-dialog > header,
+    body.print-preview-active .print-dialog > footer,
+    body.print-preview-active .print-settings-body,
+    body.print-preview-active .print-preview-heading,
+    body.print-preview-active .print-preview-body > p { display: none !important; }
+    body.print-preview-active .print-preview-body,
+    body.print-preview-active .print-sheet-container { padding: 0; overflow: visible; background: transparent; }
+    body.print-preview-active .print-sheet {
+        width: 100%;
+        height: 100vh;
+        aspect-ratio: auto;
+        padding: 10mm;
+        box-shadow: none;
+        break-inside: avoid;
+        break-after: avoid;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+    }
+}

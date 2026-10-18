@@ -1,0 +1,351 @@
+/* ==============================
+   機器管理画面への接続確認
+============================== */
+
+.management-connection-dialog {
+    width: min(520px, 100%);
+}
+
+.management-connection-content {
+    display: grid;
+    gap: 16px;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.management-connection-summary {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+}
+
+.management-connection-summary > div {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.management-connection-summary dt {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.management-connection-summary dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 900;
+}
+
+.management-connection-port-field {
+    display: grid;
+    gap: 7px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.management-connection-port-field input {
+    width: 100%;
+    min-height: 42px;
+    box-sizing: border-box;
+    padding: 9px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    background: var(--bg-panel);
+    font: inherit;
+}
+
+.management-connection-port-field input:focus {
+    border-color: var(--primary);
+    outline: 2px solid var(--primary);
+}
+
+.management-connection-port-field input[aria-invalid="true"] {
+    border-color: var(--danger);
+}
+
+.management-connection-help,
+.management-connection-error {
+    margin: -10px 0 0;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.management-connection-help {
+    color: #64748b;
+}
+
+.management-connection-error {
+    color: var(--danger);
+    font-weight: 800;
+}
+
+.management-connection-error[hidden] {
+    display: none;
+}
+
+.management-connection-preview {
+    display: grid;
+    gap: 6px;
+    padding: 12px;
+    border: 1px solid rgba(37, 99, 235, 0.20);
+    border-radius: 10px;
+    background: #eff6ff;
+}
+
+.management-connection-preview span {
+    color: #475569;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.management-connection-preview code {
+    overflow-wrap: anywhere;
+    color: #1e3a8a;
+    font-family:
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Consolas,
+        monospace;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+
+#management-connection-open-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+@media (max-width: 640px) {
+    .management-connection-summary > div {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+}
+
+/* 接続方式選択 */
+
+.management-connection-scheme-field {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.management-connection-scheme-field legend {
+    margin-bottom: 8px;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.management-connection-scheme-options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.management-connection-scheme-options label {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 0;
+    cursor: pointer;
+}
+
+.management-connection-scheme-options input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.management-connection-scheme-options span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 42px;
+    box-sizing: border-box;
+    padding: 8px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    background: var(--bg-panel);
+    font-size: 13px;
+    font-weight: 800;
+    transition:
+        border-color 0.15s ease,
+        background-color 0.15s ease,
+        color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.management-connection-scheme-options label:hover span {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.management-connection-scheme-options input:checked + span {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.management-connection-scheme-options input:focus-visible + span {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+@media (max-width: 420px) {
+    .management-connection-scheme-options {
+        grid-template-columns: 1fr;
+    }
+}
+
+.management-connection-preview-note {
+    margin: -10px 0 -6px;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+    .management-connection-dialog .placement-manager-footer > div:first-child {
+        justify-content: flex-start;
+    }
+}
+
+
+/* SSH接続補助導線 */
+
+
+.management-connection-ssh-help-btn[hidden] {
+    display: none !important;
+}
+
+/* SSH接続事前設定ミニヘルプ */
+
+.management-ssh-help-overlay {
+    z-index: 2300;
+}
+
+.management-ssh-help-overlay[hidden] {
+    display: none !important;
+}
+
+.management-ssh-help-dialog {
+    width: min(520px, 100%);
+    max-height: min(85vh, 600px);
+}
+
+.management-ssh-help-content {
+    padding: 16px 20px;
+    overflow-y: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #334155;
+}
+
+.management-ssh-help-lead {
+    margin: 0 0 14px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.management-ssh-help-lead code,
+.management-ssh-help-steps code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: #f1f5f9;
+    color: #0f172a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+}
+
+.management-ssh-help-section {
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+}
+
+.management-ssh-help-section h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.management-ssh-help-steps {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.management-ssh-help-steps li {
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.management-ssh-help-note {
+    display: block;
+    color: #64748b;
+    font-size: 12px;
+}
+
+.management-ssh-help-sublist {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    color: #475569;
+    font-size: 12px;
+}
+
+.management-ssh-help-notices {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.management-ssh-help-notice-box {
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: var(--info-bg, #eff6ff);
+    border-left: 3px solid var(--primary);
+}
+
+.management-ssh-help-notice-box p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #1e3a8a;
+}
+
+.management-ssh-help-browser-note {
+    margin: 0;
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.4;
+}
+

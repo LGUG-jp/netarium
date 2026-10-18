@@ -1,0 +1,15 @@
+#link-bulk-overlay > .ledger-device-sheet-dialog { height: auto; max-height: min(90vh, 840px, 100%); }
+#link-bulk-title { margin: 0; font-size: 18px; line-height: 1.5; }
+.link-bulk-body { gap: var(--space-3); }
+.link-bulk-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.link-bulk-field { display: flex; flex-direction: column; gap: var(--space-1); }
+.link-bulk-field > textarea { width: 100%; box-sizing: border-box; }
+.link-bulk-field .form-input:disabled { background: var(--bg-toolbar-hover); color: var(--text-muted); border-color: var(--border-light); }
+.link-bulk-count { margin: 0 auto 0 0; font-weight: 700; }
+.link-bulk-error { margin: 0; padding: var(--space-3); color: var(--danger); background: var(--danger-bg); border-left: 4px solid var(--danger); white-space: pre-line; }
+.link-bulk-error:empty { display: none; }
+
+@media (max-width: 600px) {
+    .link-bulk-fields { grid-template-columns: minmax(0, 1fr); }
+    .link-bulk-count { width: 100%; }
+}

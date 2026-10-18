@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- アクセスポイント: 円盤筐体と上方の電波記号。 -->
+  <g stroke="#bc5c12" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 41 V45 C9 52 19 56 32 56 S55 52 55 45 V41 Z" fill="#ffb875" />
+    <ellipse cx="32" cy="41" rx="23" ry="12" fill="#ffe3c5" />
+  </g>
+  <ellipse cx="32" cy="41" rx="15" ry="7" fill="none" stroke="#ffffff" stroke-width="3" />
+  <g fill="none" stroke="#dc781c" stroke-width="4" stroke-linecap="round">
+    <path d="M15 14 Q32 -1 49 14" />
+    <path d="M21 20 Q32 10 43 20" />
+    <path d="M27 26 Q32 21 37 26" />
+  </g>
+</svg>

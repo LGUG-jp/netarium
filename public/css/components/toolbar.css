@@ -1,0 +1,471 @@
+/* ========================================================
+   Netarium Toolbar Styles (DADS Clean Surface)
+======================================================== */
+
+#toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 500;
+    width: 100%;
+    height: var(--toolbar-height);
+    min-height: var(--toolbar-height);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 var(--space-3);
+    flex-wrap: nowrap;
+    color: var(--text-main);
+    background-color: var(--bg-toolbar);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    border-bottom: 1px solid var(--border-strong);
+    box-sizing: border-box;
+    overflow: visible;
+}
+
+#toolbar button,
+.toolbar-btn {
+    min-height: 34px;
+    height: 34px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.3;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    box-sizing: border-box;
+    white-space: nowrap;
+    transition:
+        background-color var(--transition-fast),
+        border-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+#toolbar button:hover:not(:disabled),
+.toolbar-btn:hover:not(:disabled) {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary-hover);
+}
+
+#toolbar button:active:not(:disabled),
+.toolbar-btn:active:not(:disabled) {
+    background-color: var(--primary-active);
+    color: #ffffff;
+}
+#toolbar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+#toolbar .sep,
+.sep {
+    width: 1px;
+    height: 24px;
+    margin: 0 var(--space-1);
+    background-color: var(--border-light);
+    color: transparent;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+#toolbar .toolbar-nav-divider {
+    margin-left: auto;
+}
+
+.toolbar-field {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--text-main);
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.toolbar-field select {
+    min-width: 140px;
+    height: 36px;
+    padding: 0 var(--space-2);
+    color: var(--text-main);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+}
+
+.toolbar-brand {
+    flex: 0 0 auto;
+    color: var(--text-main);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+#toolbar #toolbar-brand-trigger {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    flex: 0 0 auto;
+}
+
+#toolbar #toolbar-brand-trigger:hover,
+#toolbar #toolbar-brand-trigger:active {
+    background: transparent;
+    color: inherit;
+}
+
+.toolbar-brand-logo {
+    display: block;
+    width: 95px;
+    height: 24px;
+    object-fit: contain;
+}
+
+.toolbar-version {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    background-color: var(--unknown-bg);
+    font-size: 14px;
+    font-weight: 700;
+}
+
+#toolbar .view-switcher {
+    flex: 0 1 240px;
+    position: relative;
+    min-width: 0;
+}
+
+#toolbar .view-switcher input {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    height: 36px;
+    padding: 0 24px 0 var(--space-2);
+    color: var(--text-main);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 700;
+    box-sizing: border-box;
+    text-overflow: ellipsis;
+}
+
+.view-search-arrow {
+    position: absolute;
+    right: 8px;
+    pointer-events: none;
+}
+
+.view-search-popup {
+    position: fixed;
+    z-index: 510;
+    overflow: auto;
+    box-sizing: border-box;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: #ffffff;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+.view-search-summary {
+    padding: 8px 10px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.view-search-option {
+    padding: 8px 10px;
+    cursor: pointer;
+    min-height: 44px;
+    box-sizing: border-box;
+    text-align: left;
+    border-left: 3px solid transparent;
+}
+
+.view-search-option strong,
+.view-search-option span {
+    display: block;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.view-search-option strong { font-size: 14px; line-height: 1.5; }
+.view-search-option span { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.view-search-option[aria-selected="true"] { border-left-color: var(--primary); }
+.view-search-option[aria-selected="true"] strong::after { content: "（現在）"; }
+.view-search-option:hover,
+.view-search-option.active { background: var(--primary-soft); }
+.view-search-option.active { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* 検索エリア */
+.device-search {
+    position: relative;
+    flex: 0 1 240px;
+    min-width: 160px;
+}
+
+.device-search-field {
+    display: flex;
+    align-items: center;
+    position: relative;
+    width: 100%;
+}
+
+#device-search-input {
+    width: 100%;
+    height: 36px;
+    min-height: 36px;
+    padding: 0 30px 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-main);
+    background-color: #ffffff;
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+
+
+/* ナビゲーションボタングループ */
+.toolbar-nav-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.toolbar-btn-icon {
+    width: 20px;
+    height: 20px;
+    display: block;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.toolbar-btn-label {
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.toolbar-btn-caret {
+    font-size: 10px;
+    line-height: 1;
+    margin-left: 1px;
+}
+
+/* 保存ボタン (Primary) */
+#toolbar #saveBtn,
+.toolbar-btn-primary {
+    background-color: var(--primary) !important;
+    color: #ffffff !important;
+    border-color: var(--primary) !important;
+}
+
+#toolbar #saveBtn:hover:not(:disabled),
+.toolbar-btn-primary:hover:not(:disabled) {
+    background-color: var(--primary-hover) !important;
+    border-color: var(--primary-hover) !important;
+    color: #ffffff !important;
+}
+
+
+/* ドロップダウンメニュー */
+.toolbar-menu {
+    position: relative;
+    flex: 0 0 auto;
+}
+
+
+.toolbar-menu > summary {
+    list-style: none;
+    user-select: none;
+}
+
+.toolbar-menu > summary::-webkit-details-marker {
+    display: none;
+}
+
+.toolbar-menu[open] > summary {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
+.toolbar-menu-popup {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 600;
+    display: grid;
+    gap: 3px;
+    width: 220px;
+    padding: 6px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    color: var(--text-main);
+    background-color: #ffffff;
+    box-shadow: var(--shadow-lg);
+}
+
+.toolbar-user-popup {
+    width: 200px;
+}
+
+.toolbar-menu-user-info {
+    padding: 4px 8px;
+    margin-bottom: 2px;
+}
+
+.toolbar-menu-user-role {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--primary);
+}
+
+.toolbar-menu-user-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.toolbar-user-menu > summary .toolbar-btn-label {
+    max-width: 10ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.toolbar-menu-heading {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-muted);
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--border-light);
+    margin-bottom: 2px;
+}
+
+.toolbar-menu-separator {
+    height: 1px;
+    background-color: var(--border-light);
+    margin: 3px 0;
+}
+
+.toolbar-menu-popup button,
+.toolbar-menu-logout button {
+    width: 100%;
+    min-height: 32px;
+    height: 32px;
+    justify-content: flex-start !important;
+    text-align: left;
+    padding: 4px 10px !important;
+    border: 1px solid transparent !important;
+    background-color: transparent !important;
+    color: var(--text-main) !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    border-radius: var(--radius-sm) !important;
+    box-shadow: none !important;
+}
+
+.toolbar-menu-popup button:hover:not(:disabled),
+.toolbar-menu-logout button:hover:not(:disabled) {
+    background-color: var(--primary-soft) !important;
+    color: var(--primary-hover) !important;
+}
+
+.toolbar-menu-logout {
+    margin: 0;
+    padding: 0;
+}
+
+/* レスポンシブ縮退 (画面幅が狭い場合はラベル省略しアイコン中心へ) */
+@media (max-width: 1150px) {
+    .toolbar-btn-label,
+    .toolbar-version {
+        display: none;
+    }
+
+    .toolbar-brand-logo {
+        width: 24px;
+    }
+
+    #toolbar .toolbar-btn {
+        padding: 0 8px;
+    }
+}
+/* 画面幅狭小時の調整 (1280px / 1366px / モバイル) */
+@media (max-width: 900px) {
+    .zoom-controls {
+        display: none;
+    }
+
+    #toolbar .view-switcher {
+        flex: 0 1 180px;
+    }
+
+    .device-search {
+        flex: 0 1 180px;
+    }
+}
+
+/* 狭幅では検索を上段、操作群を右寄せの下段へ分ける。 */
+@media (max-width: 640px) {
+    #toolbar {
+        flex-wrap: wrap;
+        align-content: center;
+        gap: 6px;
+        padding: 6px var(--space-2);
+    }
+
+    #toolbar .sep {
+        display: none;
+    }
+
+    #toolbar .toolbar-nav-divider {
+        display: block;
+        flex: 0 0 100%;
+        height: 0;
+        margin: 0;
+    }
+
+    #toolbar .view-switcher {
+        flex: 1 1 100px;
+        min-width: 80px;
+    }
+
+    #toolbar .device-search {
+        flex: 1 1 140px;
+        min-width: 120px;
+    }
+
+    .toolbar-nav-group {
+        margin-left: auto;
+    }
+
+    #toolbar .toolbar-btn {
+        padding: 0 6px;
+    }
+}

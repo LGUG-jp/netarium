@@ -1,0 +1,479 @@
+/* ==============================
+   Base
+============================== */
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    font-family:
+        "Inter",
+        "Segoe UI",
+        "Noto Sans JP",
+        "Hiragino Kaku Gothic ProN",
+        "Yu Gothic",
+        Meiryo,
+        sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--text-main);
+    background: var(--bg-main);
+    overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
+}
+
+button {
+    border: none;
+}
+
+/* 全対話要素のキーボードフォーカス枠（Primary青枠で統一し、黒・黄色の二重枠は使わない） */
+:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: 2px !important;
+    box-shadow: none !important;
+}
+
+/* フォーム入力欄全般（テキスト・検索・パスワード・数値・セレクト・テキストエリア・個票）は
+   Primaryの細い青枠で統一し、DADSの黄色・黒の二重太枠は使わない。 */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+#device-search-input:focus-visible,
+#workspace-nav-search:focus-visible,
+#ledger-search:focus-visible,
+.ledger-sheet-table input:focus-visible,
+.ledger-sheet-table select:focus-visible,
+.ledger-sheet-table textarea:focus-visible,
+.ledger-sheet-image-caption-input:focus-visible,
+#ledger-sheet-body input:focus-visible,
+#ledger-sheet-body select:focus-visible,
+#ledger-sheet-body textarea:focus-visible {
+    outline: 2px solid var(--primary) !important;
+    outline-offset: 2px !important;
+    box-shadow: none !important;
+    border-color: var(--primary);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--primary);
+}
+
+input[readonly]:focus-visible,
+textarea[readonly]:focus-visible,
+select:disabled:focus-visible {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+
+
+/* ==============================
+   Utility
+============================== */
+
+[hidden],
+.hidden {
+    display: none !important;
+}
+
+.is-muted {
+    color: var(--text-muted);
+}
+
+/* ==============================
+   Buttons (DADS Hierarchy)
+============================== */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: 44px;
+    padding: 8px 16px;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.3;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    cursor: pointer;
+    text-decoration: none;
+    box-sizing: border-box;
+    transition:
+        background-color var(--transition-fast),
+        border-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+.btn-sm {
+    min-height: 36px;
+    padding: 4px 12px;
+    font-size: 14px;
+}
+
+/* Primary: High Importance (Solid Blue) */
+.btn-primary {
+    background-color: var(--primary);
+    color: var(--text-invert);
+    border-color: var(--primary);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background-color: var(--primary-hover);
+    border-color: var(--primary-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+    background-color: var(--primary-active);
+    border-color: var(--primary-active);
+}
+
+/* Secondary: Neutral Supporting Action */
+.btn-secondary {
+    background-color: var(--neutral-bg);
+    color: var(--neutral);
+    border: 1px solid var(--neutral-border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background-color: var(--neutral-bg-hover);
+    color: var(--neutral-hover);
+    border-color: var(--neutral-border);
+}
+
+/* Cancel: Modal/Dialog Cancel Button */
+.btn-cancel {
+    background-color: var(--neutral-bg);
+    color: var(--neutral);
+    border: 1px solid var(--neutral-border);
+    min-height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.3;
+    white-space: nowrap;
+}
+
+.btn-cancel:hover:not(:disabled) {
+    background-color: var(--neutral-bg-hover);
+    color: var(--neutral-hover);
+    border-color: var(--neutral-border);
+}
+
+/* Tertiary: Low Importance (Text Button / Underline) */
+.btn-tertiary {
+    background-color: transparent;
+    color: var(--primary);
+    border-color: transparent;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.btn-tertiary:hover:not(:disabled) {
+    background-color: var(--primary-soft);
+    color: var(--primary-hover);
+}
+
+/* Danger: Semantic Status Button */
+.btn-danger {
+    background-color: var(--danger);
+    color: var(--text-invert);
+    border-color: var(--danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+    background-color: var(--danger-hover);
+    border-color: var(--danger-hover);
+}
+
+.btn-danger.btn-secondary {
+    background-color: var(--bg-panel-solid);
+    color: var(--danger);
+    border: 2px solid var(--danger);
+}
+
+.btn-danger.btn-secondary:hover:not(:disabled) {
+    background-color: var(--danger-bg);
+    color: var(--danger-hover);
+    border-color: var(--danger-hover);
+}
+
+.btn-danger.btn-tertiary {
+    background-color: transparent;
+    color: var(--danger);
+    border-color: transparent;
+    text-decoration: underline;
+}
+
+.btn-danger.btn-tertiary:hover:not(:disabled) {
+    background-color: var(--danger-bg);
+    color: var(--danger-hover);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ==============================
+   Form Controls & Validation
+============================== */
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+select,
+textarea {
+    min-height: 44px;
+    padding: 8px 12px;
+    font-size: 16px;
+    line-height: 1.3;
+    color: var(--text-main);
+    background-color: #ffffff;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-sizing: border-box;
+}
+
+input[type="text"].input-sm,
+input[type="number"].input-sm,
+input[type="search"].input-sm,
+select.input-sm,
+.form-input-sm {
+    min-height: 32px;
+    height: 32px;
+    padding: 4px 8px;
+    font-size: 13px;
+}
+
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"],
+.is-invalid {
+    border: 2px solid var(--danger) !important;
+    background-color: var(--danger-bg) !important;
+}
+
+.form-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-main);
+    margin-bottom: var(--space-1);
+}
+
+.form-support {
+    font-size: 14px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    margin-top: var(--space-1);
+}
+
+.password-requirements {
+    margin: var(--space-1) 0 0;
+    padding-left: 0;
+    list-style: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.5;
+}
+
+.password-requirements li + li {
+    margin-top: var(--space-1);
+}
+
+.form-error {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--danger);
+    margin-top: var(--space-1);
+}
+
+.character-counter {
+    font-size: 14px;
+    color: var(--text-muted);
+    text-align: right;
+    margin-top: 2px;
+}
+
+/* ==============================
+   Table Styles (Dense & Accessible)
+============================== */
+
+table.data-table,
+.table-dense {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.3;
+    color: var(--text-main);
+}
+
+table.data-table th,
+.table-dense th {
+    background: #f0f2f5;
+    color: var(--text-main);
+    font-weight: 700;
+    padding: 8px 12px;
+    border-bottom: 2px solid var(--border-strong);
+    text-align: left;
+}
+
+table.data-table td,
+.table-dense td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-light);
+    color: var(--text-main);
+}
+
+table.data-table tbody tr:hover,
+.table-dense tbody tr:hover {
+    background: #f8fafc;
+}
+
+/* ==============================
+   Badges & Status Labels
+============================== */
+
+.badge,
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.25;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+}
+
+.badge-success,
+.status-badge.is-success {
+    color: var(--success);
+    background-color: var(--success-bg);
+    border-color: var(--success);
+}
+
+.badge-danger,
+.status-badge.is-danger {
+    color: var(--danger);
+    background-color: var(--danger-bg);
+    border-color: var(--danger);
+}
+
+.badge-warning,
+.status-badge.is-warning {
+    color: var(--warning-text);
+    background-color: var(--warning-bg);
+    border-color: var(--warning);
+}
+
+.badge-info,
+.status-badge.is-info {
+    color: var(--primary);
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
+}
+
+.badge-unknown,
+.status-badge.is-unknown {
+    color: var(--unknown);
+    background-color: var(--unknown-bg);
+    border-color: var(--unknown);
+}
+
+
+/* ==============================
+   Animations
+============================== */
+
+@keyframes checkingPulse {
+    0% {
+        transform: scale(1);
+        opacity: 1;
+    }
+
+    50% {
+        transform: scale(0.96);
+        opacity: 0.68;
+    }
+
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+
+@keyframes toastIn {
+    from {
+        opacity: 0;
+
+        transform:
+            translateX(-50%)
+            translateY(-8px);
+    }
+
+    to {
+        opacity: 1;
+
+        transform:
+            translateX(-50%)
+            translateY(0);
+    }
+}
+
+
+@keyframes panelIn {
+    from {
+        transform: translateX(12px);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+
+
+/* ==============================
+   Reduced Motion
+============================== */
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.001ms !important;
+    }
+}
+
+

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- その他: 中立色の筐体と丸・四角・菱形の接続記号。 -->
+  <g stroke="#56616e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 29 13 20 H51 L58 29 V45 Q58 49 54 49 H10 Q6 49 6 45 Z" fill="#bfc7d0" />
+    <rect x="6" y="29" width="52" height="20" rx="4" fill="#9da9b7" />
+    <path d="M12 49 V51 H16 M48 51 H52 V49" fill="none" />
+    <path d="M17 39 H48" fill="none" stroke="#ffffff" />
+    <circle cx="17" cy="39" r="4" fill="#ffffff" />
+    <rect x="28" y="35" width="8" height="8" rx="1.5" fill="#ffffff" />
+    <path d="M48 34 53 39 48 44 43 39 Z" fill="#ffffff" />
+  </g>
+</svg>
