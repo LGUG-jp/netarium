@@ -5,7 +5,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 
-function snapshotFixture(t, readme, files = {}) {
+function snapshotFixture(t, readme, files = {}, options = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'netarium-public-export-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const repo = path.join(root, 'repo');
@@ -28,14 +28,24 @@ function snapshotFixture(t, readme, files = {}) {
     git(['add', '-f', 'README.md', 'THIRD_PARTY_NOTICES.md', 'scripts/export-public-snapshot.mjs', ...Object.keys(files)]);
     git(['-c', 'user.name=Snapshot Fixture', '-c', 'user.email=snapshot@example.test', '-c', 'commit.gpgsign=false',
         '-c', 'core.hooksPath=' + path.join(root, 'no-hooks'), 'commit', '-qm', 'Synthetic export fixture']);
+    if (options.ancestorLeakPath) {
+        const parentSha = git(['rev-parse', 'HEAD']).toString('utf8').trim();
+        const leakedFile = path.join(repo, options.ancestorLeakPath);
+        fs.mkdirSync(path.dirname(leakedFile), { recursive: true });
+        fs.writeFileSync(leakedFile, `Private parent ${options.uppercaseAncestor ? parentSha.toUpperCase() : parentSha}\n`);
+        git(['add', '-f', options.ancestorLeakPath]);
+        git(['-c', 'user.name=Snapshot Fixture', '-c', 'user.email=snapshot@example.test', '-c', 'commit.gpgsign=false',
+            '-c', 'core.hooksPath=' + path.join(root, 'no-hooks'), 'commit', '-qm', 'Child containing forbidden parent reference']);
+    }
     // These must not become the generated documentation.
     fs.writeFileSync(path.join(repo, 'README.md'), 'UNCOMMITTED WORKTREE CONTENT');
     fs.writeFileSync(path.join(repo, 'docs-untracked.md'), 'UNTRACKED CONTENT');
-    const result = spawnSync(process.execPath, [path.join(repo, 'scripts/export-public-snapshot.mjs'), '--commit', 'HEAD', '--out-dir', output], {
+    const manifestDir = path.join(root, 'private-ledger');
+    const result = spawnSync(process.execPath, [path.join(repo, 'scripts/export-public-snapshot.mjs'), '--commit', 'HEAD', '--out-dir', output, ...(options.separateManifest ? ['--manifest-dir', manifestDir] : [])], {
         cwd: repo, encoding: 'utf8'
     });
     assert.ifError(result.error);
-    return { output, result };
+    return { output, result, repo, manifestDir };
 }
 
 const repositories = ['netarium', 'netarium-dev'];
@@ -122,3 +132,78 @@ test('旧NCSC資材・専用metadataと実行時追加辞書を公開せず、�
     for (const name of standard) assert.equal(fs.readFileSync(path.join(output, name), 'utf8'), files[name]);
     assert.ok(!fs.existsSync(path.join(output, '.git')));
 });
+test('配備PowerShellスクリプトに非ASCII文字やBOMが含まれる場合は公開候補を拒否する', t => {
+    // 非ASCII文字（日本語コメント）が含まれる場合
+    const { output: outNonAscii, result: resNonAscii } = snapshotFixture(t, '# Non-ASCII ps1 fixture\n', {
+        'scripts/setup-iis.ps1': '# Setup IIS\n# 日本語コメント。\nWrite-Host "hello"\n'
+    });
+    assert.notEqual(resNonAscii.status, 0, resNonAscii.stdout + resNonAscii.stderr);
+    assert.match(resNonAscii.stderr, /公開PowerShellスクリプト文字コード検査で 1 件の違反が検出されました/);
+    assert.ok(!fs.existsSync(outNonAscii), 'Rejected snapshot was deployed');
+
+    // UTF-8 BOMが含まれる場合
+    const bomBuffer = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('Write-Host "hello"\n', 'utf8')]);
+    const { output: outBom, result: resBom } = snapshotFixture(t, '# BOM ps1 fixture\n', {
+        'scripts/setup-iis.ps1': bomBuffer.toString('utf8')
+    });
+    assert.notEqual(resBom.status, 0, resBom.stdout + resBom.stderr);
+    assert.match(resBom.stderr, /配備PowerShellスクリプトにBOMが含まれています/);
+    assert.ok(!fs.existsSync(outBom), 'Rejected snapshot was deployed');
+
+    // 純粋なASCIIのみの場合
+    const { output: outAscii, result: resAscii } = snapshotFixture(t, '# Pure ASCII ps1 fixture\n', {
+        'scripts/setup-iis.ps1': '# Pure ASCII setup script\nWrite-Host "hello"\n'
+    });
+    assert.equal(resAscii.status, 0, resAscii.stdout + resAscii.stderr);
+    assert.ok(fs.existsSync(path.join(outAscii, 'scripts/setup-iis.ps1')));
+});
+
+test('release専用ツールとworkflowを除外し、manifest-dirを公開候補から分離する', t => {
+    const excluded = ['scripts/release-sync.mjs', 'scripts/release-control.mjs', 'tests/release-sync.test.mjs', 'tests/release-control.test.mjs',
+        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', '.github/workflows/release-check.yml'];
+    const { output, result, repo, manifestDir } = snapshotFixture(t, '# Public fixture\n', Object.fromEntries(excluded.map(name => [name, 'Private release implementation\n'])), { separateManifest: true });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    for (const name of excluded) assert.ok(!fs.existsSync(path.join(output, name)), name);
+    assert.ok(fs.existsSync(path.join(manifestDir, 'public-snapshot-sha256.json')));
+    assert.ok(!fs.existsSync(path.join(repo, 'docs/release-candidate/public-snapshot-sha256.json')));
+    assert.ok(!fs.existsSync(path.join(output, 'public-snapshot-sha256.json')));
+});
+
+for (const prefix of ['ghp_', 'ghs_', 'github_pat_']) {
+    test(`${prefix} tokenは拡張子にかかわらず公開前に拒否し、値を出力しない`, t => {
+        const token = prefix + 'Z'.repeat(40);
+        const { output, result } = snapshotFixture(t, '# Token fixture\n', { 'public/image.png': token });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /GitHub Token/);
+        assert.ok(!result.stderr.includes(token));
+        assert.ok(!fs.existsSync(output));
+    });
+}
+
+test('改名した旧NCSC metadataのcanonical hashを拒否する', t => {
+    const hash = 'c2e5696882c603b76bb67a47ee970897e5a76fc4c3f5547abe3d0ca340c576e0';
+    const { output, result } = snapshotFixture(t, '# Dictionary metadata fixture\n', {
+        'resources/renamed-metadata.json': JSON.stringify({ canonical_sha256: hash })
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /禁止辞書資材/);
+    assert.ok(!fs.existsSync(output));
+});
+
+test('Markdown以外に置いたPrivate Issue URLも公開配置前に拒否する', t => {
+    const url = 'https://github.com/' + 'LGUG-jp/' + 'netarium-dev/issues/999';
+    const { output, result } = snapshotFixture(t, '# Private URL fixture\n', { 'src/reference.txt': url });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Private参照/);
+    assert.ok(!result.stderr.includes(url));
+    assert.ok(!fs.existsSync(output));
+});
+
+for (const [name, uppercaseAncestor] of [['src/parent-reference.txt', false], ['public/parent-reference.png', true]]) {
+    test(`Private祖先SHAを含む${name}は大小文字と拡張子にかかわらず公開前に拒否する`, t => {
+        const { output, result } = snapshotFixture(t, '# Ancestor reference fixture\n', {}, { ancestorLeakPath: name, uppercaseAncestor });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Private参照/);
+        assert.ok(!fs.existsSync(output));
+    });
+}

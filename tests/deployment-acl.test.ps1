@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts/deployment-common.ps1')
 
-# IISアカウント解決だけを置き換え、隔離ディレクトリでWindows ACLを検証する。
+# Validate Windows ACLs in an isolated directory, mocking only IIS account resolution.
 $poolSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-82-123')
 function New-Object {
     param([string]$TypeName, [object[]]$ArgumentList)
@@ -126,7 +126,7 @@ foreach ($sid in @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-32-568')) {
     Write-Host "PASS ${sid}: 書込み6種の除去、プログラム読取り・Deny維持、DB/config/session読取り限定、AppPool権限、再適用"
 }
 
-# 既存非管理者所有者からのAdministrators所有者強制と、暗黙WRITE_DACによるDACL再付与拒否を検証する。
+# Verify forcing Administrators ownership from an existing non-admin owner and denying DACL re-grant via implicit WRITE_DAC.
 $probeCode = @'
 using System;
 using System.Runtime.InteropServices;

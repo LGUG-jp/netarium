@@ -36,6 +36,8 @@ final class SecurityHeadersTest extends TestCase
             $this->assertFalse(str_contains($policy, 'upgrade-insecure-requests'));
             $this->assertFalse(str_contains($policy, 'block-all-mixed-content'));
             $this->assertSame('SAMEORIGIN', $response->getHeader('X-Frame-Options'));
+            $this->assertSame('nosniff', $response->getHeader('X-Content-Type-Options'));
+            $this->assertSame('same-origin', $response->getHeader('Referrer-Policy'));
             $this->assertStringContains("frame-ancestors 'self'", $policy);
         }
         $this->assertNotSame($nonces[0], $nonces[1]);
@@ -51,7 +53,22 @@ final class SecurityHeadersTest extends TestCase
             $this->assertStringContains("object-src 'none'", $response->getHeader('Content-Security-Policy') ?? '');
             $this->assertNull($response->getHeader('Strict-Transport-Security'));
             $this->assertNull($response->getHeader('Content-Security-Policy-Report-Only'));
+            $this->assertSame('nosniff', $response->getHeader('X-Content-Type-Options'));
+            $this->assertSame('SAMEORIGIN', $response->getHeader('X-Frame-Options'));
+            $this->assertSame('same-origin', $response->getHeader('Referrer-Policy'));
         }
+    }
+
+    public function testClientCannotDisableHeadersByClaimingToBeIis(): void
+    {
+        $client = new TestHttpClient($this->client->getBaseUrl());
+        $response = $client->get('/login.php', [
+            'Server-Software' => 'Microsoft-IIS/10.0',
+            'X-Server-Software' => 'Microsoft-IIS/10.0',
+        ])->assertStatus(200);
+        $this->assertSame('nosniff', $response->getHeader('X-Content-Type-Options'));
+        $this->assertSame('SAMEORIGIN', $response->getHeader('X-Frame-Options'));
+        $this->assertSame('same-origin', $response->getHeader('Referrer-Policy'));
     }
 
     public function testReportOnlyAndExplicitHstsOnTrustedHttpsOnly(): void

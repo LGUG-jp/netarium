@@ -168,10 +168,6 @@ try {
         'Content-Disposition: inline'
     );
 
-    header(
-        'X-Content-Type-Options: nosniff'
-    );
-
 
     readfile($fileRealPath);
     $operationGate->release();

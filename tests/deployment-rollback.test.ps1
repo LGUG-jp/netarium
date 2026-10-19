@@ -24,7 +24,7 @@ function New-Object {
     }
     Microsoft.PowerShell.Utility\New-Object -TypeName $TypeName -ArgumentList $ArgumentList
 }
-# IIS が使えない開発端末でも、サイト・プール・FastCGI の状態遷移を確認する。
+# Verify site, pool, and FastCGI state transitions even on development machines without IIS.
 $script:siteExists = $false
 $script:siteLocationExists = $false
 $script:poolExists = $false
@@ -337,14 +337,14 @@ try {
     }
     Write-Host '  [PASS] data-only installation root and logs preserved' -ForegroundColor Green
 
-    # Phase 7前のルートファイルは更新で撤去し、失敗時には内容ごと復元する。
+    # Root files before Phase 7 are removed during update and restored with their contents on failure.
     $blocklistPaths = @(
         'resources/password-blocklist/ncsc-100k.txt',
         'resources/password-blocklist/metadata.json',
         'resources/password-blocklist/pwdb-policy-top-3000.txt',
         'resources/password-blocklist/pwdb-metadata.json'
     )
-    # 廃止済みNCSC同梱版を合成データで再現し、現行資材への依存を避ける。
+    # Replicate deprecated NCSC bundled version using synthetic data to avoid relying on actual assets.
     $oldResources = Join-Path $install 'resources/password-blocklist'
     New-Item -ItemType Directory -Path $oldResources -Force | Out-Null
     foreach ($relativePath in $blocklistPaths[0..1]) {
@@ -400,7 +400,7 @@ try {
     }
     Write-Host '  [PASS] 同一版rollbackで欠損・改変したPWDB資材を復元' -ForegroundColor Green
 
-    # 既存サイトとプールは削除せず、保存した設定を復元する。
+    # Do not delete existing site and pool; restore saved configuration.
     $state.SiteExists = $true
     $state.AppPoolExists = $true
     $script:siteExists = $true

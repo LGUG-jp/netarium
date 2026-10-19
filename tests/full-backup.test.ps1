@@ -490,6 +490,72 @@ if ($action === 'init') {
                 return $global:mockSiteState -eq 'Started' -and $global:mockPoolState -eq 'Started' -and $global:mockSiteStops -eq 1 -and $global:mockPoolStops -eq 1
             }
         }
+
+        Assert-ScriptTest -Name 'Production restore accepts v1.0.0 archive on v1.0.1 installation, accepts v1.0.1 same-version, and rejects v1.0.1->v1.0.0 before IIS stop' -Condition {
+            $v101Root = Join-Path ([IO.Path]::GetTempPath()) ('netarium-prod-v101-' + [guid]::NewGuid().ToString('N'))
+            $v101WorkRoot = Join-Path $workRoot 'work-v101'
+            $v101BackupDir = Join-Path $workRoot 'backup-v101'
+            New-Item -ItemType Directory -Path $v101Root, $v101WorkRoot, $v101BackupDir -Force | Out-Null
+            try {
+                foreach ($d in @('public', 'src', 'templates', 'resources', 'scripts', 'config')) {
+                    Copy-Item -LiteralPath (Join-Path $repoRoot $d) -Destination (Join-Path $v101Root $d) -Recurse -Force
+                }
+                Copy-Item -LiteralPath (Join-Path $repoRoot 'bootstrap.php') -Destination (Join-Path $v101Root 'bootstrap.php') -Force
+                [IO.File]::WriteAllText((Join-Path $v101Root 'version.php'), "<?php`n`ndeclare(strict_types=1);`n`nconst NETARIUM_VERSION = '1.0.1';`n", (New-Object System.Text.UTF8Encoding($false)))
+
+                function Get-Website {
+                    param($Name, [string]$ErrorAction)
+                    return [pscustomobject]@{
+                        Name = $siteName
+                        PhysicalPath = (Join-Path $v101Root 'public')
+                        ApplicationPool = $poolName
+                        Bindings = [pscustomobject]@{ Collection = @([pscustomobject]@{ protocol = 'http'; bindingInformation = '127.0.0.1:49249:'; sslFlags = 0; certificateHash = ''; certificateStoreName = '' }) }
+                    }
+                }
+
+                # 1. Restore v1.0.0 production backup archive into v1.0.1 installation
+                $env:NETARIUM_STORAGE_DIR = $targetStorage
+                $env:NETARIUM_DB_FILE = Join-Path $targetStorage 'db/data.sqlite'
+                Set-Content -LiteralPath (Join-Path $targetStorage 'sessions/sess_100to101abcdef100to101abcdef1000') -Value 'session_before_v101_restore'
+                $global:mockSiteState = 'Started'; $global:mockPoolState = 'Started'
+                $global:mockSiteStops = 0; $global:mockPoolStops = 0
+                $rest101 = Invoke-MaintenanceTestCli (Join-Path $v101Root 'scripts/restore-full.ps1') @{ InstallRoot = $v101Root; SiteName = $siteName; ApplicationPoolName = $poolName; Archive = $script:productionBackupArchive; WorkRoot = $v101WorkRoot; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') }
+                if (-not $rest101 -or -not $rest101.Restored) { throw 'v1.0.0 -> v1.0.1 restore-full.ps1 failed' }
+                Invoke-BackupFixture $env:NETARIUM_DB_FILE 'verify' $targetStorage @($srcDb, $script:productionBackupArchive, $sourceStorage) | Out-Null
+                if (@(Get-ChildItem -LiteralPath (Join-Path $targetStorage 'sessions') -Force).Count -ne 0) { throw 'v1.0.0 -> v1.0.1 restore did not clear sessions' }
+
+                # 2. Create v1.0.1 full backup and restore v1.0.1 -> v1.0.1
+                $bak101 = Invoke-MaintenanceTestCli (Join-Path $v101Root 'scripts/backup-full.ps1') @{ InstallRoot = $v101Root; SiteName = $siteName; ApplicationPoolName = $poolName; BackupDirectory = $v101BackupDir; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') }
+                if (-not $bak101 -or -not (Test-Path -LiteralPath $bak101.Archive)) { throw 'v1.0.1 backup-full.ps1 failed' }
+                $restSame101 = Invoke-MaintenanceTestCli (Join-Path $v101Root 'scripts/restore-full.ps1') @{ InstallRoot = $v101Root; SiteName = $siteName; ApplicationPoolName = $poolName; Archive = $bak101.Archive; WorkRoot = $v101WorkRoot; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') }
+                if (-not $restSame101 -or -not $restSame101.Restored) { throw 'v1.0.1 -> v1.0.1 restore-full.ps1 failed' }
+            } finally {
+                if (Test-Path -LiteralPath $v101Root) { Remove-Item -LiteralPath $v101Root -Recurse -Force }
+            }
+            # 3. Reverse restore v1.0.1 archive into v1.0.0 installation must fail in preflight before stopping IIS or touching live data
+            function Get-Website {
+                param($Name, [string]$ErrorAction)
+                return [pscustomobject]@{
+                    Name = $siteName
+                    PhysicalPath = (Join-Path $repoRoot 'public')
+                    ApplicationPool = $poolName
+                    Bindings = [pscustomobject]@{ Collection = @([pscustomobject]@{ protocol = 'http'; bindingInformation = '127.0.0.1:49249:'; sslFlags = 0; certificateHash = ''; certificateStoreName = '' }) }
+                }
+            }
+            $beforeTarget = Get-BackupSourceState $targetStorage
+            Set-Content -LiteralPath (Join-Path $targetStorage 'sessions/sess_keep_on_reject_1234567890abcdef') -Value 'active_session_preserved'
+            $global:mockSiteState = 'Started'; $global:mockPoolState = 'Started'
+            $global:mockSiteStops = 0; $global:mockPoolStops = 0
+            $revFailure = $null
+            try {
+                Invoke-MaintenanceTestCli (Join-Path $repoRoot 'scripts/restore-full.ps1') @{ InstallRoot = $repoRoot; SiteName = $siteName; ApplicationPoolName = $poolName; Archive = $bak101.Archive; WorkRoot = $workRoot; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') } | Out-Null
+            } catch { $revFailure = $_.Exception.Message }
+            if (-not $revFailure -or $revFailure -notlike '*Incompatible full backup manifest*') { throw "Expected incompatible manifest error, got: $revFailure" }
+            if ($global:mockSiteStops -ne 0 -or $global:mockPoolStops -ne 0) { throw 'Preflight version rejection stopped IIS' }
+            if ((Get-BackupSourceState $targetStorage) -cne $beforeTarget) { throw 'Preflight version rejection modified live DB, images or users' }
+            if (-not (Test-Path -LiteralPath (Join-Path $targetStorage 'sessions/sess_keep_on_reject_1234567890abcdef'))) { throw 'Preflight version rejection deleted active session' }
+            return $global:mockSiteState -eq 'Started' -and $global:mockPoolState -eq 'Started'
+        }
     } finally {
         $env:NETARIUM_STORAGE_DIR = $oldStorage
         $env:NETARIUM_DB_FILE = $oldDb

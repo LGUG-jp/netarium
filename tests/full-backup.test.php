@@ -21,6 +21,15 @@ function rpc(array $worker, array $request, bool $ok = true): mixed
     check($r['ok'] === $ok, 'Unexpected worker result: ' . $line);
     return $r['result'] ?? null;
 }
+function copyTree(string $source, string $destination): void
+{
+    if (!is_dir($destination)) { mkdir($destination, 0700, true); }
+    foreach (new DirectoryIterator($source) as $entry) {
+        if ($entry->isDot()) { continue; }
+        $target = $destination . '/' . $entry->getFilename();
+        if ($entry->isDir()) { copyTree($entry->getPathname(), $target); } else { copy($entry->getPathname(), $target); }
+    }
+}
 function removeTree(string $dir): void
 {
     if (!is_dir($dir)) { return; }
@@ -146,7 +155,7 @@ try {
         }
     }
     $copy = null;
-    foreach (['tamper', 'missing', 'extra', 'slip', 'schema', 'app', 'corrupt', 'limit', 'count', 'integrity', 'empty-digest'] as $case) {
+    foreach (['tamper', 'missing', 'extra', 'slip', 'schema', 'app', 'reverse-101', 'legacy-030', 'unknown-manifest-key', 'unknown-file-key', 'corrupt', 'limit', 'count', 'integrity', 'empty-digest'] as $case) {
         $bad = $root . '/' . $case . '.zip'; copy($archive, $bad);
         $zip = new ZipArchive(); check($zip->open($bad) === true, 'Cannot mutate test ZIP');
         if ($case === 'tamper') { $zip->addFromString('device_images/orphan.png', str_repeat('x', 4096)); }
@@ -156,6 +165,10 @@ try {
         $m = $manifest;
         if ($case === 'schema') { $m['schema_version']++; }
         if ($case === 'app') { $m['application_version'] = '0.invalid'; }
+        if ($case === 'reverse-101') { $m['application_version'] = '1.0.1'; }
+        if ($case === 'legacy-030') { $m['application_version'] = '0.3.0'; }
+        if ($case === 'unknown-manifest-key') { $m['unexpected_field'] = 'x'; }
+        if ($case === 'unknown-file-key') { $m['files']['db/data.sqlite']['unexpected'] = 'x'; }
         if ($case === 'count') { $m['counts']['users']++; }
         if ($case === 'integrity') {
             $bytes = str_repeat('x', filesize($stage . '/db/data.sqlite'));
@@ -168,13 +181,55 @@ try {
             $m['files']['db/data.sqlite']['sha256'] = hash_file('sha256', $legacyDb);
             $m['total_bytes'] = array_sum(array_column($m['files'], 'bytes'));
         }
-        if (in_array($case, ['schema','app','count','integrity','empty-digest'], true)) { $zip->addFromString('manifest.json', json_encode($m, JSON_THROW_ON_ERROR)); }
+        if (in_array($case, ['schema','app','reverse-101','legacy-030','unknown-manifest-key','unknown-file-key','count','integrity','empty-digest'], true)) { $zip->addFromString('manifest.json', json_encode($m, JSON_THROW_ON_ERROR)); }
         $zip->close();
         if ($case === 'corrupt') { file_put_contents($bad, 'not a zip'); }
         $dest = $root . '/reject-' . $case; mkdir($dest);
         $before = hash_file('sha256', $dbFile);
         rpc($workers[0], ['command' => 'extract', 'archive' => $bad, 'root' => $dest, 'max_bytes' => $case === 'limit' ? 1 : 10000000, 'max_files' => 100], false);
         check($before === hash_file('sha256', $dbFile), 'Preflight touched live DB: ' . $case);
+    }
+
+    // Isolated v1.0.1 worker: accepts v1.0.0 and v1.0.1 archives, rejects unverified/legacy/future versions.
+    $v101App = $root . '/app-v101'; mkdir($v101App, 0700);
+    mkdir($v101App . '/scripts', 0700);
+    copy(dirname(__DIR__) . '/bootstrap.php', $v101App . '/bootstrap.php');
+    file_put_contents($v101App . '/version.php', "<?php\ndeclare(strict_types=1);\nconst NETARIUM_VERSION = '1.0.1';\n");
+    copyTree(dirname(__DIR__) . '/src', $v101App . '/src');
+    copy(dirname(__DIR__) . '/scripts/full-backup-helper.php', $v101App . '/scripts/full-backup-helper.php');
+    $v101Pipes = [];
+    $v101Process = proc_open([PHP_BINARY, $v101App . '/scripts/full-backup-helper.php', $v101App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-v101', 'a']], $v101Pipes, null, $environment);
+    check(is_resource($v101Process), 'Cannot launch v1.0.1 helper');
+    $workers[] = [$v101Process, $v101Pipes];
+    $v101Worker = [$v101Process, $v101Pipes];
+
+    $restored100On101 = $root . '/restored-100-on-101'; mkdir($restored100On101);
+    $extracted100Manifest = rpc($v101Worker, ['command' => 'extract', 'archive' => $archive, 'root' => $restored100On101, 'max_bytes' => 10000000, 'max_files' => 100]);
+    check(($extracted100Manifest['application_version'] ?? null) === '1.0.0', 'v1.0.0 manifest version altered on v1.0.1 extract');
+    $copy101 = new PDO('sqlite:' . $restored100On101 . '/db/data.sqlite');
+    $user101 = $copy101->query("SELECT * FROM users WHERE username='full-admin'")->fetch(PDO::FETCH_ASSOC);
+    check($user101['role'] === 'admin' && password_verify('FullBackup-test-93!', $user101['password_hash']), 'v1.0.0->v1.0.1 credentials lost');
+    $copy101 = null;
+
+    $archive101 = $root . '/good-101.zip';
+    $manifest101 = rpc($v101Worker, ['command' => 'pack', 'root' => $stage, 'destination' => $archive101]);
+    check(($manifest101['application_version'] ?? null) === '1.0.1', 'v1.0.1 pack did not record 1.0.1');
+    $restored101On101 = $root . '/restored-101-on-101'; mkdir($restored101On101);
+    $extracted101Manifest = rpc($v101Worker, ['command' => 'extract', 'archive' => $archive101, 'root' => $restored101On101, 'max_bytes' => 10000000, 'max_files' => 100]);
+    check(($extracted101Manifest['application_version'] ?? null) === '1.0.1', 'v1.0.1->v1.0.1 extract failed');
+
+    // Reverse restore (v1.0.1 archive on v1.0.0 worker) and unverified versions on v1.0.1 worker must fail closed.
+    $rejectReverse = $root . '/reject-real-101-on-100'; mkdir($rejectReverse);
+    rpc($workers[0], ['command' => 'extract', 'archive' => $archive101, 'root' => $rejectReverse, 'max_bytes' => 10000000, 'max_files' => 100], false);
+    foreach (['0.3.0', '1.0.2', '2.0.0'] as $badVer) {
+        $badVerZip = $root . '/reject-v101-' . $badVer . '.zip'; copy($archive, $badVerZip);
+        $zip = new ZipArchive(); check($zip->open($badVerZip) === true, 'Cannot open badVerZip');
+        $m = $manifest; $m['application_version'] = $badVer;
+        $zip->addFromString('manifest.json', json_encode($m, JSON_THROW_ON_ERROR));
+        $zip->close();
+        $dest = $root . '/reject-v101-dest-' . $badVer; mkdir($dest);
+        rpc($v101Worker, ['command' => 'extract', 'archive' => $badVerZip, 'root' => $dest, 'max_bytes' => 10000000, 'max_files' => 100], false);
     }
     check(hash_file('sha256', $dbFile) === $liveDbHash && hash_file('sha256', $dbFile . '-wal') === $liveWalHash, 'Backup changed live DB/WAL bytes');
     foreach ($liveRows as $table => $rows) {
@@ -184,7 +239,7 @@ try {
         check(hash_file('sha256', $storage . '/uploads/' . $name) === hash('sha256', $bytes), 'Backup changed live image');
     }
     $db = null;
-    echo "PASS full backup: schema10->11 snapshot completion, 14 image fault cases, 11 archive fault cases, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
+    echo "PASS full backup: schema10->11 snapshot completion, 14 image fault cases, 15 archive fault cases, v1.0.0->v1.0.1 and v1.0.1->v1.0.1 compatibility, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
 } finally {
     if (isset($copy)) { $copy = null; } if (isset($db)) { $db = null; }
     foreach ($workers as [$process, $pipes]) {

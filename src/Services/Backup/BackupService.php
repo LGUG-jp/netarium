@@ -490,7 +490,6 @@ class BackupService
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0', true);
         header('Pragma: no-cache', true);
         header('Expires: 0', true);
-        header('X-Content-Type-Options: nosniff', true);
         if (($capacity['near_limit'] ?? false) === true) {
             header('X-Netarium-Capacity-Warning: 1', true);
         }
@@ -833,15 +832,57 @@ class BackupService
 
     public function validateBackupManifest(array $manifest, array $extracted, string $expectedVersion): void
     {
-        $format = (string)($manifest['format'] ?? '');
+        $format = $manifest['format'] ?? null;
+        $formatVersion = $manifest['format_version'] ?? null;
 
-        if ($format !== 'netarium-config' || ($manifest['format_version'] ?? null) !== 1) {
+        if (!BackupCompatibilityPolicy::isSupportedFormat(
+            BackupCompatibilityPolicy::FORMAT_CONFIG,
+            $format,
+            $formatVersion
+        )) {
             throw new ApiException('netarium-config形式1のみ復元できます。旧画像同梱ZIP（形式2〜7）は非対応です', 400);
         }
-        if (($manifest['schema_version'] ?? null) !== APP_DATABASE_SCHEMA_VERSION
-            || ($manifest['application_version'] ?? null) !== $expectedVersion) {
-            throw new ApiException('構成情報ZIPのスキーマ版またはアプリ版が一致しません', 400);
+        $schemaVersion = $manifest['schema_version'] ?? null;
+        $applicationVersion = $manifest['application_version'] ?? null;
+        if (!BackupCompatibilityPolicy::isCompatible(
+            BackupCompatibilityPolicy::FORMAT_CONFIG,
+            $format,
+            $formatVersion,
+            $schemaVersion,
+            $applicationVersion,
+            APP_DATABASE_SCHEMA_VERSION,
+            $expectedVersion
+        )) {
+            throw new ApiException(
+                BackupCompatibilityPolicy::describeConfigIncompatibility(
+                    $schemaVersion,
+                    $applicationVersion,
+                    APP_DATABASE_SCHEMA_VERSION,
+                    $expectedVersion
+                ),
+                400
+            );
         }
+
+        $this->requireExactBackupKeys(
+            $manifest,
+            ['format', 'format_version', 'application_version', 'schema_version', 'created_at', 'summary', 'files'],
+            'manifest.json'
+        );
+        $this->validateBackupTimestamp(
+            is_string($manifest['created_at'] ?? null) ? $manifest['created_at'] : null,
+            'manifest.created_at',
+            false
+        );
+        $summary = $manifest['summary'] ?? null;
+        if (!is_array($summary)) {
+            throw new ApiException('マニフェストのサマリー情報が不正です', 400);
+        }
+        $this->requireExactBackupKeys(
+            $summary,
+            ['views', 'devices', 'placements', 'links', 'link_systems', 'canvas_notes', 'floor_plans', 'device_images', 'files', 'total_bytes'],
+            'manifest.summary'
+        );
 
         $files = $manifest['files'] ?? null;
 
@@ -855,6 +896,7 @@ class BackupService
             if (!is_array($file)) {
                 throw new ApiException('マニフェストファイル行が不正です', 400);
             }
+            $this->requireExactBackupKeys($file, ['path', 'size', 'sha256'], 'manifest.files');
 
             $path = (string)($file['path'] ?? '');
             $size = (int)($file['size'] ?? -1);
@@ -1021,6 +1063,13 @@ class BackupService
         if (($doc['version'] ?? null) !== 1) {
             throw new ApiException('未対応のデータJSONバージョンです', 400);
         }
+
+        $this->requireExactBackupKeys($doc, ['format', 'version', 'generated_at', 'tables'], 'data/netarium.json');
+        $this->validateBackupTimestamp(
+            is_string($doc['generated_at'] ?? null) ? $doc['generated_at'] : null,
+            'data.generated_at',
+            false
+        );
 
         $tables = $doc['tables'] ?? null;
 

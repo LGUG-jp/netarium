@@ -8,7 +8,7 @@ Netarium（ネタリウム）は、ネットワークの構成図と機器情報
 
 ## バージョン
 
-現在のバージョンは 1.0.0 です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+現在のバージョンは 1.0.1 です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ## 主な機能
 
@@ -65,6 +65,8 @@ netarium/
 ├─ tests/                   回帰テスト
 └─ docs/                    開発・運用文書
 ```
+
+`scripts/` 内の各スクリプトの用途、実行区分（管理者用入口／内部部品／開発・検証用）、詳細ガイドへの対応は [スクリプト一覧](scripts/README.md) を参照してください。
 
 `data/`は配備先の環境固有領域です。`config/app.php`も環境固有ファイルで、`config/app.example.php`だけをリリースへ含めます。機密情報や環境固有設定の取り扱いは[開発ガイド](docs/development.md)および[セキュリティポリシー](SECURITY.md)に従います。
 
@@ -125,6 +127,7 @@ Netarium は GitHub 標準のソースコード配布形式で提供されます
 - [開発・確認方法](docs/development.md)
 - [セキュリティポリシー](SECURITY.md)
 - [変更履歴](CHANGELOG.md)
+- [スクリプト一覧（各ツールの用途・実行区分）](scripts/README.md)
 ## ライセンス
 
 本ソフトウェアはMIT Licenseのもとで公開されています。詳細は [LICENSE](LICENSE) を参照してください。同梱されている第三者資材のライセンス表記についても同ファイルおよび各メタデータファイルに記載されています。

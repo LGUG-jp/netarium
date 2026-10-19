@@ -1067,7 +1067,7 @@ function Set-NetariumBootstrapAcl {
 function Set-NetariumPasswordBlocklistAcl {
     param([Parameter(Mandatory = $true)][string]$StorageDir, [Parameter(Mandatory = $true)][string]$ApplicationPoolName)
 
-    # 親のDELETE_CHILDとstorage自体のDELETEからも辞書の差替えを防ぐ。
+    # Prevent dictionary replacement via parent DELETE_CHILD and storage DELETE.
     $acl = Get-Acl -LiteralPath $StorageDir
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
         "IIS AppPool\$ApplicationPoolName",
@@ -1159,7 +1159,7 @@ function Set-NetariumAcl {
     }
     # Apply last: storage Modify inheritance must never expose bootstrap copies.
     Set-NetariumBootstrapAcl -StorageDir $data
-    # 追加辞書は任意配置。storageのModifyを最後に必ず遮断する。
+    # Optional password blocklist: always block storage Modify inheritance last.
     Set-NetariumPasswordBlocklistAcl -StorageDir $data -ApplicationPoolName $ApplicationPoolName
 }
 
@@ -1807,7 +1807,7 @@ function Restore-NetariumSnapshot {
     }
     # Recreated pools can now resolve their virtual SID; grant access before restarting IIS.
     Set-NetariumPrivateAcl -Path $storage -ApplicationPoolName $restorePoolName
-    # 追加辞書はsnapshot対象外。復元したstorageのModifyを再度遮断する。
+    # Additional password blocklists are not snapshotted; re-block restored storage Modify.
     if ($restorePoolName) {
         Set-NetariumPasswordBlocklistAcl -StorageDir $storage -ApplicationPoolName $restorePoolName
     } else {

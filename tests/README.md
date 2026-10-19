@@ -114,7 +114,7 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器/ビュー/系統/メモ）の保存、リソースリビジョン競合、内部仮名衝突回避、バッチ rollback、隔離PHPでmbstring関数不在時のUnicode保存・ロード・ZIP復元（iconv／PCRE経路） |
-| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、旧形式2〜7拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
+| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による`v1.0.0→v1.0.1`および同一版復元・逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |

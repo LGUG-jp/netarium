@@ -9,12 +9,14 @@
  * 5. 公開用Markdownの開発履歴を除外し、内部参照を公開手順へ変換（Private原本は変更しない）
  * 6. 公開Markdownの内部参照残存・相対リンクと実在アンカーを検査（fail-closed）
  * 7. 秘密情報・危険ファイル検査（tests/含む全数走査、fail-closed、機密値非出力）
- * 8. ステージング領域での生成・全検査PASS後のみ最終出力先へアトミック反映（不完全成果物の残置・旧成果物の破壊を防止）
- * 9. Private側管理用SHA-256マニフェスト台帳の出力（Public内へは混入させない）
+ * 8. 公開PowerShellスクリプト文字コード検査（配備用scripts/*.ps1のASCII厳格検査、fail-closed）
+ * 9. ステージング領域での生成・全検査PASS後のみ最終出力先へアトミック反映（不完全成果物の残置・旧成果物の破壊を防止）
+ * 10. Private側管理用SHA-256マニフェスト台帳の出力（Public内へは混入させない）
  * ※ 独自配布ZIPは生成せず、GitHub標準ソース配布と一致させる。
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -36,6 +38,10 @@ function getArg(name, defaultValue) {
 
 const targetCommit = getArg('--commit', 'HEAD');
 const outDir = path.resolve(getArg('--out-dir', path.join(REPO_ROOT, '../tmp/netarium-public-candidate')));
+const manifestDir = path.resolve(getArg('--manifest-dir', path.join(REPO_ROOT, 'docs/release-candidate')));
+if (manifestDir === outDir || manifestDir.startsWith(outDir + path.sep)) {
+    throw new Error('Privateマニフェストを公開出力先に保存することはできません');
+}
 
 console.log('=== netarium 公開スナップショット生成 ===');
 console.log(`Repository Root:   ${REPO_ROOT}`);
@@ -132,12 +138,30 @@ try {
 }
 console.log(`Source Commit SHA: ${sourceSha}`);
 
+// 公開候補の履歴に属する識別子はPrivate情報。外部upstreamのSHAはこの集合に含めない。
+let privateAncestry;
+try {
+    const options = { cwd: REPO_ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 };
+    if (execFileSync('git', ['rev-parse', '--is-shallow-repository'], options).trim() !== 'false') {
+        throw new Error('履歴が不完全です');
+    }
+    const hashes = execFileSync('git', ['rev-list', sourceSha], options).trim().split(/\r?\n/);
+    if (!hashes.length || hashes.some(hash => !/^[a-f0-9]{40}$/.test(hash))) throw new Error('履歴が不正です');
+    privateAncestry = new Set(hashes);
+    if (!privateAncestry.has(sourceSha)) throw new Error('元commitが履歴にありません');
+} catch {
+    console.error('[ERROR] Private祖先commitの完全な一覧を取得できませんでした');
+    process.exit(1);
+}
+
 // -------------------------------------------------------------
 // 3. git archive を用いたGitオブジェクトからの安全な抽出 (シェル不使用)
 // -------------------------------------------------------------
 // 一時作業ディレクトリ（ステージング領域）
-const stagingDir = path.resolve(path.join(REPO_ROOT, '../tmp/netarium-snapshot-staging-' + crypto.randomBytes(6).toString('hex')));
-const archiveTarPath = path.resolve(path.join(REPO_ROOT, '../tmp/netarium-git-archive-' + crypto.randomBytes(6).toString('hex') + '.tar'));
+const tmpBase = os.tmpdir();
+fs.mkdirSync(tmpBase, { recursive: true });
+const stagingDir = path.resolve(path.join(tmpBase, 'netarium-snapshot-staging-' + crypto.randomBytes(6).toString('hex')));
+const archiveTarPath = path.resolve(path.join(tmpBase, 'netarium-git-archive-' + crypto.randomBytes(6).toString('hex') + '.tar'));
 
 function cleanupStaging() {
     if (fs.existsSync(stagingDir)) {
@@ -202,6 +226,13 @@ const ALLOWED_TOP_LEVEL = new Set([
 const EXCLUDED_PATHS = new Set([
     'AGENTS.md',
     'config/app.php',
+    'scripts/release-sync.mjs',
+    'tests/release-sync.test.mjs',
+    'scripts/release-control.mjs',
+    'tests/release-control.test.mjs',
+    '.github/workflows/release-check.yml',
+    '.github/workflows/release-candidate.yml',
+    '.github/workflows/release-publish.yml',
     'docs/repository-rules.md',
     'docs/release.md',
     'docs/deployment-testing.md',
@@ -602,6 +633,11 @@ console.log('\n[5/6] 秘密情報・危険ファイル検査 (fail-closed)...');
 
 const SECRET_PATTERNS = [
     {
+        name: 'GitHub Token',
+        regex: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/,
+        allowInTests: false
+    },
+    {
         name: 'Private Key',
         regex: /-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY-----/,
         allowInTests: false
@@ -634,9 +670,6 @@ let secretViolations = 0;
 for (const rel of publicFiles) {
     const full = path.join(stagingDir, rel);
     const ext = path.extname(rel).toLowerCase();
-    if (['.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.woff', '.woff2'].includes(ext)) {
-        continue;
-    }
 
     // 危険な拡張子の検査
     if (['.sqlite', '.sqlite3', '.db', '.log', '.tmp', '.bak', '.env', '.pem', '.key', '.pfx'].includes(ext)) {
@@ -645,7 +678,21 @@ for (const rel of publicFiles) {
         continue;
     }
 
-    const content = fs.readFileSync(full, 'utf-8');
+    const bytes = fs.readFileSync(full);
+    const content = bytes.toString('utf-8');
+    // G3-Bで権利未確定とした旧辞書は、改名・CRLF変換されても拒否する。
+    const forbiddenNcsc = 'c2e5696882c603b76bb67a47ee970897e5a76fc4c3f5547abe3d0ca340c576e0';
+    if (crypto.createHash('sha256').update(Buffer.from(bytes.toString('latin1').replace(/\r\n/g, '\n'), 'latin1')).digest('hex') === forbiddenNcsc
+        || new RegExp(`"canonical_sha256"\\s*:\\s*"${forbiddenNcsc}"`, 'i').test(content)) {
+        console.error(`[FAIL] 禁止辞書資材が検出されました: ${rel} (fail-closed 中断)`);
+        secretViolations++;
+    }
+    if (content.toLowerCase().includes(sourceSha)
+        || [...content.matchAll(/(?<![a-f0-9])[a-f0-9]{40}(?![a-f0-9])/gi)].some(match => privateAncestry.has(match[0].toLowerCase()))
+        || /github\.com(?::\d+)?\/LGUG-jp\/netarium-dev\/(?:issues|pull|commit)\//i.test(content)) {
+        console.error(`[FAIL] Private参照が検出されました: ${rel} (fail-closed 中断)`);
+        secretViolations++;
+    }
     const isTest = rel.startsWith('tests/');
     const lines = content.split(/\r?\n/);
 
@@ -673,6 +720,44 @@ if (secretViolations > 0) {
     process.exit(1);
 }
 console.log('秘密情報・機密ファイル検査: PASS');
+
+// -------------------------------------------------------------
+// 7.5 公開PowerShellスクリプト文字コード検査 (fail-closed)
+// -------------------------------------------------------------
+// Windows PowerShell 5.1（CP932/Shift-JIS環境）における文字コード誤認や
+// 改行破壊（句点「。」等の末尾バイトによるCRLF消失）を防止するため、
+// 配備・運用スクリプト（scripts/*.ps1）はBOMを含めず純粋なASCII（0x00-0x7F）のみで記述する。
+console.log('\n[5.5/6] 公開PowerShellスクリプト文字コード検査 (fail-closed)...');
+let ps1EncodingViolations = 0;
+const ps1Scripts = publicFiles.filter(rel => /^scripts\/.*\.ps1$/i.test(rel));
+
+for (const rel of ps1Scripts) {
+    const full = path.join(stagingDir, rel);
+    const buf = fs.readFileSync(full);
+
+    // BOM (0xEF, 0xBB, 0xBF) 検査
+    if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+        console.error(`[FAIL] 配備PowerShellスクリプトにBOMが含まれています: ${rel} (fail-closed 中断)`);
+        ps1EncodingViolations++;
+    }
+
+    // 非ASCII文字検査
+    const lines = buf.toString('utf-8').split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (/[^\x00-\x7F]/.test(line)) {
+            console.error(`[FAIL] 配備PowerShellスクリプトに非ASCII文字が検出されました: ${rel}:${i + 1} (fail-closed 中断)`);
+            ps1EncodingViolations++;
+        }
+    }
+}
+
+if (ps1EncodingViolations > 0) {
+    console.error(`[FAIL] 公開PowerShellスクリプト文字コード検査で ${ps1EncodingViolations} 件の違反が検出されました。公開候補を破棄します。`);
+    cleanupStaging();
+    process.exit(1);
+}
+console.log(`公開PowerShellスクリプト文字コード検査: PASS (${ps1Scripts.length} scripts verified pure ASCII)`);
 
 // -------------------------------------------------------------
 // 8. 安全な出力先への反映（全検査合格後のみ）
@@ -711,7 +796,7 @@ for (const rel of publicFiles.slice().sort()) {
 }
 
 // Private側管理ディレクトリにのみ保存（Public候補内には配置しない）
-const privateManifestDir = path.join(REPO_ROOT, 'docs/release-candidate');
+const privateManifestDir = manifestDir;
 const jsonPath = path.join(privateManifestDir, 'public-snapshot-sha256.json');
 const txtPath = path.join(privateManifestDir, 'public-snapshot-sha256.txt');
 fs.mkdirSync(privateManifestDir, { recursive: true });
