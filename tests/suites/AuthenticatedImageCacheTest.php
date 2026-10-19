@@ -144,6 +144,23 @@ class AuthenticatedImageCacheTest extends TestCase
     private function assertNoStore(TestResponse $response): void
     {
         $this->assertSame('private, no-store', $response->getHeader('Cache-Control'));
+        foreach ([
+            'X-Content-Type-Options' => 'nosniff',
+            'X-Frame-Options' => 'SAMEORIGIN',
+            'Referrer-Policy' => 'same-origin',
+        ] as $name => $expected) {
+            $values = [];
+            foreach ($response->getHeaders() as $key => $value) {
+                if (strcasecmp($key, $name) === 0) {
+                    array_push($values, ...(array)$value);
+                }
+            }
+            $this->assertSame([$expected], $values);
+        }
+        $this->assertMatchesRegex(
+            "/script-src 'self' 'nonce-[A-Za-z0-9+\/=]+'/",
+            $response->getHeader('Content-Security-Policy') ?? ''
+        );
     }
 
     private function withImages(callable $check): void
@@ -159,7 +176,7 @@ class AuthenticatedImageCacheTest extends TestCase
             $path = $server->getTempDir() . '/cache-policy.png';
             $image = imagecreatetruecolor(640, 320);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $before = $client->get('/api.php?action=load')->assertOk()->getJson();
             $device = $client->postMultipart('/image_upload.php?action=upload_device_image', [
                 'device_id' => '1', 'revision' => (string)$before['revision'],

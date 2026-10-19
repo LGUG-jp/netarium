@@ -149,7 +149,6 @@ class DeviceImageService
 
         $processedTempPath = tempnam($tempProcessedDir, 'proc_img_');
         if ($processedTempPath === false) {
-            imagedestroy($gdImage);
             throw new ApiException('一時ファイルの作成に失敗しました', 500);
         }
 
@@ -175,7 +174,6 @@ class DeviceImageService
                 if (!imagecopyresampled($resizedImage, $gdImage, 0, 0, 0, 0, $targetWidth, $targetHeight, $width, $height)) {
                     throw new ApiException('画像の縮小に失敗しました', 500);
                 }
-                imagedestroy($gdImage);
                 $gdImage = $resizedImage;
                 $resizedImage = null;
             }
@@ -191,10 +189,8 @@ class DeviceImageService
             @unlink($processedTempPath);
             throw $e;
         } finally {
-            if ($resizedImage instanceof GdImage) {
-                imagedestroy($resizedImage);
-            }
-            imagedestroy($gdImage);
+            // 保存・DB処理へ進む前に、例外時も大きなGD画像の参照を解放する。
+            unset($resizedImage, $gdImage);
         }
 
         if (!$reencodeSuccess || !is_file($processedTempPath)) {
@@ -548,7 +544,6 @@ class DeviceImageService
             case 3:
                 $rotated = imagerotate($im, 180, 0);
                 if ($rotated !== false) {
-                    imagedestroy($im);
                     $im = $rotated;
                 }
                 break;
@@ -559,14 +554,12 @@ class DeviceImageService
                 imageflip($im, IMG_FLIP_VERTICAL);
                 $rotated = imagerotate($im, -90, 0);
                 if ($rotated !== false) {
-                    imagedestroy($im);
                     $im = $rotated;
                 }
                 break;
             case 6:
                 $rotated = imagerotate($im, -90, 0);
                 if ($rotated !== false) {
-                    imagedestroy($im);
                     $im = $rotated;
                 }
                 break;
@@ -574,14 +567,12 @@ class DeviceImageService
                 imageflip($im, IMG_FLIP_HORIZONTAL);
                 $rotated = imagerotate($im, -90, 0);
                 if ($rotated !== false) {
-                    imagedestroy($im);
                     $im = $rotated;
                 }
                 break;
             case 8:
                 $rotated = imagerotate($im, 90, 0);
                 if ($rotated !== false) {
-                    imagedestroy($im);
                     $im = $rotated;
                 }
                 break;

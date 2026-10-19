@@ -31,7 +31,7 @@ class DeviceImageTest extends TestCase
             $path = $server->getTempDir() . '/boundary.png';
             $image = imagecreatetruecolor(1, 1);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $before = $client->get('/api.php?action=load')->assertOk()->getJson();
             $uploaded = $client->postMultipart('/image_upload.php?action=upload_device_image', [
                 'device_id' => '1', 'revision' => (string)$before['revision'],
@@ -112,7 +112,7 @@ class DeviceImageTest extends TestCase
         $tempJpg = tempnam(sys_get_temp_dir(), 'test_img_jpg_');
         $im = imagecreatetruecolor(10, 10);
         imagejpeg($im, $tempJpg);
-        imagedestroy($im);
+        unset($im);
 
         try {
             // 3. Upload first image (PNG)
@@ -367,7 +367,11 @@ class DeviceImageTest extends TestCase
 
     public function testDisplayResizePreservesOrientationAlphaAndSmallImages(): void
     {
-        $server = new \Netarium\Tests\TestServer();
+        $prepend = tempnam(sys_get_temp_dir(), 'net_image_lifecycle_');
+        $errorLog = $prepend . '.log';
+        file_put_contents($prepend, '<?php error_reporting(E_ALL); ini_set("display_errors", "0");'
+            . ' ini_set("log_errors", "1"); ini_set("error_log", ' . var_export($errorLog, true) . ');');
+        $server = new \Netarium\Tests\TestServer(null, $prepend);
         try {
             $server->start();
             $client = new TestHttpClient($server->getBaseUrl());
@@ -395,7 +399,7 @@ class DeviceImageTest extends TestCase
                     file_put_contents($path, substr($jpeg, 0, 2) . "\xff\xe1"
                         . pack('n', strlen($exif) + 2) . $exif . substr($jpeg, 2));
                 }
-                imagedestroy($image);
+                unset($image);
                 $load = $client->get('/api.php?action=load')->assertOk()->getJson();
                 $fields = ['device_id' => '1', 'revision' => (string)$load['revision']];
                 if ($imageId !== null) {
@@ -416,9 +420,20 @@ class DeviceImageTest extends TestCase
                 if ($format === 'png') {
                     $decoded = imagecreatefromstring($response->getBody());
                     $this->assertSame(48, (imagecolorat($decoded, 0, 0) >> 24) & 0x7f);
-                    imagedestroy($decoded);
+                    unset($decoded);
                 } else {
                     $this->assertFalse(str_contains($response->getBody(), "Exif\0\0"));
+                }
+                $thumbnail = $client->get('/' . $record['image_url'] . '&size=thumb')->assertStatus(200);
+                $thumbInfo = getimagesizefromstring($thumbnail->getBody());
+                $ratio = min(1, 320 / max($expectedWidth, $expectedHeight));
+                $this->assertSame(max(1, (int)round($expectedWidth * $ratio)), $thumbInfo[0]);
+                $this->assertSame(max(1, (int)round($expectedHeight * $ratio)), $thumbInfo[1]);
+                $this->assertSame('image/' . $format, $thumbInfo['mime']);
+                if ($format === 'png') {
+                    $decoded = imagecreatefromstring($thumbnail->getBody());
+                    $this->assertSame(48, (imagecolorat($decoded, 0, 0) >> 24) & 0x7f);
+                    unset($decoded);
                 }
             }
 
@@ -429,7 +444,7 @@ class DeviceImageTest extends TestCase
                 $oldBytes = $client->get('/' . $oldRecord['image_url'])->getBody();
                 $image = imagecreatetruecolor($width, $height);
                 imagepng($image, $path);
-                imagedestroy($image);
+                unset($image);
                 $client->postMultipart('/image_upload.php?action=upload_device_image', [
                     'device_id' => '1', 'revision' => (string)$before['revision'],
                     'replace_image_id' => (string)$imageId,
@@ -439,8 +454,14 @@ class DeviceImageTest extends TestCase
                 $this->assertSame($oldRecord, $after['device_images'][0]);
                 $this->assertSame($oldBytes, $client->get('/' . $oldRecord['image_url'])->getBody());
             }
+            $this->assertFalse(str_contains(
+                is_file($errorLog) ? (string)file_get_contents($errorLog) : '',
+                'imagedestroy'
+            ), '画像登録・差替え・縮小・サムネイルで非推奨GD呼出しを記録しない');
         } finally {
             $server->stop();
+            @unlink($prepend);
+            @unlink($errorLog);
         }
     }
 

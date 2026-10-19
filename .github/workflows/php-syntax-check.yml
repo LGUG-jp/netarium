@@ -42,3 +42,25 @@ jobs:
           fi
 
           echo "All PHP files passed syntax check successfully."
+
+      - name: Check PowerShell deployment scripts for non-ASCII characters and BOM
+        run: |
+          echo "Checking deployment PowerShell scripts for non-ASCII characters and UTF-8 BOM..."
+          FAILED=0
+          for file in scripts/*.ps1; do
+            if grep -P -n "[^\x00-\x7F]" "$file"; then
+              echo "::error file=$file::Non-ASCII characters detected in $file. Deployment PowerShell scripts must be pure ASCII."
+              FAILED=1
+            fi
+            if head -c 3 "$file" | grep -q $'\xEF\xBB\xBF'; then
+              echo "::error file=$file::UTF-8 BOM detected in $file. Deployment PowerShell scripts must not contain a BOM."
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            echo "::error::PowerShell script encoding validation failed."
+            exit 1
+          fi
+
+          echo "All deployment PowerShell scripts passed encoding check successfully."

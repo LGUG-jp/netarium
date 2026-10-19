@@ -7,7 +7,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 Assert-Administrator
 Assert-WebAdministration
 $pool = 'NetariumDictionaryTest-' + [guid]::NewGuid().ToString('N')
-# TEMPは他のsandbox利用者が削除可能な場合があるため、専用の保護領域をドライブ直下に作る。
+# Create a dedicated protected directory directly under drive root, as TEMP might be cleared by other sandbox users.
 $root = Join-Path ([IO.Path]::GetPathRoot($repo)) $pool
 $data = Join-Path $root 'storage'
 $dictionaryInput = Join-Path $root 'input.txt'
@@ -41,7 +41,7 @@ try {
     [IO.File]::WriteAllText($dictionaryInput, 'invalid-first-input-without-newline', $utf8)
     Invoke-DictionaryCli -Fail
     if ((Test-Path -LiteralPath $directory) -or (Test-Path -LiteralPath $active)) { throw '不正な初回入力が登録状態を作成しました。' }
-    # 初回登録が途中で失敗した場合（例: manifest作成・反映失敗時）、未設定環境を壊さず残置物をロールバックする
+    # If initial registration fails midway (e.g., manifest creation/swap failure), roll back leftovers without breaking the unconfigured state.
     $activeDirectory = Join-Path $data 'password-blocklist.json'
     New-Item -ItemType Directory -Path $activeDirectory -Force | Out-Null
     [IO.File]::WriteAllText($dictionaryInput, "First-local-secret`n", $utf8)
@@ -103,7 +103,7 @@ exit($b->isAvailable() ? 0 : 1);
     $junction = Join-Path $directory 'junction'
     New-Item -ItemType Junction -Path $junction -Target $public | Out-Null
     try { Invoke-DictionaryCli -Fail; Assert-ManifestPreserved $firstManifest } finally { [IO.Directory]::Delete($junction) }
-    # 親のDELETE_CHILDや本文への広範なReadを安全側で拒否する。
+    # Reject parent DELETE_CHILD and broad Read permissions on body to fail safe.
     $savedDataAcl = Get-Acl -LiteralPath $data
     $leaky = Get-Acl -LiteralPath $data
     $leaky.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), 'DeleteSubdirectoriesAndFiles', 'Allow'))
@@ -120,7 +120,7 @@ exit($b->isAvailable() ? 0 : 1);
     Set-Acl -LiteralPath $firstBody -AclObject $savedBodyAcl
     $held = [IO.File]::Open((Join-Path $directory '.management.lock'), 'Open', 'ReadWrite', 'None')
     try { Invoke-DictionaryCli -Fail; Assert-ManifestPreserved $firstManifest } finally { $held.Dispose() }
-    # 本文永続化後にReplaceだけが失敗しても、直前の有効manifestを維持する。
+    # Preserve preceding valid manifest if Replace fails after persisting body content.
     $held = [IO.File]::Open($active, 'Open', 'Read', 'Read')
     try { Invoke-DictionaryCli -Fail; Assert-ManifestPreserved $firstManifest } finally { $held.Dispose() }
     Invoke-DictionaryCli

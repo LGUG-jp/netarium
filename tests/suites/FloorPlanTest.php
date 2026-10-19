@@ -25,7 +25,7 @@ class FloorPlanTest extends TestCase
         $tempPng = tempnam(sys_get_temp_dir(), 'net_fp_');
         $image = imagecreatetruecolor(1, 1);
         imagepng($image, $tempPng);
-        imagedestroy($image);
+        unset($image);
 
         $viewId = 2; // Seeded floor view
 
@@ -134,7 +134,7 @@ class FloorPlanTest extends TestCase
             $path = $server->getTempDir() . DIRECTORY_SEPARATOR . 'busy.png';
             $image = imagecreatetruecolor(16, 16);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $upload = $client->postMultipart('/image_upload.php?action=upload_floor_plan',
                 ['view_id' => '2', 'expected_revision' => (string)$revision],
                 ['floor_plan' => ['path' => $path, 'type' => 'image/png']])->assertOk()->getJson();
@@ -181,7 +181,7 @@ class FloorPlanTest extends TestCase
             $path = $server->getTempDir() . DIRECTORY_SEPARATOR . 'boundary.png';
             $image = imagecreatetruecolor(7000, 16);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $inputBytes = (string)file_get_contents($path);
             $upload = $client->postMultipart('/image_upload.php?action=upload_floor_plan',
                 ['view_id' => '2', 'expected_revision' => (string)$revision],
@@ -223,7 +223,7 @@ class FloorPlanTest extends TestCase
 
             $image = imagecreatetruecolor(32, 16);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $replacement = $client->postMultipart('/image_upload.php?action=upload_floor_plan',
                 ['view_id' => '2', 'expected_revision' => (string)$update['view_revision']],
                 ['floor_plan' => ['path' => $path, 'filename' => 'replacement.png', 'type' => 'image/png']])->assertOk()->getJson();
@@ -298,7 +298,7 @@ class FloorPlanTest extends TestCase
             $path = $server->getTempDir() . DIRECTORY_SEPARATOR . 'scan';
             $photo = imagecreatetruecolor(16, 16);
             imagepng($photo, $path);
-            imagedestroy($photo);
+            unset($photo);
             $photoUpload = $client->postMultipart('/image_upload.php?action=upload_device_image',
                 ['device_id' => '1', 'revision' => (string)$load['revision']],
                 ['image' => ['path' => $path, 'type' => 'image/png']])->assertOk()->getJson();
@@ -309,7 +309,7 @@ class FloorPlanTest extends TestCase
                     imagefill($image, 0, 0, imagecolorallocate($image, 255, 255, 255));
                     imageline($image, 0, 0, $width - 1, $height - 1, imagecolorallocate($image, 0, 0, 0));
                     $format === 'png' ? imagepng($image, $path) : imagejpeg($image, $path, 99);
-                    imagedestroy($image);
+                    unset($image);
                     $input = (string)file_get_contents($path);
                     $rotated = $width === 6614 && $format === 'jpeg';
                     if ($rotated) {
@@ -357,7 +357,7 @@ class FloorPlanTest extends TestCase
                 imagesavealpha($image, true);
                 imagefill($image, 0, 0, imagecolorallocatealpha($image, 20, 80, 150, 100));
                 imagepng($image, $path);
-                imagedestroy($image);
+                unset($image);
                 $upload = $client->postMultipart('/image_upload.php?action=upload_floor_plan',
                     ['view_id' => '2', 'expected_revision' => (string)$revision],
                     ['floor_plan' => ['path' => $path, 'type' => 'image/png']])->assertOk()->getJson();
@@ -366,7 +366,7 @@ class FloorPlanTest extends TestCase
                 $this->assertSame(min(4096, $width), imagesx($decoded));
                 $this->assertSame($width === 64 ? 32 : 26, imagesy($decoded));
                 $this->assertSame(100, imagecolorsforindex($decoded, imagecolorat($decoded, 10, 10))['alpha']);
-                imagedestroy($decoded);
+                unset($decoded);
             }
             $image = imagecreatetruecolor(80, 40);
             foreach ([[0, 0, 39, 19, 255, 0, 0], [40, 0, 79, 19, 0, 255, 0],
@@ -375,7 +375,7 @@ class FloorPlanTest extends TestCase
                 imagefilledrectangle($image, $x1, $y1, $x2, $y2, imagecolorallocate($image, $r, $g, $b));
             }
             imagejpeg($image, $path, 100);
-            imagedestroy($image);
+            unset($image);
             $jpeg = (string)file_get_contents($path);
             $orders = [1 => [0, 1, 2, 3], 2 => [1, 0, 3, 2], 3 => [3, 2, 1, 0],
                 4 => [2, 3, 0, 1], 5 => [0, 2, 1, 3], 6 => [2, 0, 3, 1],
@@ -398,7 +398,7 @@ class FloorPlanTest extends TestCase
                         $this->assertTrue(abs($colors[$order[$i]][$channel] - $actual[$key]) < 25);
                     }
                 }
-                imagedestroy($decoded);
+                unset($decoded);
             }
         } finally {
             $server->stop();
@@ -421,7 +421,7 @@ class FloorPlanTest extends TestCase
             $directory = $server->getTempDir() . '/uploads/floorplans';
             $image = imagecreatetruecolor(20, 10);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $upload = $client->postMultipart('/image_upload.php?action=upload_floor_plan',
                 ['view_id' => '2', 'expected_revision' => (string)$revision],
                 ['floor_plan' => ['path' => $path, 'type' => 'image/png']])->assertOk()->getJson();
@@ -445,7 +445,7 @@ class FloorPlanTest extends TestCase
             $reject(400);
             $image = imagecreatetruecolor(2048, 1024);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             $reject(400, ['X-Test-Low-Memory' => '1']);
             // Lossless noise is under the input limit but exceeds the encoded entry limit.
             $this->writePng($path, 2200, 2200, true);
@@ -454,12 +454,12 @@ class FloorPlanTest extends TestCase
             $reject(400);
             $image = imagecreatetruecolor(32, 16);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             file_put_contents($path, str_repeat('x', 30 * 1024 * 1024), FILE_APPEND);
             $reject(400);
             $image = imagecreatetruecolor(32, 16);
             imagepng($image, $path);
-            imagedestroy($image);
+            unset($image);
             // A write lock forces 409 after conversion; the newly encoded file must be removed.
             $db = new \PDO('sqlite:' . $server->getDbPath());
             $db->beginTransaction();
@@ -501,7 +501,7 @@ class FloorPlanTest extends TestCase
             $tempPng = tempnam(sys_get_temp_dir(), 'net_fp_sha_');
             $image = imagecreatetruecolor(1, 1);
             imagepng($image, $tempPng);
-            imagedestroy($image);
+            unset($image);
 
             $loadRes = $client->get('/api.php?action=load')->assertOk()->getJson();
             $viewRevision = (int)array_column($loadRes['views'], 'resource_revision', 'id')[2];

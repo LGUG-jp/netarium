@@ -27,9 +27,16 @@ final class SecurityHeaders
         header(($config['csp_report_only']
             ? 'Content-Security-Policy-Report-Only: '
             : 'Content-Security-Policy: ') . $policy);
-        header('X-Content-Type-Options: nosniff');
-        header('Referrer-Policy: same-origin');
-        header('X-Frame-Options: SAMEORIGIN');
+        // IISはPHP起動前の拒否応答も保護するため、共通3ヘッダーを一括して所有する。
+        // クライアント由来のHTTP_*ではなく、FastCGIのサーバー変数で判定する。
+        if (
+            PHP_SAPI !== 'cgi-fcgi'
+            || !str_starts_with((string)($_SERVER['SERVER_SOFTWARE'] ?? ''), 'Microsoft-IIS/')
+        ) {
+            header('X-Content-Type-Options: nosniff');
+            header('Referrer-Policy: same-origin');
+            header('X-Frame-Options: SAMEORIGIN');
+        }
 
         // HTTPへHSTSを送らず、HTTPSであっても管理者の選択なしに有効化しない。
         header_remove('Strict-Transport-Security');

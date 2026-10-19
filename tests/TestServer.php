@@ -209,7 +209,9 @@ class TestServer
     {
         $dbFile = $this->dbPath;
 
-        require_once $this->projectRoot . '/bootstrap.php';
+        if (!class_exists(\Netarium\Autoloader::class, false)) {
+            require_once $this->projectRoot . '/bootstrap.php';
+        }
 
         $pdo = new PDO('sqlite:' . $dbFile);
         \Netarium\Core\Database::initialize($pdo);

@@ -177,7 +177,6 @@ class CsvImportExportService
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0', true);
         header('Pragma: no-cache', true);
         header('Expires: 0', true);
-        header('X-Content-Type-Options: nosniff', true);
 
         /*
          * IISやPHPの出力バッファに既存内容が

@@ -35,6 +35,14 @@ HTTPSのCookieは`__Host-netarium_session`（Secure、HttpOnly、SameSite=Strict
 
 PHPのCSPはレスポンス単位のnonceでAPP_CONFIGと印刷styleを許可します。inlineイベント・style属性・evalは許可しません。IIS静的応答は`public/web.config`のnonce不要のCSPを使用し、各PHP入口はその継承を外して二重適用を避けます。`frame-ancestors 'self'`は`X-Frame-Options: SAMEORIGIN`と同じ方針です。HTTPを破壊する`upgrade-insecure-requests`、`block-all-mixed-content`、HTTPS固定の取得先は追加しません。
 
+`X-Content-Type-Options: nosniff`、`X-Frame-Options: SAMEORIGIN`、`Referrer-Policy: same-origin` は、IIS 配下では PHP・静的ファイル・PHP 起動前の拒否応答を含めて IIS が付与します。
+`SecurityHeaders::send()` は FastCGI の `SERVER_SOFTWARE` が `Microsoft-IIS/` で始まる場合にこの 3 ヘッダーを送らず、IIS 以外では PHP が付与します。
+クライアントが送る `Server-Software` などの HTTP ヘッダーは判定に使いません。
+`public/web.config` の各 PHP 入口では CSP 2 種だけを継承除外し、この 3 ヘッダーは継承から外しません。
+画像や CSV・ZIP 配信処理も個別には付与せず、共通処理に従います。
+PHP 入口の追加時には同じ CSP 除外を設定し、正常応答と IIS 要求フィルターの拒否応答で各値が 1 回だけ送られることを [開発ガイド（配備の確認）](development.md#配備スクリプトの確認) で確認します。
+上位の IIS モジュールやプロキシによる後付けは、この構成だけでは制御できません。
+
 更新前の隔離受入ではPHPを`csp_report_only=true`とし、静的応答も`web.config`のCSPの`add`名だけを`Content-Security-Policy-Report-Only`へ変更して違反をブラウザのコンソールで確認します。外部レポート送信先は不要です。ログイン・初期登録・編集・自動保存・画像・印刷・CSV・バックアップ・復元・ガイドを確認した後、PHPをfalse、静的応答の名前を元に戻して同じ操作を強制CSPで受入します。上位IIS／プロキシのCSPも含め、実効ヘッダーが一つだけであることを確認します。
 
 HSTSはHTTPS専用ホストで管理者が選んだ場合だけ使用します。PHP応答で管理する場合は`hsts_max_age=300`から始め、HTTPSでの接続と証明書更新を受入してから86400などへ段階的に延長します。許容範囲は0〜31536000秒です。`includeSubDomains`・`preload`は追加しません。同じホスト名でHTTPとHTTPSを切り替える運用ではnullを維持します。
@@ -45,7 +53,7 @@ HSTSはHTTPS専用ホストで管理者が選んだ場合だけ使用します�
 
 ## 前提条件
 
-- Windows Serverに管理者権限でログインできること。IISのWebサーバー、CGI（FastCGIを含む）、IIS管理ツールとIIS管理用PowerShellを導入する。更新時の要求排出にはIISの要求監視機能も必要
+- Windows Serverに管理者権限でログインできること。IISのWebサーバー、CGI（FastCGIを含む）、IIS管理ツールとIIS管理用PowerShellを導入する。更新時の要求排出にはIISの要求監視機能も必要。配備・運用用PowerShellスクリプト（`scripts/*.ps1`）はWindows PowerShell 5.1（日本語Windows Server／CP932）およびPowerShell 7に対応しており、文字コード誤認防止のため純粋なASCII（BOMなし）で構成されている
 - PHP 8.5.5以上（Windows x64のNon Thread Safe版）の`php.exe`と`php-cgi.exe`、SQLite Library 3.51.3以上を用意する
 - CLIと実IIS FastCGIの両方でArgon2idの生成・照合ができるPHPビルドを用意する。初期costは`memory_cost=19456` KiB、`time_cost=2`、`threads=1`。非対応時は配備を中止し、bcryptへ暗黙に代替しない。CLI／CGIの事前検査だけで実FastCGIの対応・負荷を測定済みとせず、[開発ガイド（配備の確認）](development.md#配備スクリプトの確認)を別途実施する
 - IIS実行IDから`php-cgi.exe`と、Ping利用時は`ping.exe`を実行できること。Ping利用時はPHPの`exec`を無効化しない

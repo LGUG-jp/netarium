@@ -94,9 +94,32 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
         $manifestText = $zip->getFromName('manifest.json', $maxManifestBytes + 1);
         if (!is_string($manifestText) || strlen($manifestText) > $maxManifestBytes) { throw new RuntimeException('Manifest missing/oversize'); }
         $m = json_decode($manifestText, true, 512, JSON_THROW_ON_ERROR);
-        if (($m['format'] ?? null) !== 'netarium-full' || ($m['format_version'] ?? null) !== 1
-            || ($m['schema_version'] ?? null) !== APP_DATABASE_SCHEMA_VERSION
-            || ($m['application_version'] ?? null) !== NETARIUM_VERSION || !is_array($m['files'] ?? null)) {
+        if (!is_array($m) || !\Netarium\Services\Backup\BackupCompatibilityPolicy::isCompatible(
+                \Netarium\Services\Backup\BackupCompatibilityPolicy::FORMAT_FULL,
+                $m['format'] ?? null,
+                $m['format_version'] ?? null,
+                $m['schema_version'] ?? null,
+                $m['application_version'] ?? null,
+                APP_DATABASE_SCHEMA_VERSION,
+                NETARIUM_VERSION
+            )) {
+            throw new RuntimeException(
+                \Netarium\Services\Backup\BackupCompatibilityPolicy::describeFullIncompatibility(
+                    is_array($m) ? ($m['format'] ?? null) : null,
+                    is_array($m) ? ($m['format_version'] ?? null) : null,
+                    is_array($m) ? ($m['schema_version'] ?? null) : null,
+                    is_array($m) ? ($m['application_version'] ?? null) : null,
+                    APP_DATABASE_SCHEMA_VERSION,
+                    NETARIUM_VERSION
+                )
+            );
+        }
+        $expectedManifestKeys = ['application_version', 'counts', 'created_at', 'file_count', 'files', 'format', 'format_version', 'logical_paths', 'schema_version', 'total_bytes'];
+        $manifestKeys = array_keys($m);
+        sort($manifestKeys);
+        $expectedLogicalPaths = ['db' => 'db/data.sqlite', 'floor_plan_directory' => 'floorplans', 'device_image_directory' => 'device_images'];
+        if ($manifestKeys !== $expectedManifestKeys || !is_array($m['files'] ?? null) || !is_array($m['counts'] ?? null)
+            || ($m['logical_paths'] ?? null) !== $expectedLogicalPaths || !is_string($m['created_at'] ?? null) || $m['created_at'] === '') {
             throw new RuntimeException('Incompatible full backup manifest');
         }
         $seen = []; $total = 0;
@@ -113,7 +136,7 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
             if ($name === 'manifest.json') { continue; }
             fullSafeName($name);
             $expected = $m['files'][$name] ?? null;
-            if (!is_array($expected) || !is_int($expected['bytes'] ?? null) || $expected['bytes'] < 0
+            if (!is_array($expected) || count($expected) !== 2 || !is_int($expected['bytes'] ?? null) || $expected['bytes'] < 0
                 || $s['size'] !== $expected['bytes'] || !preg_match('/\A[0-9a-f]{64}\z/', $expected['sha256'] ?? '')) {
                 throw new RuntimeException('Unexpected/malformed ZIP entry');
             }

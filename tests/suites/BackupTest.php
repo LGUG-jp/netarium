@@ -1834,4 +1834,255 @@ class BackupTest extends TestCase
             $this->assertSame($seqRev, (int)$db->query("SELECT value FROM resource_sequences WHERE name = 'revision'")->fetchColumn());
         });
     }
+
+    private function copyProjectTreeWithVersion(string $sourceRoot, string $targetRoot, string $version): void
+    {
+        foreach (['public', 'src', 'templates', 'resources', 'scripts', 'config'] as $dir) {
+            $this->copyDirectoryRecursive($sourceRoot . DIRECTORY_SEPARATOR . $dir, $targetRoot . DIRECTORY_SEPARATOR . $dir);
+        }
+        copy($sourceRoot . DIRECTORY_SEPARATOR . 'bootstrap.php', $targetRoot . DIRECTORY_SEPARATOR . 'bootstrap.php');
+        file_put_contents(
+            $targetRoot . DIRECTORY_SEPARATOR . 'version.php',
+            "<?php\n\ndeclare(strict_types=1);\n\nconst NETARIUM_VERSION = " . var_export($version, true) . ";\n"
+        );
+    }
+
+    private function copyDirectoryRecursive(string $source, string $destination): void
+    {
+        if (!is_dir($destination)) {
+            mkdir($destination, 0700, true);
+        }
+        foreach (scandir($source) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $srcPath = $source . DIRECTORY_SEPARATOR . $entry;
+            $dstPath = $destination . DIRECTORY_SEPARATOR . $entry;
+            if (is_dir($srcPath)) {
+                $this->copyDirectoryRecursive($srcPath, $dstPath);
+            } else {
+                copy($srcPath, $dstPath);
+            }
+        }
+    }
+
+    private function removeTreeRecursive(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach (scandir($dir) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+            if (is_dir($path) && !is_link($path)) {
+                $this->removeTreeRecursive($path);
+            } else {
+                @unlink($path);
+            }
+        }
+        @rmdir($dir);
+    }
+
+    public function testVersionCompatibilityPolicyAndCrossVersionWebRestore(): void
+    {
+        $policy = \Netarium\Services\Backup\BackupCompatibilityPolicy::class;
+        $this->assertTrue($policy::isCompatible('netarium-config', 'netarium-config', 1, 11, '1.0.0', 11, '1.0.0'));
+        $this->assertTrue($policy::isCompatible('netarium-config', 'netarium-config', 1, 11, '1.0.0', 11, '1.0.1'));
+        $this->assertTrue($policy::isCompatible('netarium-config', 'netarium-config', 1, 11, '1.0.1', 11, '1.0.1'));
+        $this->assertTrue($policy::isCompatible('netarium-full', 'netarium-full', 1, 11, '1.0.0', 11, '1.0.0'));
+        $this->assertTrue($policy::isCompatible('netarium-full', 'netarium-full', 1, 11, '1.0.0', 11, '1.0.1'));
+        $this->assertTrue($policy::isCompatible('netarium-full', 'netarium-full', 1, 11, '1.0.1', 11, '1.0.1'));
+
+        foreach ([
+            ['netarium-config', 'netarium-config', 1, 11, '1.0.1', 11, '1.0.0'],
+            ['netarium-full', 'netarium-full', 1, 11, '1.0.1', 11, '1.0.0'],
+            ['netarium-config', 'netarium-config', 1, 11, '0.3.0', 11, '1.0.0'],
+            ['netarium-config', 'netarium-config', 1, 11, '0.3.0', 11, '1.0.1'],
+            ['netarium-config', 'netarium-config', 1, 11, '1.0.0', 11, '1.0.2'],
+            ['netarium-config', 'netarium-config', 1, 11, '1.0.2', 11, '1.0.1'],
+            ['netarium-config', 'netarium-config', 1, 11, '1.0.2', 11, '1.0.2'],
+            ['netarium-config', 'netarium-config', 1, 10, '1.0.0', 11, '1.0.1'],
+            ['netarium-config', 'netarium-config', 2, 11, '1.0.0', 11, '1.0.1'],
+            ['netarium-config', 'netarium-full', 1, 11, '1.0.0', 11, '1.0.1'],
+            ['netarium-full', 'netarium-config', 1, 11, '1.0.0', 11, '1.0.1'],
+        ] as [$expectedFormat, $actualFormat, $formatVer, $srcSchema, $srcApp, $dstSchema, $dstApp]) {
+            $this->assertFalse(
+                $policy::isCompatible($expectedFormat, $actualFormat, $formatVer, $srcSchema, $srcApp, $dstSchema, $dstApp),
+                "Unexpected compatibility for {$actualFormat} v{$formatVer} {$srcApp}(schema {$srcSchema}) -> {$dstApp}(schema {$dstSchema})"
+            );
+        }
+
+        $repoRoot = (string)realpath(dirname(__DIR__, 2));
+        $v101AppRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'netarium_v101_app_' . bin2hex(random_bytes(6));
+        $this->copyProjectTreeWithVersion($repoRoot, $v101AppRoot, '1.0.1');
+
+        $server100 = new \Netarium\Tests\TestServer($repoRoot);
+        $server101 = new \Netarium\Tests\TestServer($v101AppRoot);
+        $originalClient = $this->client;
+
+        try {
+            $server100->start();
+            $server101->start();
+
+            $client100 = new TestHttpClient($server100->getBaseUrl());
+            $client101 = new TestHttpClient($server101->getBaseUrl());
+            $viewer101 = new TestHttpClient($server101->getBaseUrl());
+            $this->assertTrue($client100->login('admin', 'admin123'));
+            $this->assertTrue($client101->login('admin', 'admin123'));
+            $this->assertTrue($viewer101->login('viewer', 'viewer123'));
+
+            [$db100, $floorDir100, $imageDir100, $imageName100] = $this->seedBackupImages($server100, 1);
+            $db100->exec("INSERT INTO canvas_notes (id, view_id, text) VALUES (1, 1, 'v1.0.0構成メモ')");
+            $db100->exec("INSERT INTO link_systems (id, name, color_key) VALUES (1, 'v1.0.0基幹系統', 'indigo')");
+            $db100->exec('UPDATE links SET system_id = 1');
+            $extraImageName = sprintf('%032x.png', 202);
+            $missingImageName = sprintf('%032x.png', 203);
+            $pngBytes = (string)file_get_contents($imageDir100 . DIRECTORY_SEPARATOR . $imageName100);
+            file_put_contents($imageDir100 . DIRECTORY_SEPARATOR . $extraImageName, $pngBytes);
+            file_put_contents($imageDir100 . DIRECTORY_SEPARATOR . $missingImageName, $pngBytes);
+            $now = date(DATE_ATOM);
+            $insertImg = $db100->prepare(
+                'INSERT INTO device_images (device_id, stored_name, mime_type, file_size, image_width, image_height, sort_order, created_at, updated_at) VALUES (1, ?, ?, ?, 1, 1, ?, ?, ?)'
+            );
+            $insertImg->execute([$extraImageName, 'image/png', strlen($pngBytes), 2, $now, $now]);
+            $insertImg->execute([$missingImageName, 'image/png', strlen($pngBytes), 3, $now, $now]);
+
+            $zip100Path = $server100->getTempDir() . DIRECTORY_SEPARATOR . 'v100-config.zip';
+            file_put_contents($zip100Path, $client100->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($zip100Path) === true);
+            $manifest100 = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $this->assertSame('1.0.0', $manifest100['application_version']);
+            $this->assertSame(11, $manifest100['schema_version']);
+            $zip->close();
+
+            [$db101, $floorDir101, $imageDir101] = $this->seedBackupImages($server101, 1);
+            // extraImageName has mismatched content of same length; missingImageName is absent on v1.0.1
+            file_put_contents($imageDir101 . DIRECTORY_SEPARATOR . $extraImageName, str_repeat('X', strlen($pngBytes)));
+            $unreferencedName = sprintf('%032x.png', 299);
+            file_put_contents($imageDir101 . DIRECTORY_SEPARATOR . $unreferencedName, $pngBytes);
+
+            // Advance counters and modify data on v1.0.1 before restoring v1.0.0 ZIP
+            $db101->exec("UPDATE resource_sequences SET value = 500 WHERE name = 'devices'");
+            $db101->exec("UPDATE devices SET name = 'v1.0.1変更後機器' WHERE id = 1");
+            $usersBefore101 = $db101->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $filesBefore101 = $this->restoreFiles($server101->getTempDir() . '/uploads');
+
+            // 1. Restore v1.0.0 Web ZIP into v1.0.1 -> must succeed
+            $preview101 = $client101->postMultipart(
+                '/api.php?action=preview_backup_restore',
+                [],
+                ['backup_zip' => ['path' => $zip100Path, 'filename' => 'v100-config.zip', 'type' => 'application/zip']]
+            )->assertStatus(200)->getJson();
+
+            $this->assertSame('1.0.0', $preview101['backup']['application_version']);
+            $this->assertSame(2, $preview101['image_resolution']['matched']);
+            $this->assertSame(1, $preview101['image_resolution']['missing']);
+            $this->assertSame(1, $preview101['image_resolution']['mismatched']);
+
+            $client101->postJson('/api.php?action=commit_backup_restore', [
+                'restore_token' => $preview101['restore_token'],
+                'confirmation' => 'バックアップから復元',
+            ])->assertStatus(200);
+
+            // Verify restored data, non-destructive images, preserved sessions/users, and ID counter protection on v1.0.1
+            $loaded101 = $client101->get('/api.php?action=load')->assertOk()->getJson();
+            $viewer101->get('/api.php?action=load')->assertOk();
+            $this->assertSame('v1.0.0構成メモ', $loaded101['canvas_notes'][0]['text']);
+            $this->assertSame('v1.0.0基幹系統', $loaded101['link_systems'][0]['name']);
+            $this->assertSame($usersBefore101, $db101->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($filesBefore101, $this->restoreFiles($server101->getTempDir() . '/uploads'));
+            $this->assertSame(1, (int)$db101->query('SELECT COUNT(*) FROM device_images')->fetchColumn());
+            $this->assertSame($imageName100, $db101->query('SELECT stored_name FROM device_images')->fetchColumn());
+            $this->assertSame(500, (int)$db101->query("SELECT value FROM resource_sequences WHERE name = 'devices'")->fetchColumn());
+
+            // Creating a new device after restore must allocate ID 501 (never reusing <= 500)
+            $client101->postJson('/api.php?action=save_resources', [
+                'devices' => [[
+                    'operation' => 'create',
+                    'id' => 800001,
+                    'device' => ['id' => 800001, 'name' => '復元後新規機器', 'type' => 'switch', 'ip' => ''],
+                ]],
+                'views' => [],
+            ])->assertStatus(200);
+            $this->assertSame(501, (int)$db101->query('SELECT MAX(id) FROM devices')->fetchColumn());
+
+            // 2. Export v1.0.1 Web ZIP and restore v1.0.1 -> v1.0.1 (same-version)
+            $zip101Path = $server101->getTempDir() . DIRECTORY_SEPARATOR . 'v101-config.zip';
+            file_put_contents($zip101Path, $client101->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($zip101Path) === true);
+            $manifest101 = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $this->assertSame('1.0.1', $manifest101['application_version']);
+            $zip->close();
+
+            $previewSame101 = $client101->postMultipart(
+                '/api.php?action=preview_backup_restore',
+                [],
+                ['backup_zip' => ['path' => $zip101Path, 'filename' => 'v101-config.zip', 'type' => 'application/zip']]
+            )->assertStatus(200)->getJson();
+            $this->assertSame('1.0.1', $previewSame101['backup']['application_version']);
+            $client101->postJson('/api.php?action=commit_backup_restore', [
+                'restore_token' => $previewSame101['restore_token'],
+                'confirmation' => 'バックアップから復元',
+            ])->assertStatus(200);
+
+            // 3. Reverse restore v1.0.1 -> v1.0.0 must be rejected without mutating v1.0.0 state
+            $stateBefore100 = $this->idBoundaryState($db100);
+            $usersBefore100 = $db100->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $filesBefore100 = $this->restoreFiles($server100->getTempDir() . '/uploads');
+            $reverseRes = $client100->postMultipart(
+                '/api.php?action=preview_backup_restore',
+                [],
+                ['backup_zip' => ['path' => $zip101Path, 'filename' => 'v101-config.zip', 'type' => 'application/zip']]
+            )->assertStatus(400)->getJson();
+            $this->assertStringContains('対応するバックアップ元アプリ版: 1.0.0', (string)($reverseRes['error'] ?? ''));
+            $this->assertSame($stateBefore100, $this->idBoundaryState($db100));
+            $this->assertSame($usersBefore100, $db100->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($filesBefore100, $this->restoreFiles($server100->getTempDir() . '/uploads'));
+
+            // 4. Rejections on v1.0.1: unsupported versions, schema/format mismatch, unknown fields
+            $stateBeforeReject101 = $this->idBoundaryState($db101);
+            $filesBeforeReject101 = $this->restoreFiles($server101->getTempDir() . '/uploads');
+            $rejectionMutations = [
+                'legacy-0.3.0' => static function (array &$doc, array &$m): void { $m['application_version'] = '0.3.0'; },
+                'future-1.0.2' => static function (array &$doc, array &$m): void { $m['application_version'] = '1.0.2'; },
+                'future-2.0.0' => static function (array &$doc, array &$m): void { $m['application_version'] = '2.0.0'; },
+                'schema-10' => static function (array &$doc, array &$m): void { $m['schema_version'] = 10; },
+                'schema-12' => static function (array &$doc, array &$m): void { $m['schema_version'] = 12; },
+                'format-v2' => static function (array &$doc, array &$m): void { $m['format_version'] = 2; },
+                'unknown-manifest-key' => static function (array &$doc, array &$m): void { $m['unexpected_field'] = 'x'; },
+                'unknown-summary-key' => static function (array &$doc, array &$m): void { $m['summary']['unexpected'] = 1; },
+                'unknown-file-key' => static function (array &$doc, array &$m): void { $m['files'][0]['unexpected'] = 'x'; },
+                'unknown-doc-key' => static function (array &$doc, array &$m): void { $doc['unexpected_field'] = 'x'; },
+            ];
+            foreach ($rejectionMutations as $label => $mutate) {
+                $badZip = $server101->getTempDir() . DIRECTORY_SEPARATOR . "reject-{$label}.zip";
+                copy($zip100Path, $badZip);
+                $this->rewriteBackupZip($badZip, $mutate);
+                $errJson = $client101->postMultipart(
+                    '/api.php?action=preview_backup_restore',
+                    [],
+                    ['backup_zip' => ['path' => $badZip, 'filename' => "{$label}.zip", 'type' => 'application/zip']]
+                )->assertStatus(400)->getJson();
+                if (in_array($label, ['legacy-0.3.0', 'future-1.0.2', 'future-2.0.0', 'schema-10', 'schema-12'], true)) {
+                    $this->assertStringContains('対応するバックアップ元アプリ版: 1.0.1, 1.0.0', (string)($errJson['error'] ?? ''));
+                }
+            }
+            $this->assertSame($stateBeforeReject101, $this->idBoundaryState($db101));
+            $this->assertSame($filesBeforeReject101, $this->restoreFiles($server101->getTempDir() . '/uploads'));
+            $client101->get('/api.php?action=load')->assertOk();
+            $viewer101->get('/api.php?action=load')->assertOk();
+        } finally {
+            $this->client = $originalClient;
+            $db100 = null;
+            $db101 = null;
+            $server100->stop();
+            $server101->stop();
+            $this->removeTreeRecursive($v101AppRoot);
+        }
+    }
 }

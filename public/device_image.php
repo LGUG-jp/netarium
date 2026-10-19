@@ -135,8 +135,8 @@ try {
                         imagesavealpha($thumbImage, true);
                     }
                     imagecopyresampled($thumbImage, $srcImage, 0, 0, 0, 0, $targetW, $targetH, $origW, $origH);
-                    imagedestroy($srcImage);
                     $srcImage = $thumbImage;
+                    unset($thumbImage);
                 }
 
                 if ($mimeType === 'image/jpeg') {
@@ -146,7 +146,7 @@ try {
                     imagesavealpha($srcImage, true);
                     imagepng($srcImage, $thumbPath, 8);
                 }
-                imagedestroy($srcImage);
+                unset($srcImage);
             }
         }
 
@@ -164,7 +164,6 @@ try {
     header('Content-Type: ' . $mimeType);
     header('Content-Length: ' . (string)$actualSize);
     header('Content-Disposition: inline');
-    header('X-Content-Type-Options: nosniff');
 
     readfile($servePath);
     $operationGate->release();
