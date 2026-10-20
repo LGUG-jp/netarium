@@ -60,7 +60,7 @@
                     <p id="backup-restore-file-error" class="form-error" aria-live="polite" hidden></p>
 
                     <p id="backup-restore-file-help">
-                        netarium-config形式1（DBスキーマ11）の構成情報ZIPを選択してください。復元先と同一版または明示的に互換検証された版（v1.0.1ではv1.0.0／v1.0.1、v1.0.0ではv1.0.0）のZIPを受け付けます。旧画像同梱ZIP（形式2〜7）やv0.3.0以前のZIPは非対応です。
+                        netarium-config形式1（DBスキーマ11）の構成情報ZIPを選択してください。復元先と同一版または明示的に互換検証された版（v1.0.2ではv1.0.0／v1.0.1／v1.0.2、v1.0.1ではv1.0.0／v1.0.1、v1.0.0ではv1.0.0）のZIPを受け付けます。新版から旧版への逆方向復元、旧画像同梱ZIP（形式2〜7）やv0.3.0以前のZIPは非対応です。
                         最大<?= (int)($storageCapacity['backup']['max_zip_bytes'] / (1024 * 1024)) ?>MiB、
                         展開後最大<?= (int)(($storageCapacity['backup']['max_uncompressed_bytes'] ?? (64 * 1024 * 1024)) / (1024 * 1024)) ?>MiB。JSON 2ファイルのみを受け付けます。
                     </p>
