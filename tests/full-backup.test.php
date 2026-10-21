@@ -248,7 +248,7 @@ try {
     // Reverse restore (v1.0.1 archive on v1.0.0 worker) and unverified versions on v1.0.1 worker must fail closed.
     $rejectReverse = $root . '/reject-real-101-on-100'; mkdir($rejectReverse);
     rpc($workers[0], ['command' => 'extract', 'archive' => $archive101, 'root' => $rejectReverse, 'max_bytes' => 10000000, 'max_files' => 100], false);
-    foreach (['0.3.0', '1.0.2', '2.0.0'] as $badVer) {
+    foreach (['0.3.0', '1.0.2', '1.0.3', '2.0.0'] as $badVer) {
         $badVerZip = $root . '/reject-v101-' . $badVer . '.zip'; copy($archive, $badVerZip);
         $zip = new ZipArchive(); check($zip->open($badVerZip) === true, 'Cannot open badVerZip');
         $m = $manifest; $m['application_version'] = $badVer;
@@ -290,6 +290,39 @@ try {
         $destination = $root . '/reject-102-dest-' . $unsupportedVersion; mkdir($destination);
         rpc($worker102, ['command' => 'extract', 'archive' => $badZip, 'root' => $destination, 'max_bytes' => 10000000, 'max_files' => 100], false);
     }
+    $v103App = $root . '/app-v103'; mkdir($v103App, 0700);
+    mkdir($v103App . '/scripts', 0700);
+    copy(dirname(__DIR__) . '/bootstrap.php', $v103App . '/bootstrap.php');
+    file_put_contents($v103App . '/version.php', "<?php\ndeclare(strict_types=1);\nconst NETARIUM_VERSION = '1.0.3';\n");
+    copyTree(dirname(__DIR__) . '/src', $v103App . '/src');
+    copy(dirname(__DIR__) . '/scripts/full-backup-helper.php', $v103App . '/scripts/full-backup-helper.php');
+    $pipes103 = [];
+    $process103 = proc_open([PHP_BINARY, $v103App . '/scripts/full-backup-helper.php', $v103App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-v103', 'a']], $pipes103, null, $environment);
+    check(is_resource($process103), 'Cannot launch v1.0.3 helper');
+    $worker103 = [$process103, $pipes103]; $workers[] = $worker103;
+    $archive103 = $root . '/good-103.zip';
+    rpc($worker103, ['command' => 'pack', 'root' => $stage, 'destination' => $archive103]);
+    foreach (['1.0.0' => $archive, '1.0.1' => $archive101, '1.0.2' => $archive102, '1.0.3' => $archive103] as $sourceVersion => $sourceArchive) {
+        $destination = $root . '/restored-' . $sourceVersion . '-on-103'; mkdir($destination);
+        $extracted = rpc($worker103, ['command' => 'extract', 'archive' => $sourceArchive, 'root' => $destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+        check($extracted['application_version'] === $sourceVersion, 'Source version changed on v1.0.3 restore');
+        check(hash_file('sha256', $destination . '/db/data.sqlite') === hash_file('sha256', $stage . '/db/data.sqlite'), 'Database bytes changed on v1.0.3 restore');
+        foreach ($imageFiles as $name => $bytes) {
+            check(hash_file('sha256', $destination . '/' . $name) === hash('sha256', $bytes), 'Image bytes changed on v1.0.3 restore');
+        }
+    }
+    $reverse103On102 = $root . '/reject-103-on-102'; mkdir($reverse103On102);
+    rpc($worker102, ['command' => 'extract', 'archive' => $archive103, 'root' => $reverse103On102, 'max_bytes' => 10000000, 'max_files' => 100], false);
+    foreach (['1.0.4', '0.3.0'] as $unsupportedVersion) {
+        $badZip = $root . '/reject-103-' . $unsupportedVersion . '.zip'; copy($archive103, $badZip);
+        $zip = new ZipArchive(); check($zip->open($badZip) === true, 'Cannot open rejection ZIP');
+        $badManifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+        $badManifest['application_version'] = $unsupportedVersion;
+        $zip->addFromString('manifest.json', json_encode($badManifest, JSON_THROW_ON_ERROR)); $zip->close();
+        $destination = $root . '/reject-103-dest-' . $unsupportedVersion; mkdir($destination);
+        rpc($worker103, ['command' => 'extract', 'archive' => $badZip, 'root' => $destination, 'max_bytes' => 10000000, 'max_files' => 100], false);
+    }
     check(hash_file('sha256', $dbFile) === $liveDbHash && hash_file('sha256', $dbFile . '-wal') === $liveWalHash, 'Backup changed live DB/WAL bytes');
     foreach ($liveRows as $table => $rows) {
         check($db->query("SELECT * FROM $table")->fetchAll(PDO::FETCH_ASSOC) === $rows, 'Backup changed live rows: ' . $table);
@@ -298,7 +331,7 @@ try {
         check(hash_file('sha256', $storage . '/uploads/' . $name) === hash('sha256', $bytes), 'Backup changed live image');
     }
     $db = null;
-    echo "PASS full backup: schema10->11 snapshot completion, 14 image fault cases, 15 archive fault cases, v1.0.0/v1.0.1/v1.0.2->v1.0.2 and existing compatibility, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
+    echo "PASS full backup: schema10->11 snapshot completion, 14 image fault cases, 15 archive fault cases, v1.0.0/v1.0.1/v1.0.2/v1.0.3->v1.0.3 and existing compatibility, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
 } finally {
     if (isset($copy)) { $copy = null; } if (isset($db)) { $db = null; }
     foreach ($workers as [$process, $pipes]) {
