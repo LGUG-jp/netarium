@@ -114,7 +114,7 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器/ビュー/系統/メモ）の保存、リソースリビジョン競合、内部仮名衝突回避、バッチ rollback、隔離PHPでmbstring関数不在時のUnicode保存・ロード・ZIP復元（iconv／PCRE経路） |
-| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による`v1.0.0→v1.0.1`および同一版復元・逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
+| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`・`v1.0.1`・`v1.0.2 → v1.0.2`復元・逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
@@ -131,6 +131,56 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 Web 復元の試験では、24MiB／展開後64MiB／2ファイルの境界、スキーマ・アプリ版不一致、初回digest補完、画像欠損・不一致時の参照除外とID表示、全セッション維持を確認対象とします。ここに試験成功の証拠は追記していません。実IIS／実ブラウザでの新プレビューと復元後再読み込みは未確認です。固定仕様は[運用ガイド（復元）](../docs/operations.md#復元)を参照してください。
 
 HTTPS分岐のHTTP試験は専用prependでサーバー変数を合成します。実TLS、IIS／FastCGI、ブラウザのCookie prefix受理・CSP違反・HSTS記憶は[開発ガイド（配備の確認）](../docs/development.md#配備スクリプトの確認)で別に確認します。JavaScriptのテンプレートfixtureは実`registerStaticListeners()`を使い、inlineイベント文字列を評価しません。
+
+### 公開タグ実プログラムのバックアップ互換性smoke
+
+通常の互換性回帰は現コードの版定数を切り替えた隔離 fixture を使います。
+実タグ smoke では、Public の直前版 `v1.0.1` と最古の対応版 `v1.0.0` を読取専用で取得し、次の環境変数で実プログラムのコピー元を指定します。
+既存の `tmp/`、配備先、本番 storage は使いません。
+下記は候補リポジトリのルートから実行する PowerShell の例です。
+公開先への書込み・タグ作成・IIS 設定変更は行いません。
+
+```powershell
+$smokeRoot = Join-Path $env:TEMP ('netarium-backup-smoke-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $smokeRoot | Out-Null
+git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.0.0:refs/backup-compat/public-v1.0.0 refs/tags/v1.0.1:refs/backup-compat/public-v1.0.1
+git archive --format=zip --output="$smokeRoot/v100.zip" refs/backup-compat/public-v1.0.0
+git archive --format=zip --output="$smokeRoot/v101.zip" refs/backup-compat/public-v1.0.1
+Expand-Archive -LiteralPath "$smokeRoot/v100.zip" -DestinationPath "$smokeRoot/v100"
+Expand-Archive -LiteralPath "$smokeRoot/v101.zip" -DestinationPath "$smokeRoot/v101"
+$env:NETARIUM_BACKUP_V100_ROOT = "$smokeRoot/v100"
+$env:NETARIUM_BACKUP_V101_ROOT = "$smokeRoot/v101"
+try {
+    @'
+<?php
+require "tests/TestCase.php";
+require "tests/TestHttpClient.php";
+require "tests/TestServer.php";
+require "tests/suites/BackupTest.php";
+$suite = new \Netarium\Tests\Suites\BackupTest(new \Netarium\Tests\TestHttpClient("http://127.0.0.1"));
+$suite->testVersionCompatibilityPolicyAndCrossVersionWebRestore();
+echo "PASS actual-tag Web ZIP smoke\n";
+'@ | php
+    if ($LASTEXITCODE -ne 0) { throw 'Actual-tag Web ZIP smoke failed' }
+    php tests/full-backup.test.php
+    if ($LASTEXITCODE -ne 0) { throw 'Actual-tag full ZIP smoke failed' }
+    powershell -NoProfile -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
+    if ($LASTEXITCODE -ne 0) { throw 'Actual-tag full CLI smoke failed' }
+} finally {
+    Remove-Item Env:NETARIUM_BACKUP_V100_ROOT, Env:NETARIUM_BACKUP_V101_ROOT -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+}
+```
+
+取得 ref の SHA は `v1.0.0 = 対象変更`、`v1.0.1 = 対象変更` と照合します。
+Web smoke は実タグの HTTP 出力で ZIP を生成し、候補の preview／commit を実行します。
+元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認します。
+完全 ZIP smoke は実タグの helper で生成した ZIP を候補で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否を確認します。
+PowerShell テストは実タグ `v1.0.1` の `backup-full.ps1` で ZIP を作り、候補の `restore-full.ps1` による DB・画像・利用者復元、セッション失効、逆方向の IIS 停止前拒否を確認します（IIS 操作は既存モック）。
+候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
+これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
+実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.0.2` にした状態で結果を記録してください。
+
 
 ---
 

@@ -169,6 +169,20 @@ test('release専用ツールとworkflowを除外し、manifest-dirを公開候�
     assert.ok(!fs.existsSync(path.join(output, 'public-snapshot-sha256.json')));
 });
 
+test('Public finalizeの実装・workflow・テストはexport後も残り、非公開release toolingは除外される', t => {
+    const included = ['scripts/release-finalize.mjs', '.github/workflows/release-finalize.yml', 'tests/release-finalize.test.mjs'];
+    const excluded = ['scripts/release-sync.mjs', 'scripts/release-control.mjs', 'tests/release-sync.test.mjs', 'tests/release-control.test.mjs',
+        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', '.github/workflows/release-check.yml'];
+    const files = Object.fromEntries([
+        ...included.map(name => [name, fs.readFileSync(new URL('../' + name, import.meta.url), 'utf8')]),
+        ...excluded.map(name => [name, 'Excluded release implementation\n'])
+    ]);
+    const { output, result } = snapshotFixture(t, '# Public finalize fixture\n', files);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    for (const name of included) assert.equal(fs.readFileSync(path.join(output, name), 'utf8'), files[name], name);
+    for (const name of excluded) assert.ok(!fs.existsSync(path.join(output, name)), name);
+});
+
 for (const prefix of ['ghp_', 'ghs_', 'github_pat_']) {
     test(`${prefix} tokenは拡張子にかかわらず公開前に拒否し、値を出力しない`, t => {
         const token = prefix + 'Z'.repeat(40);

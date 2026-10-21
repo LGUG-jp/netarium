@@ -1,0 +1,41 @@
+name: Finalize release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Recovery only: MAJOR.MINOR.PATCH'
+        required: true
+        type: string
+
+permissions: {}
+
+# One run per merge commit: a pending finalizer must never be replaced by an
+# unrelated later push. The finalizer is idempotent and refuses older versions.
+concurrency:
+  group: release-finalize-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    # Recovery dispatch must also run reviewed main code, never a branch or tag copy.
+    if: github.repository == 'LGUG-jp/netarium' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Finalize reviewed release
+        run: node scripts/release-finalize.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
