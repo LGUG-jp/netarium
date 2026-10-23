@@ -39,6 +39,22 @@ php tests/full-backup.test.php
 
 一時的な隔離ディレクトリで完全バックアップヘルパープロセスのRPC動作を直接検証します。WALスナップショット採取、users/パスワードハッシュ・権限の復元、未参照を含む画像実体の保持、ロック競合排他、およびZIP改ざん・欠損・余分パス・zip-slip・スキーマ/アプリ不一致・破損・展開上限・カウント不一致・整合性異常時の前段拒否と本番DB不変を検証します。
 
+<a id="docker停止型完全バックアップ復元ランナーテスト259"></a>
+
+### Docker停止型完全バックアップ/復元ランナーテスト
+
+```powershell
+php tests/docker-backup-runners.test.php
+```
+
+隔離された一時ディレクトリで、`docker-backup-runner.php` による完全バックアップZIPの作成（SQLite VACUUM INTOスナップショット＋画像コピー＋manifest.json梱包）および `docker-restore-runner.php` による事前検証（`--verify-only`）・アトミック復元（`--apply`）、既存セッションの破棄、不整合・破損ZIPに対するロールバック保護、および全損復旧（空ホストストレージへの復元）を検証します。
+
+<a id="docker-ci-スモークテスト59"></a>
+
+### Docker CI スモークテスト
+
+Linuxコンテナ環境またはCI上で、Docker Composeによる起動、ヘルスチェック（`public/healthcheck.php`）、更新・自動ロールバックCLI（`scripts/docker-update.sh`）、全損復旧（空Volumeへの`docker-restore.sh`）、および公開スナップショットからのDockerビルドを検証します。
+
 ### JavaScript 単体・結合テスト
 ```powershell
 # 全件実行
@@ -114,7 +130,7 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器/ビュー/系統/メモ）の保存、リソースリビジョン競合、内部仮名衝突回避、バッチ rollback、隔離PHPでmbstring関数不在時のUnicode保存・ロード・ZIP復元（iconv／PCRE経路） |
-| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`・`v1.0.1`・`v1.0.2`・`v1.0.3 → v1.0.3`復元・逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
+| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`〜`v1.0.3 → v1.1.0`・`v1.1.0`同士の復元、逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
@@ -139,6 +155,10 @@ HTTPS分岐のHTTP試験は専用prependでサーバー変数を合成します�
 既存の `tmp/`、配備先、本番 storage は使いません。
 下記は候補リポジトリのルートから実行する PowerShell の例です。
 公開先への書込み・タグ作成・IIS 設定変更は行いません。
+
+v1.1.0 候補では、直前公開版 `v1.0.3`（`対象変更`）を同様に取得・展開し、`NETARIUM_BACKUP_V103_ROOT` に指定します。
+Web ZIP と完全 ZIP の既存テストは、指定された公開版実プログラムで生成した ZIP の `1.0.3 → 1.1.0` 復元と候補同士の復元、逆方向・未知版・破損 ZIP 拒否を確認します。
+この結果は IIS 実機採取 ZIP の Docker 復元とは区別します。
 
 ```powershell
 $smokeRoot = Join-Path $env:TEMP ('netarium-backup-smoke-' + [guid]::NewGuid().ToString('N'))
@@ -179,7 +199,7 @@ Web smoke は実タグの HTTP 出力で ZIP を生成し、候補の preview／
 PowerShell テストは実タグ `v1.0.1` の `backup-full.ps1` で ZIP を作り、候補の `restore-full.ps1` による DB・画像・利用者復元、セッション失効、逆方向の IIS 停止前拒否を確認します（IIS 操作は既存モック）。
 候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
 これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
-実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.0.3` にした状態で結果を記録してください。
+実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.1.0` にした状態で結果を記録してください。
 
 
 ---

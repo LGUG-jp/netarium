@@ -548,24 +548,37 @@ if ($preparePath !== null) {
         1 => $prepareLogHandle,
         2 => $prepareLogHandle,
     ];
-    $cmd = sprintf(
-        '"%s" -d session.save_path="%s" -d upload_max_filesize=128M -d post_max_size=128M -d memory_limit=512M -d max_execution_time=300 -S 127.0.0.1:%d -t "%s"',
+    $cmd = [
         $phpBinary,
-        $preparePath . DIRECTORY_SEPARATOR . 'sessions',
-        $port,
-        $docRoot
-    );
+        '-d',
+        sprintf('session.save_path=%s', $preparePath . DIRECTORY_SEPARATOR . 'sessions'),
+        '-d',
+        'upload_max_filesize=128M',
+        '-d',
+        'post_max_size=128M',
+        '-d',
+        'memory_limit=512M',
+        '-d',
+        'max_execution_time=300',
+        '-S',
+        sprintf('127.0.0.1:%d', $port),
+        '-t',
+        $docRoot,
+    ];
     $parentEnv = getenv();
     $env = array_merge(is_array($parentEnv) ? $parentEnv : [], [
         'NETARIUM_STORAGE_DIR' => $preparePath,
         'NETARIUM_DB_FILE' => $existingDbFile,
         'TEMP' => sys_get_temp_dir(),
         'TMP' => sys_get_temp_dir(),
-        'SystemRoot' => getenv('SystemRoot') ?: 'C:\Windows',
     ]);
+    if (stripos(PHP_OS, 'WIN') === 0) {
+        $env['SystemRoot'] = getenv('SystemRoot') ?: 'C:\Windows';
+    }
     $proc = proc_open($cmd, $descriptors, $pipes, $docRoot, $env);
     if (!is_resource($proc)) {
-        fwrite(STDERR, "一時サーバー起動に失敗しました\n");
+        $command = implode(' ', array_map('escapeshellarg', $cmd));
+        fwrite(STDERR, "一時サーバー起動に失敗しました: {$command}\n");
         exit(1);
     }
     // サーバーの応答待機

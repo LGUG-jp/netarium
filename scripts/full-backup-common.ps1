@@ -23,10 +23,23 @@ function Assert-FullPath {
     return $p
 }
 
+function Resolve-FullPhpPath {
+    param([string]$PhpPath)
+    if ([string]::IsNullOrWhiteSpace($PhpPath)) {
+        throw 'PHP CLI executable not found. Specify -PhpPath C:\php\php.exe or add php.exe to PATH.'
+    }
+    $command = Get-Command -Name $PhpPath -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command -or [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+        throw "PHP CLI executable not found: $PhpPath. Specify the installed php.exe with -PhpPath C:\php\php.exe, or add php.exe to PATH."
+    }
+    return [string]$command.Source
+}
+
 function Start-FullWorker {
     param([string]$PhpPath, [string]$InstallRoot)
     $info = New-Object Diagnostics.ProcessStartInfo
-    $info.FileName = $PhpPath
+    $resolvedPhp = Resolve-FullPhpPath $PhpPath
+    $info.FileName = $resolvedPhp
     $helper = Join-Path $PSScriptRoot 'full-backup-helper.php'
     if ($helper.Contains('"') -or $InstallRoot.Contains('"')) { throw 'Invalid worker argument' }
     $info.Arguments = '"' + $helper + '" "' + $InstallRoot.TrimEnd('\') + '"'
@@ -37,7 +50,12 @@ function Start-FullWorker {
     $info.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
-    if (-not $process.Start()) { throw 'Cannot start PHP helper' }
+    try {
+        if (-not $process.Start()) { throw 'Cannot start PHP helper' }
+    } catch [System.ComponentModel.Win32Exception] {
+        $process.Dispose()
+        throw "Cannot start PHP CLI at $resolvedPhp. Check -PhpPath and execute permissions: $($_.Exception.Message)"
+    }
     return $process
 }
 

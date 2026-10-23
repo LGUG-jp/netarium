@@ -114,4 +114,29 @@ final class SecurityHeadersTest extends TestCase
             rmdir($fixture);
         }
     }
+
+    public function testHealthcheckEndpointReturnsOkWithoutSessionOrSecrets(): void
+    {
+        $client = new TestHttpClient($this->client->getBaseUrl());
+        $response = $client->get('/healthcheck.php')->assertStatus(200);
+        $this->assertSame('nosniff', $response->getHeader('X-Content-Type-Options'));
+        $this->assertStringContains('no-store', $response->getHeader('Cache-Control') ?? '');
+        $this->assertStringContains('application/json', $response->getHeader('Content-Type') ?? '');
+        $this->assertNull($response->getHeader('Set-Cookie'));
+        $body = json_decode($response->getBody(), true);
+        $this->assertSame(['status' => 'ok'], $body);
+
+        // When database schema is incompatible or corrupt, healthcheck returns 503 without leaking paths/details
+        $server = new TestServer();
+        try {
+            $server->start();
+            file_put_contents($server->getDbPath(), 'corrupted-sqlite-header-bytes');
+            $badClient = new TestHttpClient($server->getBaseUrl());
+            $unhealthy = $badClient->get('/healthcheck.php')->assertStatus(503);
+            $this->assertNull($unhealthy->getHeader('Set-Cookie'));
+            $this->assertSame(['status' => 'unavailable'], json_decode($unhealthy->getBody(), true));
+        } finally {
+            $server->stop();
+        }
+    }
 }

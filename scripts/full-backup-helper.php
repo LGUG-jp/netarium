@@ -4,8 +4,9 @@ declare(strict_types=1);
 // Private, administrator-only JSON RPC worker. The same PHP flock as Web/CLI
 // writers remains held until this worker exits, including the placement phase.
 if (PHP_SAPI !== 'cli') { http_response_code(404); exit; }
-require_once ($argv[1] ?? dirname(__DIR__)) . '/bootstrap.php';
-require_once ($argv[1] ?? dirname(__DIR__)) . '/src/Core/DatabaseSchema.php';
+$appRoot = (isset($argv[1]) && !str_starts_with($argv[1], '-')) ? $argv[1] : dirname(__DIR__);
+require_once $appRoot . '/bootstrap.php';
+require_once $appRoot . '/src/Core/DatabaseSchema.php';
 
 function fullSafeName(string $name): void
 {
@@ -164,6 +165,7 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
     } finally { $zip->close(); }
 }
 
+if (!defined('NETARIUM_FULL_BACKUP_HELPER_NO_LOOP')) {
 $config = \Netarium\Core\Config::create();
 $gate = new \Netarium\Core\OperationGate((string)$config['operation_lock_file']);
 while (($line = fgets(STDIN)) !== false) {
@@ -230,4 +232,5 @@ while (($line = fgets(STDIN)) !== false) {
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
     }
     flush();
+}
 }

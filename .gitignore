@@ -39,6 +39,8 @@
 !.env.example
 *.local
 /config/app.php
+.docker-bootstrap/
+.docker-admin.lock
 
 # Editor and operating-system files
 .idea/

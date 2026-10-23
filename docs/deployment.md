@@ -8,6 +8,8 @@ Netariumの配備は原則HTTPSとし、インターネットに到達可能な�
 
 既存配備の更新・ロールバックは[更新ガイド](update.md)、全損復旧・撤去は[運用ガイド](operations.md)に分けています。[開発ガイド（配備の確認）](development.md#配備スクリプトの確認)のライフサイクル試験は隔離環境専用であり、新規導入のコマンドではありません。
 
+Docker / Docker Compose による Linux コンテナ環境への配備は [Docker配備・運用ガイド](deployment-docker.md) を参照してください。
+
 <a id="http運用の許容条件と記録202"></a>
 
 ### HTTP運用の許容条件と記録

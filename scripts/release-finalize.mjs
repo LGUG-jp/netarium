@@ -1,4 +1,5 @@
 /** Publicでレビュー済みのrelease PRをtag・Releaseへ確定する。 */
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -185,7 +186,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     try {
         requireThat(process.argv.length === 2, '引数は指定できません');
         const result = await createFinalizer().run();
-        if (result.state !== 'ignored') console.log(JSON.stringify(result));
+        if (result.state !== 'ignored') {
+            console.log(JSON.stringify(result));
+            if (process.env.GITHUB_OUTPUT && result.state === 'complete') {
+                const rawVersion = result.tag.startsWith('v') ? result.tag.slice(1) : result.tag;
+                fs.appendFileSync(process.env.GITHUB_OUTPUT, `state=complete\ntag=${result.tag}\nversion=${rawVersion}\n`);
+            }
+        }
     } catch (error) {
         console.error(`[ERROR] リリース確定に失敗しました: ${error instanceof ReleaseError ? error.message : '内部処理に失敗しました（詳細非表示）'}`);
         process.exitCode = 1;

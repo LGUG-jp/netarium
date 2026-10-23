@@ -1907,6 +1907,9 @@ class BackupTest extends TestCase
             foreach (['1.0.0', '1.0.1', '1.0.2', '1.0.3'] as $sourceVersion) {
                 $this->assertTrue($policy::isCompatible($format, $format, 1, 11, $sourceVersion, 11, '1.0.3'));
             }
+            foreach (['1.0.0', '1.0.1', '1.0.2', '1.0.3', '1.1.0'] as $sourceVersion) {
+                $this->assertTrue($policy::isCompatible($format, $format, 1, 11, $sourceVersion, 11, '1.1.0'));
+            }
             foreach ([
                 [1, 11, '1.0.2', 11, '1.0.0'],
                 [1, 11, '1.0.2', 11, '1.0.1'],
@@ -1919,6 +1922,12 @@ class BackupTest extends TestCase
                 [2, 11, '1.0.1', 11, '1.0.2'],
                 [1, 10, '1.0.2', 11, '1.0.3'],
                 [2, 11, '1.0.2', 11, '1.0.3'],
+                [1, 11, '1.1.0', 11, '1.0.3'],
+                [1, 11, '1.0.4', 11, '1.1.0'],
+                [1, 11, '1.1.1', 11, '1.1.0'],
+                [1, 11, '1.1.0', 11, '1.1.1'],
+                [1, 10, '1.0.3', 11, '1.1.0'],
+                [2, 11, '1.0.3', 11, '1.1.0'],
             ] as [$formatVersion, $schema, $sourceVersion, $targetSchema, $targetVersion]) {
                 $this->assertFalse($policy::isCompatible($format, $format, $formatVersion, $schema, $sourceVersion, $targetSchema, $targetVersion));
             }
@@ -1954,6 +1963,7 @@ class BackupTest extends TestCase
         $v103AppRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'netarium_v103_app_' . bin2hex(random_bytes(6));
         $this->copyProjectTreeWithVersion($repoRoot, $v103AppRoot, '1.0.3');
         $server103 = new \Netarium\Tests\TestServer($v103AppRoot);
+        $currentServer = new \Netarium\Tests\TestServer($repoRoot);
         $v101AppRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'netarium_v101_app_' . bin2hex(random_bytes(6));
         $this->copyProjectTreeWithVersion($repoRoot, $v101AppRoot, '1.0.1');
 
@@ -1966,6 +1976,7 @@ class BackupTest extends TestCase
             $server101->start();
             $server102->start();
             $server103->start();
+            $currentServer->start();
 
             $client100 = new TestHttpClient($server100->getBaseUrl());
             $client101 = new TestHttpClient($server101->getBaseUrl());
@@ -2203,6 +2214,49 @@ class BackupTest extends TestCase
                 ])->assertStatus(400);
             }
             $this->assertSame($stateBefore103, $this->idBoundaryState($db103));
+            $currentClient = new TestHttpClient($currentServer->getBaseUrl());
+            $this->assertTrue($currentClient->login('admin', 'admin123'));
+            [$currentDb] = $this->seedBackupImages($currentServer, 1);
+            $currentUsers = $currentDb->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $currentFiles = $this->restoreFiles($currentServer->getTempDir() . '/uploads');
+            $currentZip = $currentServer->getTempDir() . '/current-config.zip';
+            file_put_contents($currentZip, $currentClient->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            foreach (['1.0.0' => $zip100Path, '1.0.1' => $zip101Path, '1.0.2' => $zip102Path, '1.0.3' => $zip103Path, NETARIUM_VERSION => $currentZip] as $sourceVersion => $archivePath) {
+                $preview = $currentClient->postMultipart('/api.php?action=preview_backup_restore', [], [
+                    'backup_zip' => ['path' => $archivePath, 'filename' => 'config.zip', 'type' => 'application/zip'],
+                ])->assertStatus(200)->getJson();
+                $this->assertSame($sourceVersion, $preview['backup']['application_version']);
+                $currentClient->postJson('/api.php?action=commit_backup_restore', [
+                    'restore_token' => $preview['restore_token'],
+                    'confirmation' => 'バックアップから復元',
+                ])->assertStatus(200);
+                $this->assertSame($currentUsers, $currentDb->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+                $this->assertSame($currentFiles, $this->restoreFiles($currentServer->getTempDir() . '/uploads'));
+                $this->assertSame($imageName100, $currentDb->query('SELECT stored_name FROM device_images')->fetchColumn());
+                $currentClient->get('/api.php?action=load')->assertOk();
+            }
+            $beforeReverse = $this->idBoundaryState($db103);
+            $client103->postMultipart('/api.php?action=preview_backup_restore', [], [
+                'backup_zip' => ['path' => $currentZip, 'filename' => 'current.zip', 'type' => 'application/zip'],
+            ])->assertStatus(400);
+            $this->assertSame($beforeReverse, $this->idBoundaryState($db103));
+            $currentState = $this->idBoundaryState($currentDb);
+            foreach (['1.0.4', '1.1.1', '2.0.0', 'corrupt'] as $unsupportedVersion) {
+                $badZip = $currentServer->getTempDir() . '/reject-current-' . $unsupportedVersion . '.zip';
+                copy($currentZip, $badZip);
+                if ($unsupportedVersion === 'corrupt') {
+                    file_put_contents($badZip, 'not a zip');
+                } else {
+                    $this->rewriteBackupZip($badZip, static function (array &$doc, array &$manifest) use ($unsupportedVersion): void {
+                        $manifest['application_version'] = $unsupportedVersion;
+                    });
+                }
+                $currentClient->postMultipart('/api.php?action=preview_backup_restore', [], [
+                    'backup_zip' => ['path' => $badZip, 'filename' => 'reject.zip', 'type' => 'application/zip'],
+                ])->assertStatus(400);
+                $this->assertSame($currentState, $this->idBoundaryState($currentDb));
+            }
+            $currentClient->get('/api.php?action=load')->assertOk();
         } finally {
             $this->client = $originalClient;
             $db100 = null;
@@ -2210,6 +2264,8 @@ class BackupTest extends TestCase
             $oldDb = null;
             $db102 = null;
             $db103 = null;
+            $currentDb = null;
+            $currentServer->stop();
             $server103->stop();
             $this->removeTreeRecursive($v103AppRoot);
             $server102->stop();

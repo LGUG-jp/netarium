@@ -26,10 +26,7 @@ class PingService
         $this->deviceRepo = new DeviceRepository($db);
     }
 
-    /**
-     * Windows Ping実行
-     */
-    public function pingHostWindows(
+    public function pingHost(
         string $ip,
         int $timeoutMs,
         bool $restrictPrivateOnly
@@ -63,26 +60,30 @@ class PingService
 
         $timeoutMs = max(100, min($timeoutMs, 10000));
 
-        /*
-         * $ipは上でIPv4検証済みなので、そのまま渡してよい。
-         * Windowsではescapeshellarg()が単一引用符を付け、
-         * pingがIPアドレスとして解釈できない場合がある。
-         */
-        $command = sprintf(
-            'ping.exe -4 -n 1 -w %d %s 2>&1',
-            $timeoutMs,
-            $ip
-        );
+        if (PHP_OS_FAMILY === 'Windows') {
+            // The validated IPv4 address is safe to pass without shell quoting on Windows.
+            $command = sprintf('ping.exe -4 -n 1 -w %d %s 2>&1', $timeoutMs, $ip);
+        } elseif (PHP_OS_FAMILY === 'Linux') {
+            $timeoutSeconds = max(1, (int)ceil($timeoutMs / 1000));
+            $command = sprintf(
+                'LC_ALL=C ping -4 -n -c 1 -W %d %s 2>&1',
+                $timeoutSeconds,
+                escapeshellarg($ip)
+            );
+        } else {
+            throw new RuntimeException('このOSではPingを実行できません');
+        }
 
         $output = [];
         $returnCode = 1;
 
         exec($command, $output, $returnCode);
 
-        $rawText = implode("\n", $output);
-        $text = $this->convertWindowsCommandOutputToUtf8($rawText);
+        $text = implode("\n", $output);
 
-        return $this->parseWindowsPingOutput($text, $returnCode);
+        return PHP_OS_FAMILY === 'Windows'
+            ? $this->parseWindowsPingOutput($this->convertWindowsCommandOutputToUtf8($text), $returnCode)
+            : $this->parseLinuxPingOutput($text, $returnCode);
     }
 
     public function parseWindowsPingOutput(string $text, int $returnCode): array
@@ -153,6 +154,34 @@ class PingService
         ];
     }
 
+    public function parseLinuxPingOutput(string $text, int $returnCode): array
+    {
+        if ($returnCode === 0) {
+            return [
+                'status' => 'green',
+                'outcome' => 'success',
+                'response_ms' => $this->extractResponseMsFlexible($text),
+                'error' => null,
+            ];
+        }
+
+        $isUnreachable = preg_match(
+            '/Destination (?:Host|Net|Network) Unreachable|Network is unreachable|Operation not permitted/i',
+            $text
+        ) === 1;
+        $isTimeout = !$isUnreachable && preg_match(
+            '/100% packet loss|100% loss|no answer yet|timed out/i',
+            $text
+        ) === 1;
+
+        return [
+            'status' => 'red',
+            'outcome' => $isTimeout ? 'timeout' : 'failure',
+            'response_ms' => null,
+            'error' => $this->buildPingErrorMessage($text, $returnCode),
+        ];
+    }
+
     /**
      * Windows Ping出力から応答時間を取得
      */
@@ -160,10 +189,10 @@ class PingService
     {
         $patterns = [
             // time=1ms / time<1ms
-            '/time\s*[=<]\s*(\d+)\s*ms/i',
+            '/time\s*[=<]\s*(\d+(?:\.\d+)?)\s*ms/i',
 
             // 日本語版: 時間 = 1ms / 時間 < 1ms
-            '/時間\s*[=<]\s*(\d+)\s*ms/u',
+            '/時間\s*[=<]\s*(\d+(?:\.\d+)?)\s*ms/u',
 
             // 念のため「1ms」の単純形式
             '/(?:^|\s)(\d+)\s*ms(?:\s|$)/i',
@@ -171,7 +200,7 @@ class PingService
 
         foreach ($patterns as $pattern) {
             if (preg_match($pattern, $text, $matches) === 1) {
-                $milliseconds = (int)$matches[1];
+                $milliseconds = (int)ceil((float)$matches[1]);
 
                 /*
                  * time<1msは整数DBで扱うため、
@@ -407,7 +436,7 @@ class PingService
                     if ($requestedIp !== '' && $requestedIp !== $ip) {
                         throw new RuntimeException('機器情報が更新されています。画面を再読み込みしてください');
                     }
-                    $pingResult = $this->pingHostWindows(
+                    $pingResult = $this->pingHost(
                         $ip,
                         (int)($config['ping_timeout_ms'] ?? 1000),
                         (bool)($config['restrict_private_ip_only'] ?? true)

@@ -1,0 +1,23 @@
+# Keep runtime state, local configuration and VCS history out of the build context.
+.git
+.github
+.env
+.env.*
+.docker-bootstrap
+.docker-admin.lock
+data
+storage
+db
+uploads
+backups
+temp
+logs
+config/app.php
+work
+coverage
+reports
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.zip

@@ -22,6 +22,7 @@ try {
     $maintenanceLock = Enter-NetariumMaintenanceLock $InstallRoot
     if ($MaxExpandedBytes -le 0 -or $MaxFiles -le 0) { throw 'Invalid archive limits' }
     $archivePath = Assert-FullPath $Archive
+    $PhpPath = Resolve-FullPhpPath $PhpPath
     $worker = Start-FullWorker $PhpPath (Assert-FullPath $InstallRoot)
     $context = Get-FullContext $worker $InstallRoot $SiteName $ApplicationPoolName $WorkRoot
     foreach ($target in $context.Targets) { if (Test-NetariumPathOverlap $archivePath $target) { throw 'Archive overlaps live data' } }
