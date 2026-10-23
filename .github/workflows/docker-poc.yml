@@ -1,0 +1,250 @@
+name: Docker CI smoke
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - compose.yaml
+      - compose.image.yaml
+      - .dockerignore
+      - docker/**
+      - .github/workflows/docker-poc.yml
+      - public/**
+      - src/**
+      - scripts/**
+      - resources/**
+      - tests/**
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Build PoC image
+        run: docker compose build
+      - name: Verify PHP extensions and record SQLite version
+        run: |
+          docker compose run --rm --no-deps web php -r '
+          foreach (["pdo_sqlite", "sqlite3", "fileinfo", "zip", "gd", "exif", "mbstring", "intl"] as $extension) {
+              if (!extension_loaded($extension)) { fwrite(STDERR, "Missing: $extension\n"); exit(1); }
+          }
+          $version = SQLite3::version()["versionString"];
+          if (version_compare($version, "3.51.3", "<")) {
+              fwrite(STDERR, "SQLite below 3.51.3: $version\n"); exit(1);
+          }
+          echo "PHP ", PHP_VERSION, " / SQLite ", $version, "\n";
+          '
+      - name: Verify Linux ping and its output parser
+        run: |
+          docker compose run --rm --no-deps web php -r '
+          require "bootstrap.php";
+          $service = new Netarium\Services\Monitoring\PingService(new PDO("sqlite::memory:"));
+          $ok = $service->pingHost("127.0.0.1", 1000, false);
+          $timeout = $service->parseLinuxPingOutput("1 packets transmitted, 0 received, 100% packet loss", 1);
+          $unreachable = $service->parseLinuxPingOutput("Destination Host Unreachable", 1);
+          if ($ok["status"] !== "green" || $ok["outcome"] !== "success"
+              || $timeout["outcome"] !== "timeout" || $unreachable["outcome"] !== "failure") {
+              fwrite(STDERR, "Linux ping verification failed: " . json_encode([$ok, $timeout, $unreachable]) . "\n"); exit(1);
+          }
+          echo "Linux ping PASS\n";
+          '
+      - name: Initialize and check installation
+        run: |
+          docker compose run --rm --no-deps web php scripts/check-install.php \
+            --app-root=/var/www/html --storage-dir=/var/lib/netarium
+      - name: Verify bootstrap secret is outside the web volume
+        run: |
+          secret_dir="$RUNNER_TEMP/netarium-bootstrap"
+          mkdir -m 0700 "$secret_dir"
+          docker compose run --rm --no-deps --user 0:0 \
+            --volume "$secret_dir:/run/netarium-bootstrap" web \
+            php scripts/issue-bootstrap-secret.php \
+            --secret-file=/run/netarium-bootstrap/bootstrap-secret
+          test "$(stat -c '%a' "$secret_dir/bootstrap-secret")" = 600
+          test "$(stat -c '%s' "$secret_dir/bootstrap-secret")" = 64
+          docker compose up -d
+          ! docker compose exec -T web test -e /run/netarium-bootstrap/bootstrap-secret
+      - name: Verify operation lock works as www-data after privileged bootstrap
+        run: |
+          docker compose exec -T web php -r '
+          require "bootstrap.php";
+          $lock = Netarium\Core\Config::create()["operation_lock_file"];
+          if (!is_file($lock) || !is_writable($lock) ||
+              !function_exists("posix_geteuid") || fileowner($lock) !== posix_geteuid()) {
+              fwrite(STDERR, "Operation lock not owned/writable by Web UID\n"); exit(1);
+          }
+          foreach (["acquireShared", "acquireExclusive"] as $method) {
+              $gate = new Netarium\Core\OperationGate($lock);
+              $gate->$method();
+              $gate->release();
+          }
+          echo "OperationGate OK after privileged bootstrap\n";
+          '
+      - name: Verify HTTP and private path denial
+        run: |
+          for attempt in $(seq 1 20); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/login.php; then break; fi
+            sleep 2
+          done
+          curl -fsS -o /dev/null http://127.0.0.1:8080/login.php
+          for path in src/Core/Config.php scripts/issue-bootstrap-secret.php data/db/data.sqlite; do
+            test "$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/$path")" = 404
+          done
+          curl -fsSI http://127.0.0.1:8080/login.php | grep -qi '^X-Content-Type-Options: nosniff'
+      - name: Verify healthcheck endpoint and container health status
+        run: |
+          health_json="$(curl -fsS http://127.0.0.1:8080/healthcheck.php)"
+          echo "Health response: $health_json"
+          test "$(echo "$health_json" | grep -o '"status":"ok"')" = '"status":"ok"'
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthcheck.php)" = 200
+          # Wait for Docker daemon healthcheck transition
+          for attempt in $(seq 1 15); do
+            status="$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q web)" 2>/dev/null || true)"
+            if [ "$status" = "healthy" ]; then break; fi
+            sleep 2
+          done
+          test "$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q web)")" = "healthy"
+      - name: Exercise HTTP setup, login and authenticated load
+        run: bash tests/docker-poc-http-smoke.sh
+      - name: Seed identifiable SQLite data before recreation
+        run: |
+          docker compose exec -T web php -r '
+          $db = new SQLite3(getenv("NETARIUM_DB_FILE"), SQLITE3_OPEN_READWRITE);
+          $marker = bin2hex(random_bytes(16));
+          $stmt = $db->prepare("INSERT INTO app_meta (meta_key, meta_value) VALUES (:k, :v)");
+          $stmt->bindValue(":k", "docker_poc_ci_marker", SQLITE3_TEXT);
+          $stmt->bindValue(":v", $marker, SQLITE3_TEXT);
+          if (!$stmt->execute()) { exit(1); }
+          $db->close();
+          if (file_put_contents("/var/lib/netarium/temp/docker-ci-marker", $marker) !== strlen($marker)) { exit(1); }
+          echo "Persistence marker seeded\n";
+          '
+      - name: Recreate and verify the original DB before any initialization
+        run: |
+          docker compose up -d --force-recreate
+          docker compose exec -T web php -r '
+          $file = getenv("NETARIUM_DB_FILE");
+          $markerFile = "/var/lib/netarium/temp/docker-ci-marker";
+          if (!is_file($file) || !is_file($markerFile)) {
+              fwrite(STDERR, "Database or marker missing after recreation\n"); exit(1);
+          }
+          $marker = file_get_contents($markerFile);
+          if (!is_string($marker) || preg_match("/\\A[a-f0-9]{32}\\z/", $marker) !== 1) { exit(1); }
+          $db = new SQLite3($file, SQLITE3_OPEN_READONLY);
+          $stmt = $db->prepare("SELECT meta_value FROM app_meta WHERE meta_key = :k");
+          $stmt->bindValue(":k", "docker_poc_ci_marker", SQLITE3_TEXT);
+          $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+          if (!is_array($row) || !hash_equals($marker, (string)($row["meta_value"] ?? ""))) {
+              fwrite(STDERR, "Persisted SQLite marker mismatch\n"); exit(1);
+          }
+          echo "Existing SQLite contents retained\n";
+          '
+      - name: Verify original login session survived recreation
+        run: |
+          curl -fsS --cookie "$RUNNER_TEMP/netarium-poc-auth.cookies" \
+            http://127.0.0.1:8080/api.php?action=load \
+            --output "$RUNNER_TEMP/netarium-poc-after-recreate.json"
+          grep -q '"ok":true' "$RUNNER_TEMP/netarium-poc-after-recreate.json"
+          grep -q '"username":"poc_ci_admin"' "$RUNNER_TEMP/netarium-poc-after-recreate.json"
+      - name: Confirm retained DB passes install checks
+        run: |
+          docker compose exec -T web php scripts/check-install.php \
+            --app-root=/var/www/html --storage-dir=/var/lib/netarium
+      - name: Run docker full backup
+        run: |
+          backup_zip="$RUNNER_TEMP/poc-full-backup.zip"
+          bash scripts/docker-backup.sh "$backup_zip"
+          test -f "$backup_zip"
+          test -r "$backup_zip"
+          test $(stat -c '%s' "$backup_zip") -gt 1000
+      - name: Mutate database and verify restore
+        run: |
+          # Mutate DB to prove restore actually recovers prior state
+          docker compose exec -T web php -r '
+          $db = new SQLite3(getenv("NETARIUM_DB_FILE"), SQLITE3_OPEN_READWRITE);
+          $db->exec("UPDATE users SET username = \"mutated_admin\" WHERE id = 1");
+          $db->close();
+          '
+          # Verify pre-flight rejects corrupted archive
+          ! bash scripts/docker-restore.sh /dev/null
+          # Run full restore from backup
+          bash scripts/docker-restore.sh "$RUNNER_TEMP/poc-full-backup.zip"
+          # Verify username reverted to poc_ci_admin
+          docker compose exec -T web php -r '
+          $db = new SQLite3(getenv("NETARIUM_DB_FILE"), SQLITE3_OPEN_READONLY);
+          $user = $db->querySingle("SELECT username FROM users WHERE id = 1");
+          if ($user !== "poc_ci_admin") { fwrite(STDERR, "Restore did not recover username\n"); exit(1); }
+          echo "Full restore verified: PASS\n";
+          '
+          # Sessions are invalidated by restore as required
+          test "$(curl -sS -o /dev/null -w '%{http_code}' --cookie "$RUNNER_TEMP/netarium-poc-auth.cookies" http://127.0.0.1:8080/api.php?action=load)" = "401"
+      - name: Run docker backup and restore unit tests
+        run: php tests/docker-backup-runners.test.php
+      - name: Reject immutable update references before stopping Web
+        run: |
+          cid="$(docker compose ps -q web)"
+          started="$(docker inspect --format='{{.State.StartedAt}}' "$cid")"
+          project="$(docker inspect --format='{{index .Config.Labels "com.docker.compose.project"}}' "$cid")"
+          digest="$(docker inspect --format='{{.Image}}' "$cid")"
+          file="$(mktemp "$PWD/.docker-digest-XXXXXX.yaml")"
+          trap 'rm -f "$file"' EXIT
+          printf 'services:\n  web:\n    image: netarium@%s\n' "$digest" > "$file"
+          status=0
+          COMPOSE_PROJECT_NAME="$project" bash scripts/docker-update.sh -f "$file" --no-backup || status=$?
+          test "$status" = 1
+          test "$(docker inspect --format='{{.State.Running}}' "$cid")" = true
+          test "$(docker inspect --format='{{.State.StartedAt}}' "$cid")" = "$started"
+      - name: Verify docker update script with pre-update backup, preserved orphan image, and healthcheck
+        run: |
+          # Seed an unreferenced (orphan) floor-plan image to ensure update allows preserved images
+          docker compose exec -T web php -r '
+          $png = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=");
+          if (file_put_contents("/var/lib/netarium/uploads/floorplans/0123456789abcdef0123456789abcdef.png", $png) !== strlen($png)) { exit(1); }
+          '
+          bash scripts/docker-update.sh
+          test "$(curl -fsS http://127.0.0.1:8080/healthcheck.php | grep -o '"status":"ok"')" = '"status":"ok"'
+      - name: Verify disaster recovery on fresh empty volume
+        run: |
+          # Completely destroy existing containers and volumes
+          docker compose down -v
+          # Restore onto clean empty volume
+          bash scripts/docker-restore.sh "$RUNNER_TEMP/poc-full-backup.zip"
+          docker compose up -d web
+          for attempt in $(seq 1 15); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/healthcheck.php; then break; fi
+            sleep 2
+          done
+          # Verify restored user is present
+          docker compose exec -T web php -r '
+          $db = new SQLite3(getenv("NETARIUM_DB_FILE"), SQLITE3_OPEN_READONLY);
+          $user = $db->querySingle("SELECT username FROM users WHERE id = 1");
+          if ($user !== "poc_ci_admin") { fwrite(STDERR, "Disaster recovery failed to restore user\n"); exit(1); }
+          echo "Disaster recovery on empty volume PASS\n";
+          '
+      - name: Verify Docker build from public export snapshot
+        run: |
+          export_dir="$RUNNER_TEMP/netarium-public-export-check"
+          node scripts/export-public-snapshot.mjs --commit HEAD --out-dir "$export_dir"
+          cd "$export_dir"
+          docker build -t netarium-public-export-test .
+          docker run --rm netarium-public-export-test apache2ctl -t
+      - name: Diagnose container failures without exposing secrets
+        if: failure()
+        run: |
+          docker compose ps -a
+          cid="$(docker compose ps -aq web)"
+          if [ -n "$cid" ]; then
+            docker inspect --format='OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Running={{.State.Running}}' "$cid" || true
+          fi
+          docker compose logs --no-color --tail=30 web || true
+          free -m
+      - name: Shut down PoC containers (keep volume)
+        if: always()
+        run: docker compose down

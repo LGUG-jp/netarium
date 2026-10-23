@@ -1,0 +1,20 @@
+# Netarium Docker Compose configuration using pre-built image (#59)
+services:
+  web:
+    image: ghcr.io/lgug-jp/netarium:1.1.0
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - netarium_data:/var/lib/netarium
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-s", "-S", "http://127.0.0.1:8080/healthcheck.php"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  netarium_data:

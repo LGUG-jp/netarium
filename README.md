@@ -8,7 +8,7 @@ Netarium（ネタリウム）は、ネットワークの構成図と機器情報
 
 ## バージョン
 
-現在のバージョンは 1.0.3 です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+現在の開発版は 1.1.0（リリース準備中）です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。版番号の更新は正式公開を意味しません。
 
 ## 主な機能
 
@@ -25,7 +25,7 @@ Netarium（ネタリウム）は、ネットワークの構成図と機器情報
 - 機器の管理接続先（HTTP/HTTPS/SSH・ポート）と保守情報（担当部署・保守ベンダー・導入年月・保守期限）の管理
 - 機器画像（1機器最大3枚、EXIFメタデータ除去、向き補正後に長辺2,048px以下へ縮小、原本保存なし）の登録、認証配信、拡大表示と前後の画像切替
 - PNGまたはJPEGのフロア図面登録（入力30MiB・各辺7,000px・3,500万画素以下、向き補正後に長辺4,096px以下へ自動縮小、原本非保持、ビュー管理からの直接起動に対応）
-- Windowsの`ping.exe`を使用した管理者による手動疎通確認（台帳のチェック選択、NG絞り込み後の再実行、現在ビューの選択機器）と、結果モーダルでの絞り込み・全件CSVダウンロード
+- Windows の `ping.exe` または Docker 内の Linux `ping` を使用した管理者による手動疎通確認（台帳のチェック選択、NG絞り込み後の再実行、現在ビューの選択機器）と、結果モーダルでの絞り込み・全件CSVダウンロード
 - 機器台帳の保存済み全件のCSV出力（絞り込み・チェック選択に依存しない）、検証付きCSV取込（新19列形式）
 - データ品質診断とダッシュボード
 - 構成情報 ZIP（`netarium-config` 形式 1／DB スキーマ 11）の出力・復元。画像は参照メタデータだけを含み、既存実体との一致をプレビューで確認します。画像実体・アカウント・パスワードは対象外、旧画像同梱形式 2〜7 は非対応です
@@ -37,10 +37,10 @@ Netarium は常時監視製品ではありません。Ping 機能は、画面か
 
 ## システム構成
 
-- Web サーバー: IIS
-- IIS DocumentRoot: `public/`
-- 実行環境: PHP 8.5.5以上、IIS FastCGI
-- データベース: SQLite Library 3.51.3以上
+- Web サーバー: IIS または Apache（Docker コンテナ）
+- DocumentRoot: `public/`（Docker コンテナ内: `/var/www/html/public`）
+- 実行環境: PHP 8.5.5以上（Windows IIS FastCGI）。Docker は `php:8.5-apache` ベースのイメージを使用
+- データベース: SQLite Library 3.51.3以上（Docker イメージには SQLite 3.54.1 を組込み）
 - フロントエンド: HTML、CSS、Vanilla JavaScript
 - 標準タイムゾーン: Asia/Tokyo
 
@@ -84,6 +84,13 @@ Netarium は GitHub 標準のソースコード配布形式で提供されます
    リポジトリページの「Code」ボタンより「Download ZIP」を選択して取得します。
 3. **GitHub Releases（公開後のリリース版）**:
    GitHub Releases が作成・公開されている場合は、配布される Source code (zip / tar.gz) を取得します。
+4. **Docker コンテナイメージ（GitHub Container Registry）**:
+   事前ビルド済みのコンテナイメージ（linux/amd64）を GHCR より取得して利用できます。
+   ```bash
+   docker compose -f compose.image.yaml pull web
+   ```
+   ※ 公開版の固定タグは `ghcr.io/lgug-jp/netarium:1.1.0` です。未公開候補の段階や開発環境ではローカルビルド（`compose.yaml`）を利用してください。
+
 
 ※ ソース配布にはテストコード（`tests/`）や開発用設定が含まれます。本番環境への配備手順は [クイックスタートガイド](docs/quickstart.md) または [配備ガイド](docs/deployment.md) を参照してください。
 
@@ -120,6 +127,7 @@ Netarium は GitHub 標準のソースコード配布形式で提供されます
 - [デザインガイドライン（UI・設計原則）](docs/design-guidelines.md)
 - [クイックスタート（基本運用5操作の手順書）](docs/quickstart.md)
 - [新規インストール](docs/deployment.md)
+- [Docker / Linux 配備・運用ガイド](docs/deployment-docker.md)
 - [更新・ロールバック](docs/update.md)
 - [画面操作・利用者管理](docs/administrator-guide.md)
 - [サーバ運用・全損復旧・アンインストール](docs/operations.md)

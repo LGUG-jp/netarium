@@ -25,7 +25,7 @@ class TestPingAction implements ActionInterface
         }
 
         $service = new PingService($db);
-        $result = $service->pingHostWindows(
+        $result = $service->pingHost(
             '127.0.0.1',
             (int)($config['ping_timeout_ms'] ?? 1000),
             false

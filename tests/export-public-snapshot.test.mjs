@@ -221,3 +221,21 @@ for (const [name, uppercaseAncestor] of [['src/parent-reference.txt', false], ['
         assert.ok(!fs.existsSync(output));
     });
 }
+
+test('Docker配備資材（Dockerfile, compose.yaml, compose.image.yaml, .dockerignore, docker/）が安全に公開成果物に含まれる', t => {
+    const { output, result } = snapshotFixture(t, '# Docker export fixture\n\nPublic documentation.\n', {
+        'Dockerfile': 'FROM php:8.5-apache\n',
+        'compose.yaml': 'services:\n  web:\n    build: .\n',
+        'compose.image.yaml': 'services:\n  web:\n    image: ghcr.io/lgug-jp/netarium:1.1.0\n',
+        '.dockerignore': 'tmp/\n.git\n',
+        'docker/apache.conf': 'ServerName localhost\n',
+        'docker/php.ini': 'date.timezone = Asia/Tokyo\n',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(fs.existsSync(path.join(output, 'Dockerfile')));
+    assert.ok(fs.existsSync(path.join(output, 'compose.yaml')));
+    assert.ok(fs.existsSync(path.join(output, 'compose.image.yaml')));
+    assert.ok(fs.existsSync(path.join(output, '.dockerignore')));
+    assert.ok(fs.existsSync(path.join(output, 'docker/apache.conf')));
+    assert.ok(fs.existsSync(path.join(output, 'docker/php.ini')));
+});

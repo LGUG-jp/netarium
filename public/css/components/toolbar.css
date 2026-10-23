@@ -7,7 +7,8 @@
     top: 0;
     left: 0;
     right: 0;
-    z-index: 500;
+    /* 左右パネル (1000) より前面、ビュー管理モーダル (1200) より背面。 */
+    z-index: 1100;
     width: 100%;
     height: var(--toolbar-height);
     min-height: var(--toolbar-height);

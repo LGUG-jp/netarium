@@ -24,6 +24,10 @@ jobs:
     if: github.repository == 'LGUG-jp/netarium' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      state: ${{ steps.finalize_step.outputs.state }}
+      version: ${{ steps.finalize_step.outputs.version }}
+      tag: ${{ steps.finalize_step.outputs.tag }}
     permissions:
       contents: write
       pull-requests: read
@@ -34,8 +38,55 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Finalize reviewed release
+        id: finalize_step
         run: node scripts/release-finalize.mjs
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+
+  publish-image:
+    needs: finalize
+    if: github.repository == 'LGUG-jp/netarium' && github.ref == 'refs/heads/main' && needs.finalize.outputs.state == 'complete'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.finalize.outputs.tag }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build and smoke-test Docker image
+        run: |
+          IMAGE_NAME="ghcr.io/lgug-jp/netarium"
+          VERSION_TAG="${{ needs.finalize.outputs.version }}"
+          TARGET_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
+          echo "Building ${TARGET_IMAGE} (linux/amd64)..."
+          docker build --platform linux/amd64 -t "${TARGET_IMAGE}" .
+          echo "Running image verification..."
+          docker run --rm --platform linux/amd64 "${TARGET_IMAGE}" php -r '
+          foreach (["pdo_sqlite", "sqlite3", "fileinfo", "zip", "gd", "exif", "mbstring", "intl"] as $ext) {
+              if (!extension_loaded($ext)) { fwrite(STDERR, "Missing extension: $ext\n"); exit(1); }
+          }
+          $sqliteVer = SQLite3::version()["versionString"];
+          if (version_compare($sqliteVer, "3.51.3", "<")) {
+              fwrite(STDERR, "SQLite version below 3.51.3: $sqliteVer\n"); exit(1);
+          }
+          '
+          docker run --rm --platform linux/amd64 "${TARGET_IMAGE}" apache2ctl -t
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push fixed version image to GHCR
+        run: |
+          IMAGE_NAME="ghcr.io/lgug-jp/netarium"
+          VERSION_TAG="${{ needs.finalize.outputs.version }}"
+          TARGET_IMAGE="${IMAGE_NAME}:${VERSION_TAG}"
+          echo "Publishing ${TARGET_IMAGE} to GHCR..."
+          docker push "${TARGET_IMAGE}"

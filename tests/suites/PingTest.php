@@ -167,7 +167,7 @@ class PingTest extends TestCase
                 parent::__construct($db);
                 $this->externalDb = $externalDb;
             }
-            public function pingHostWindows(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
+            public function pingHost(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
                 // Simulate concurrent user incrementing data_revision and updating device IP
                 $this->externalDb->exec("UPDATE app_meta SET meta_value = '2' WHERE meta_key = 'data_revision'");
                 $this->externalDb->exec("UPDATE devices SET ip = '10.0.0.99' WHERE id = 1");
@@ -211,7 +211,7 @@ class PingTest extends TestCase
 
         $subclass = new class($db) extends PingService {
             public array $calledIps = [];
-            public function pingHostWindows(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
+            public function pingHost(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
                 $this->calledIps[] = $ip;
                 usleep(25000); // 25ms
                 return ['status' => 'green', 'outcome' => 'success', 'response_ms' => 10, 'error' => null];
@@ -277,6 +277,30 @@ class PingTest extends TestCase
         $this->assertNull($success['error']);
     }
 
+    public function testLinuxOutputClassifiesTimeoutAndPreservesReasons(): void
+    {
+        $service = new PingService(new PDO('sqlite::memory:'));
+        $success = $service->parseLinuxPingOutput(
+            '64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.043 ms',
+            0
+        );
+        $this->assertSame('success', $success['outcome']);
+        $this->assertSame(1, $success['response_ms']);
+        $this->assertNull($success['error']);
+
+        $timeoutText = '1 packets transmitted, 0 received, 100% packet loss, time 0ms';
+        $timeout = $service->parseLinuxPingOutput($timeoutText, 1);
+        $this->assertSame('red', $timeout['status']);
+        $this->assertSame('timeout', $timeout['outcome']);
+        $this->assertStringContains($timeoutText, $timeout['error']);
+
+        $unreachable = $service->parseLinuxPingOutput(
+            'From 10.0.0.1 icmp_seq=1 Destination Host Unreachable',
+            1
+        );
+        $this->assertSame('failure', $unreachable['outcome']);
+    }
+
     public function testMixedResultsPreserveUnselectedMonitorState(): void
     {
         require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
@@ -289,7 +313,7 @@ class PingTest extends TestCase
         $db->exec("INSERT INTO device_monitor_status (device_id, status, last_checked_at, last_error) VALUES (7, 'red', '2020-01-01 00:00:00', 'previous failure')");
         $db->exec("INSERT OR REPLACE INTO app_meta (meta_key, meta_value) VALUES ('data_revision', '1'), ('monitor_revision', '1')");
         $service = new class($db) extends PingService {
-            public function pingHostWindows(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
+            public function pingHost(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
                 $outputs = [
                     '10.0.0.1' => ['Reply: time=1ms TTL=128', 0],
                     '10.0.0.2' => ['Destination host unreachable.', 1],
@@ -298,7 +322,7 @@ class PingTest extends TestCase
                 if (isset($outputs[$ip])) {
                     return $this->parseWindowsPingOutput(...$outputs[$ip]);
                 }
-                return parent::pingHostWindows($ip, $timeoutMs, $restrictPrivateOnly);
+                return parent::pingHost($ip, $timeoutMs, $restrictPrivateOnly);
             }
         };
         $before = $db->query("SELECT * FROM device_monitor_status WHERE device_id = 7")->fetch(PDO::FETCH_ASSOC);

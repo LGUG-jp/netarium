@@ -27,6 +27,18 @@ function Assert-ScriptTest {
 
 Write-Host "=== Testing full-backup PowerShell Common Functions ==="
 
+# Missing PHP must fail with actionable guidance before IIS maintenance begins.
+Assert-ScriptTest -Name 'Missing php.exe reports -PhpPath guidance' -Condition {
+    $missing = Join-Path ([IO.Path]::GetTempPath()) ('netarium-no-php-' + [guid]::NewGuid().ToString('N') + '.exe')
+    try {
+        Start-FullWorker $missing $repoRoot | Out-Null
+        return $false
+    } catch {
+        return $_.Exception.Message.Contains('PHP CLI executable not found') -and
+            $_.Exception.Message.Contains('-PhpPath')
+    }
+}
+
 # 1. Assert-FullPath rejects UNC paths
 Assert-ScriptTest -Name 'Assert-FullPath rejects UNC path' -Condition {
     try {

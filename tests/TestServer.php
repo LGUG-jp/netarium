@@ -111,20 +111,27 @@ class TestServer
 
         $phpBinary = PHP_BINARY;
         $sessionDir = $this->tempDir . DIRECTORY_SEPARATOR . 'sessions';
-        $prependOption = '';
+        $cmd = [
+            $phpBinary,
+            '-d',
+            'opcache.enable=0',
+            '-d',
+            sprintf('session.save_path=%s', $sessionDir),
+            '-d',
+            'upload_max_filesize=128M',
+            '-d',
+            'post_max_size=128M',
+            '-d',
+            'memory_limit=512M',
+            '-d',
+            'max_execution_time=300',
+        ];
         if ($this->prependFile !== null && $this->prependFile !== '') {
-            $prependOption = sprintf(' -d auto_prepend_file="%s"', $this->prependFile);
+            $cmd[] = '-d';
+            $cmd[] = sprintf('auto_prepend_file=%s', $this->prependFile);
         }
         // Evaluate replaced PHP fixtures immediately, independently of the host OPcache settings.
-        $cmd = sprintf(
-            '"%s" -d opcache.enable=0 -d session.save_path="%s" -d upload_max_filesize=128M -d post_max_size=128M -d memory_limit=512M -d max_execution_time=300%s -S %s:%d -t "%s"',
-            $phpBinary,
-            $sessionDir,
-            $prependOption,
-            $this->host,
-            $this->port,
-            $this->docRoot
-        );
+        array_push($cmd, '-S', sprintf('%s:%d', $this->host, $this->port), '-t', $this->docRoot);
 
         $parentEnv = getenv();
         $env = array_merge(is_array($parentEnv) ? $parentEnv : [], [
@@ -132,12 +139,15 @@ class TestServer
             'NETARIUM_DB_FILE' => $this->dbPath,
             'TEMP' => sys_get_temp_dir(),
             'TMP' => sys_get_temp_dir(),
-            'SystemRoot' => getenv('SystemRoot') ?: 'C:\Windows',
         ]);
+        if (stripos(PHP_OS, 'WIN') === 0) {
+            $env['SystemRoot'] = getenv('SystemRoot') ?: 'C:\Windows';
+        }
 
         $this->process = proc_open($cmd, $descriptors, $this->pipes, $this->docRoot, $env);
         if (!is_resource($this->process)) {
-            throw new RuntimeException("Failed to start PHP built-in server with command: {$cmd}");
+            $command = implode(' ', array_map('escapeshellarg', $cmd));
+            throw new RuntimeException("Failed to start PHP built-in server with command: {$command}");
         }
 
         // 5. Wait for server to become responsive

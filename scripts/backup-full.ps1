@@ -16,6 +16,7 @@ $maintenanceLock = $null
 try {
     Assert-Administrator
     $maintenanceLock = Enter-NetariumMaintenanceLock $InstallRoot
+    $PhpPath = Resolve-FullPhpPath $PhpPath
     $worker = Start-FullWorker $PhpPath (Assert-FullPath $InstallRoot)
     $context = Get-FullContext $worker $InstallRoot $SiteName $ApplicationPoolName $BackupDirectory
     $stage = Join-Path $context.WorkRoot ([Guid]::NewGuid().ToString('N'))
