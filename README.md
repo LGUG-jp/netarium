@@ -130,6 +130,7 @@ Netarium は GitHub 標準のソースコード配布形式で提供されます
 - [クイックスタート（基本運用5操作の手順書）](docs/quickstart.md)
 - [新規インストール](docs/deployment.md)
 - [Docker / Linux 配備・運用ガイド](docs/deployment-docker.md)
+- [AWS の ALB + EC2 構成で Docker 版を運用する場合の留意点](docs/deployment-aws-alb.md)
 - [更新・ロールバック](docs/update.md)
 - [画面操作・利用者管理](docs/administrator-guide.md)
 - [サーバ運用・全損復旧・アンインストール](docs/operations.md)
