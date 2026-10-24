@@ -18,6 +18,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         constructor(id = '') {
             this.id = id; this.value = ''; this.hidden = true; this.disabled = false;
             this.children = []; this.dataset = {}; this.style = {}; this.attributes = new Map();
+            this.options = [];
             this.listeners = new Map(); this.classes = new Set(); this.captures = new Set();
             this.classList = {
                 add: (...names) => names.forEach(name => this.classes.add(name)),
@@ -118,6 +119,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     const placementManager = await import('../public/js/modals/placement-modal.js');
     const { render } = await import('../public/js/canvas/renderer.js');
     const panels = await import('../public/js/ui/property-panel.js');
+    const { openDirectLink } = await import('../public/js/core/direct-link.js');
     const { eventBus } = await import('../public/js/core/event-bus.js');
     t.after(() => queue.clearPendingSave());
     let calls = [];
@@ -240,6 +242,29 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(el('view-search-input').value, '別館');
         assert.equal(appState.editingDeviceId, null);
         assert.equal(el('panel').hidden, true);
+        assert.equal(appState.devices[0].name, 'SW');
+        assert.equal(calls.length, 0);
+    });
+    await t.test('直接リンクは未適用入力の破棄拒否でフォーカスせず、破棄承認後にだけ詳細へ移動する', async t => {
+        await reset();
+        const originalCanvas = appState.canvas;
+        appState.canvas = el('canvas');
+        t.after(() => { appState.canvas = originalCanvas; });
+        appState.placements.push({ id: 291, view_id: 2, device_id: 10, x: 400, y: 300 });
+        resource.resetResourceBaseline(appState);
+        assert.equal(await panels.openPanel(appState.devices[0]), true);
+        el('p-name').value = 'リンク遷移前の未適用入力';
+        const selected = [...appState.selectedPlacementIds];
+        assert.equal(await choose(openDirectLink('?view=2&device=10'), 'cancel'), false);
+        assert.equal(appState.currentViewId, 1);
+        assert.equal(el('p-name').value, 'リンク遷移前の未適用入力');
+        assert.deepEqual([...appState.selectedPlacementIds], selected);
+        assert.equal(calls.length, 0);
+        assert.equal(await choose(openDirectLink('?view=2&device=10'), 'discard'), true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.currentViewId, 2);
+        assert.equal(appState.editingDeviceId, 10);
+        assert.deepEqual([...appState.selectedPlacementIds], [291]);
         assert.equal(appState.devices[0].name, 'SW');
         assert.equal(calls.length, 0);
     });

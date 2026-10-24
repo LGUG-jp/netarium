@@ -12,6 +12,8 @@ import { syncLinkModeButton } from '../ui/toolbar-controls.js';
 import { showCanvasContextToolbar, hideCanvasContextToolbar, finishCanvasContextToolbar } from '../ui/canvas-context-toolbar.js';
 import { screenToWorld } from './pan-zoom.js';
 import { suppressCanvasClickOnce } from './interaction-state.js';
+import { syncConnectionHighlight } from './renderer.js';
+import { replaceSelectedPlacementIds } from './selection.js';
 
 let editing = null;
 let drag = null;
@@ -100,9 +102,9 @@ export async function toggleCanvasNoteMode() {
     eventBus.emit('wiring:close');
     window.closeWorkspaceNavigation?.();
     endLinkMode();
-    appState.selectedPlacementIds.clear();
     appState.noteMode = true;
     syncMode();
+    replaceSelectedPlacementIds([]);
     renderCanvasNotes();
 }
 
@@ -148,6 +150,7 @@ export function finishCanvasNotes(reason = 'finish') {
     appState.selectedCanvasNoteId = null;
     hideCanvasContextToolbar('canvas-note');
     syncMode();
+    syncConnectionHighlight();
     renderCanvasNotes();
     if (!['replace', 'selection', 'view', 'reload', 'permission'].includes(reason)) {
         appState.canvas?.setAttribute('tabindex', '-1');
@@ -165,11 +168,11 @@ export async function selectCanvasNote(id) {
     stylePreview = null;
     hideCanvasContextToolbar('canvas-note');
     finishCanvasContextToolbar('replace');
-    appState.selectedPlacementIds.clear();
     appState.editingDeviceId = null;
     appState.editingLinkId = null;
     appState.selectedCanvasNoteId = Number(note.id);
     if (canEdit(note)) showCanvasContextToolbar('canvas-note', finishCanvasNotes);
+    replaceSelectedPlacementIds([]);
     renderCanvasNotes();
     const element = appState.noteLayer?.querySelector(`[data-note-id="${note.id}"]`);
     if (element && document.activeElement !== element) {

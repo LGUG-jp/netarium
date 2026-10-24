@@ -24,7 +24,8 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         return elements.get(id);
     };
     globalThis.document = {
-        getElementById: element, querySelectorAll: () => [], querySelector: () => null,
+        getElementById: id => id === 'ledger-device-sheet-overlay' ? null : element(id),
+        querySelectorAll: () => [], querySelector: () => null,
         addEventListener() {}, createElement: element, body: { appendChild() {}, classList: { toggle() {} } }
     };
     globalThis.window = {
@@ -41,6 +42,7 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
     const drafts = await import('../public/js/core/device-drafts.js');
     const { eventBus } = await import('../public/js/core/event-bus.js');
     const { normalizeCanvasNote } = await import('../public/js/core/canvas-note-data.js');
+    const { openLedgerDetail } = await import('../public/js/modals/ledger-modal.js');
     t.after(() => {
         queue.clearPendingSave();
         drafts.discardDeviceDrafts();
@@ -704,6 +706,7 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
 
     await t.test('確定済み同一対象の422差分は個票から再試行でき通信中はretryだけを無効化する', async () => {
         fixture();
+        await openLedgerDetail(10);
         appState.devices[0].memo = '再試行する確定値';
         handler = async () => json({ ok: false, error: '保存拒否' }, 422);
         assert.equal(await queue.flushSaveQueue({ silent: true }), false);
@@ -724,8 +727,9 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         assert.equal(calls.length, 2);
     });
 
-    await t.test('上部保存は未適用下書きで有効化せず個票は自身の下書きだけ対象にする', () => {
+    await t.test('上部保存は未適用下書きで有効化せず個票は自身の下書きだけ対象にする', async () => {
         fixture();
+        await openLedgerDetail(10);
         drafts.getDeviceDraft('sheet', 10).memo = '未適用';
         eventBus.emit('device-drafts:changed');
         assert.equal(element('saveBtn').disabled, true);

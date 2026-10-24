@@ -12,7 +12,7 @@
         tabindex="-1"
     >
         <header class="placement-manager-header">
-            <h2 id="link-display-settings-title">接続表示設定</h2>
+            <h2 id="link-display-settings-title">表示設定</h2>
             <button
                 type="button"
                 class="modal-close-btn"
@@ -21,31 +21,47 @@
             >×</button>
         </header>
         <div class="link-display-settings-body">
-            <p id="link-display-settings-description">
-                選択するとすぐに反映され、次回もこのブラウザーで同じ表示方式を使います。構成データには影響しません。
-            </p>
-            <fieldset class="link-display-settings-field">
+            <ul id="link-display-settings-description" class="link-display-settings-summary">
+                <li>変更はすぐに画面へ反映されます。</li>
+                <li>設定はこのブラウザーに保存されます。</li>
+                <li>構成データには影響しません。</li>
+            </ul>
+            <fieldset class="link-display-settings-field" aria-describedby="link-crossing-style-description">
                 <legend>交差の表現</legend>
+                <p id="link-crossing-style-description">接続線が交差したときの表示方法を選びます。</p>
                 <div class="link-display-settings-options">
                     <label>
                         <input type="radio" name="link-crossing-style" value="bridge" checked>
                         <span>山形ブリッジ</span>
-                        <svg class="link-display-settings-preview" viewBox="0 0 160 100" aria-hidden="true" focusable="false">
-                            <path d="M 50 10 L 50 90 M 110 10 L 110 90"></path>
-                            <path d="M 10 30 L 44 30 Q 50 18 56 30 L 104 30 Q 110 18 116 30 L 150 30
-                                     M 10 70 L 44 70 Q 50 58 56 70 L 104 70 Q 110 58 116 70 L 150 70"></path>
+                        <svg class="link-display-settings-preview" viewBox="0 0 160 64" aria-hidden="true" focusable="false">
+                            <path d="M 80 8 L 80 56"></path>
+                            <path d="M 10 32 L 72 32 Q 80 16 88 32 L 150 32"></path>
                         </svg>
                     </label>
                     <label>
                         <input type="radio" name="link-crossing-style" value="gap">
                         <span>切れ目（透過）</span>
-                        <svg class="link-display-settings-preview" viewBox="0 0 160 100" aria-hidden="true" focusable="false">
-                            <path d="M 50 10 L 50 90 M 110 10 L 110 90"></path>
-                            <path d="M 10 30 L 44 30 M 56 30 L 104 30 M 116 30 L 150 30
-                                     M 10 70 L 44 70 M 56 70 L 104 70 M 116 70 L 150 70"></path>
+                        <svg class="link-display-settings-preview" viewBox="0 0 160 64" aria-hidden="true" focusable="false">
+                            <path d="M 80 8 L 80 56"></path>
+                            <path d="M 10 32 L 72 32 M 88 32 L 150 32"></path>
                         </svg>
                     </label>
                 </div>
+            </fieldset>
+            <fieldset class="link-display-settings-field" aria-describedby="connection-highlight-description">
+                <legend>接続関係の強調</legend>
+                <p id="connection-highlight-description">選択した機器に直接つながる機器・接続を見やすくします。</p>
+                <label class="link-display-settings-switch">
+                    <input type="checkbox" id="connection-highlight-enabled" role="switch">
+                    <span class="link-display-settings-switch-track" aria-hidden="true"></span>
+                    <span class="link-display-settings-switch-copy">
+                        <span>接続関係を強調する</span>
+                        <span class="link-display-settings-switch-state" aria-hidden="true">
+                            <span class="link-display-settings-switch-off">OFF</span>
+                            <span class="link-display-settings-switch-on">ON</span>
+                        </span>
+                    </span>
+                </label>
             </fieldset>
         </div>
     </section>

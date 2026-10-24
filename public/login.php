@@ -23,7 +23,7 @@ try {
     }
 
     if (isAuthenticated() && refreshAuthenticatedUser()) {
-        header('Location: ' . (mustChangePassword() ? 'change-password.php' : 'index.php'));
+        header('Location: ' . (mustChangePassword() ? 'change-password.php' : consumeAuthenticationReturnUrl()));
         exit;
     }
 } catch (PDOException $e) {
@@ -189,7 +189,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ));
                         }
 
-                        header('Location: ' . (mustChangePassword() ? 'change-password.php' : 'index.php'));
+                        header('Location: ' . (mustChangePassword() ? 'change-password.php' : consumeAuthenticationReturnUrl()));
                         exit;
                     }
                 } catch (Throwable $e) {

@@ -12,7 +12,7 @@ requirePageAuthentication(true);
 header('Content-Type: text/html; charset=UTF-8');
 header('Cache-Control: no-store');
 if (!mustChangePassword()) {
-    header('Location: index.php');
+    header('Location: ' . consumeAuthenticationReturnUrl());
     exit;
 }
 $config = Config::create();
@@ -29,7 +29,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             AuditLog::begin($config, 'change_own_password', $id, $db);
             (new UserManagementService($db))->changeOwnPassword($_POST, $config['allow_legacy_bcrypt']);
             AuditLog::finish('success', ['target_type' => 'user', 'target_id' => $id], 200);
+            $returnParameters = authenticationDirectLinkParameters();
             clearAuthenticationSession();
+            if ($returnParameters !== []) {
+                // Password changes still end authentication. Only the link IDs
+                // survive in a fresh anonymous session for the required login.
+                session_id('');
+                startAppSession();
+                $_SESSION['direct_link_return'] = $returnParameters;
+            }
             header('Location: login.php');
             exit;
         } catch (Throwable $e) {

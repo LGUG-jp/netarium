@@ -114,6 +114,16 @@
     width: 130px;
 }
 
+.ledger-filter-tools #ledger-maintenance-expiry-filter-trigger {
+    width: 130px;
+}
+
+.ledger-maintenance-expiry-note {
+    margin: var(--space-2) 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 /* 保存などの操作行の右端に表示項目を置く。狭幅では折り返す。 */
 .ledger-tools .ledger-column-control {
     flex-direction: row;

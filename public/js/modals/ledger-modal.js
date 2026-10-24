@@ -17,7 +17,9 @@ import { getDeviceStatusLabel } from '../core/device-monitoring.js';
 import { setInputError } from '../ui/field-errors.js';
 import { bindLocationSuggestion } from '../ui/location-suggestions.js';
 import { getPlacedDeviceIds } from '../core/device-placement.js';
+import { MAINTENANCE_EXPIRY_LABELS, classifyMaintenanceExpiry, getMaintenanceExpiryDate } from '../core/maintenance-expiry.js';
 import { syncLedgerFilterPicker, closeLedgerFilterPickers } from '../ui/ledger-filter-picker.js';
+import { clearShareLinkFallback, copyShareLink } from '../ui/share-link.js';
 import { createDeviceTypePicker, closeDeviceTypePicker } from '../ui/device-type-picker.js';
 import {
     BULK_DEVICE_FIELDS, startDeviceBulkEdit, summarizeBulkValues,
@@ -144,6 +146,7 @@ export let activeLedgerDeviceId = null;
 
 let renderingLedgerTable = false;
 let ledgerViewFilterIds = [];
+let temporaryLedgerPreset = null;
 const LEDGER_FILTERS = [
     { key: 'viewIds', id: 'ledger-view-filter', label: '表示ビュー' },
     { key: 'facility', id: 'ledger-facility-filter', label: '施設' },
@@ -151,7 +154,8 @@ const LEDGER_FILTERS = [
     { key: 'status', id: 'ledger-status-filter', label: '状態' },
     { key: 'type', id: 'ledger-type-filter', label: '種別' },
     { key: 'ipPresence', id: 'ledger-ip-presence-filter', label: 'IP登録' },
-    { key: 'placement', id: 'ledger-placement-filter', label: '配置状態' }
+    { key: 'placement', id: 'ledger-placement-filter', label: '配置状態' },
+    { key: 'maintenanceExpiry', id: 'ledger-maintenance-expiry-filter', label: '保守期限' }
 ];
 
 function selectedLedgerValues(id) {
@@ -379,6 +383,7 @@ export function getLedgerSelectedDeviceIds() {
 export const LEDGER_COLUMN_PRESET_KEY = 'netarium_ledger_column_preset';
 
 export function getActiveLedgerPreset() {
+    if (temporaryLedgerPreset) return temporaryLedgerPreset;
     try {
         const saved = localStorage.getItem(LEDGER_COLUMN_PRESET_KEY);
         if (saved && Object.prototype.hasOwnProperty.call(LEDGER_PRESETS, saved)) {
@@ -389,6 +394,7 @@ export function getActiveLedgerPreset() {
 }
 
 export function setLedgerColumnPreset(presetKey) {
+    temporaryLedgerPreset = null;
     const validKey = Object.prototype.hasOwnProperty.call(LEDGER_PRESETS, presetKey)
         ? presetKey
         : 'standard';
@@ -475,6 +481,14 @@ export function renderLedgerTableHeader() {
     thead.replaceChildren(tr);
 }
 
+function clearTemporaryLedgerPreset() {
+    if (!temporaryLedgerPreset) return;
+    temporaryLedgerPreset = null;
+    const select = document.getElementById('ledger-column-preset');
+    if (select) select.value = getActiveLedgerPreset();
+    renderLedgerTableHeader();
+}
+
 export function openLedger() {
     setLedgerViewFilters([]);
     showLedger();
@@ -495,6 +509,7 @@ function showLedger() {
     }
 
     closeLedgerFilterPickers();
+    clearTemporaryLedgerPreset();
 
     const activePreset = getActiveLedgerPreset();
     const presetSelect = document.getElementById('ledger-column-preset');
@@ -522,7 +537,8 @@ export function openLedgerWithFilters(filters = {}) {
         'ledger-status-filter': filters.status,
         'ledger-type-filter': filters.type,
         'ledger-ip-presence-filter': filters.ipPresence,
-        'ledger-placement-filter': filters.placement
+        'ledger-placement-filter': filters.placement,
+        'ledger-maintenance-expiry-filter': filters.maintenanceExpiry
     };
     Object.entries(values).forEach(([id, value]) => setLedgerSelectValues(id, value));
     updateLedgerViewFilterOptions(filters.viewId ?? []);
@@ -538,6 +554,7 @@ export async function closeLedger() {
     if (!await closeLedgerDetailPane()) return false;
     closeLedgerFilterPickers();
     closeDeviceTypePicker();
+    clearTemporaryLedgerPreset();
     const overlay = document.getElementById('ledger-overlay');
     if (overlay) overlay.hidden = true;
     registerModalClose('ledger');
@@ -578,6 +595,8 @@ export function getLedgerDeviceTypeLabel(
 
 export function updateLedgerFilters() {
     updateLedgerViewFilterOptions();
+    fillLedgerSelect('ledger-maintenance-expiry-filter', Object.keys(MAINTENANCE_EXPIRY_LABELS),
+        key => MAINTENANCE_EXPIRY_LABELS[key], false);
     fillLedgerSelect(
         'ledger-facility-filter',
         uniqueSortedValues(
@@ -645,7 +664,8 @@ export function getFilteredLedgerDevices() {
         appState.placements.filter(placement => viewIds.has(Number(placement.view_id)))
     ) : null;
 
-    return appState.devices.filter(device => {
+    const referenceDate = new Date();
+    const devices = appState.devices.filter(device => {
         if (viewDeviceIds && !viewDeviceIds.has(Number(device.id))) return false;
         if (filters.facility.length && !filters.facility.includes(String(device.facility || ''))) return false;
         if (filters.floor.length && !filters.floor.includes(String(device.floor || ''))) return false;
@@ -656,6 +676,8 @@ export function getFilteredLedgerDevices() {
         if (filters.ipPresence.length && !filters.ipPresence.includes(hasIp ? 'registered' : 'empty')) return false;
         const isPlaced = placedIds.has(Number(device.id));
         if (filters.placement.length && !filters.placement.includes(isPlaced ? 'placed' : 'unplaced')) return false;
+        if (filters.maintenanceExpiry.length &&
+            !filters.maintenanceExpiry.includes(classifyMaintenanceExpiry(device.maintenance_expiry, referenceDate))) return false;
 
         if (!filters.keyword) {
             return true;
@@ -697,6 +719,11 @@ export function getFilteredLedgerDevices() {
             filters.keyword
         );
     });
+    if (!filters.maintenanceExpiry.length) return devices;
+    // 年月だけの期限は月末として比較し、未設定は末尾。同期限では元の機器順を保つ。
+    return devices.map(device => ({ device, date: getMaintenanceExpiryDate(device.maintenance_expiry) }))
+        .sort((a, b) => (a.date ?? '9999-99-99').localeCompare(b.date ?? '9999-99-99'))
+        .map(({ device }) => device);
 }
 
 
@@ -815,6 +842,7 @@ export function renderLedgerTable() {
     if (!tbody) {
         return;
     }
+    if (!selectedLedgerValues('ledger-maintenance-expiry-filter').length) clearTemporaryLedgerPreset();
 
     const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
     let focusedFieldInfo = null;
@@ -1427,6 +1455,7 @@ export function openLedgerForSearchedDevice(
     if (placementFilter) {
         placementFilter.value = '';
     }
+    setLedgerSelectValues('ledger-maintenance-expiry-filter', []);
 
     openLedger();
 
@@ -1633,6 +1662,13 @@ export function openDashboardLedger(
         );
 
         openLedgerWithFilters(filters);
+        if (selectedLedgerValues('ledger-maintenance-expiry-filter').length) {
+            temporaryLedgerPreset = 'maintenance';
+            const select = document.getElementById('ledger-column-preset');
+            if (select) select.value = temporaryLedgerPreset;
+            renderLedgerTableHeader();
+            renderLedgerTable();
+        }
         window.requestAnimationFrame(() => {
             appState.isDashboardNavigating = false;
         });
@@ -1985,6 +2021,10 @@ async function deleteSheetDeviceImage(deviceId, imageId) {
 }
 
 if (typeof document !== 'undefined') {
+    document.addEventListener('click', event => {
+        const button = event.target?.closest?.('#ledger-sheet-copy-link-btn');
+        if (button) void copyShareLink({ deviceId: activeLedgerDeviceId }, button);
+    });
     document.addEventListener('DOMContentLoaded', () => {
         const sheetFileInput = document.getElementById('ledger-sheet-image-file-input');
         if (sheetFileInput) {
@@ -2005,6 +2045,7 @@ export async function openLedgerDetail(deviceId) {
     const device = getDeviceById(deviceId);
     if (!device) return false;
 
+    clearShareLinkFallback('ledger-sheet-copy-link-btn');
     activeLedgerDeviceId = Number(deviceId);
 
     const rows = document.querySelectorAll('#ledger-table-body tr');

@@ -392,6 +392,23 @@
     will-change: transform;
 }
 
+/* Opacity leaves hit paths, status colors and pointer interactions intact. */
+.device.connection-dimmed,
+.link-group.connection-dimmed {
+    opacity: 0.28;
+}
+
+.device.connection-related {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.device.connection-dimmed:hover,
+.device.connection-dimmed.dragging,
+.link-group.connection-dimmed:hover {
+    opacity: 0.85;
+}
+
 .device .icon {
     position: relative;
     display: flex;
