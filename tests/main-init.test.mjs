@@ -7,7 +7,7 @@ import {
 } from '../public/js/core/resource-save.js';
 import { appState, toSaveDevice, toSaveView } from '../public/js/core/state.js';
 
-test('起動時にビューを読み込み、追加したビューを保存できる', async (t) => {
+test('起動時に直接リンクのビューを読み込み、追加したビューを保存できる', async (t) => {
     const elements = new Map();
     const mockEl = (id = '') => ({
         id,
@@ -54,7 +54,7 @@ test('起動時にビューを読み込み、追加したビューを保存で�
     const errors = [];
     t.mock.method(console, 'error', (...args) => errors.push(args));
     globalThis.window = {
-        addEventListener() {}, location: { reload() {} },
+        addEventListener() {}, location: { search: '?view=12', reload() {} },
         clearTimeout() {}, setTimeout() { return 0; },
         APP_CONFIG: { user: { isAdmin: true }, csrfToken: 'test-only-token' }
     };
@@ -63,10 +63,13 @@ test('起動時にビューを読み込み、追加したビューを保存で�
         querySelector: () => null, querySelectorAll: () => [], createElement: mockEl
     };
     const view = { id: 1, resource_revision: 1, name: '試験ビュー', facility: '', floor: '', view_type: 'topology', sort_order: 10, memo: '' };
+    const linkedView = { ...view, id: 12, name: '共有先', sort_order: 20 };
     let savedPayload;
+    const startupRequests = [];
     globalThis.fetch = async (url, options) => {
+        startupRequests.push(url);
         if (url.includes('action=load')) {
-            return new Response(JSON.stringify({ revision: 1, views: [view], devices: [], placements: [], links: [], floor_plans: [], device_images: [] }));
+            return new Response(JSON.stringify({ revision: 1, views: [view, linkedView], devices: [], placements: [], links: [], floor_plans: [], device_images: [] }));
         }
         assert.ok(url.includes('action=save_resources'), `想定外のAPI: ${url}`);
         savedPayload = JSON.parse(options.body);
@@ -84,9 +87,11 @@ test('起動時にビューを読み込み、追加したビューを保存で�
     assert.deepEqual(errors, []);
     assert.equal(state.noteLayer, getElement('canvas-note-layer'));
     assert.equal(state.noteLayer.id, 'canvas-note-layer');
-    assert.equal(state.currentViewId, 1);
+    assert.equal(state.currentViewId, 12);
     assert.equal(state.appStatus.state, 'saved');
-    assert.deepEqual(state.views, [view]);
+    assert.deepEqual(state.views, [view, linkedView]);
+    assert.equal(startupRequests.length, 1);
+    assert.ok(startupRequests[0].includes('action=load'), 'リンクを開くだけでは保存やPingを実行しない');
 
     const addedView = { ...view, id: 2, name: '追加ビュー', sort_order: 20 };
     state.views.push(addedView);
@@ -144,6 +149,12 @@ test('起動時にビューを読み込み、追加したビューを保存で�
     globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: 'busy' }), { status: 503 });
     await window.reloadDataWithConfirmation();
     assert.equal(window.getPendingSave(), pending, '再読込失敗で未確定作成の再送制限を解除しない');
+    state.currentViewId = 1;
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        revision: 10, views: [view, linkedView], devices: [], placements: [], links: []
+    }));
+    assert.equal(await window.loadData(), true);
+    assert.equal(state.currentViewId, 1, '通常の再読込ではURLによる自動遷移を繰り返さない');
 });
 
 function resourceFixture() {

@@ -6,6 +6,12 @@ Netarium の自動テストは、外部パッケージ（PHPUnit や Jest 等）
 
 ## 1. 概要と実行方法
 
+実行範囲は[開発ガイドの確認方針](../docs/development.md#確認の範囲と再実行)に従って選びます。
+本書はテストの一覧と実行方法であり、全コマンドを変更のたびに実行するチェックリストではありません。
+通常の機能追加・局所修正は直接関係するテストを選び、コア改修・広範な変更・リリース判定で全件回帰へ広げます。
+文書のみの変更では、リンクと記述の整合を確認し、動作テストは行いません。
+CI とローカルの重複を避ける判断は[役割分担](../docs/development.md#ローカルとciの役割分担)を参照してください。
+
 ### PHP API 回帰テスト
 ```powershell
 php tests/regression_test.php
@@ -49,19 +55,37 @@ php tests/docker-backup-runners.test.php
 
 隔離された一時ディレクトリで、`docker-backup-runner.php` による完全バックアップZIPの作成（SQLite VACUUM INTOスナップショット＋画像コピー＋manifest.json梱包）および `docker-restore-runner.php` による事前検証（`--verify-only`）・アトミック復元（`--apply`）、既存セッションの破棄、不整合・破損ZIPに対するロールバック保護、および全損復旧（空ホストストレージへの復元）を検証します。
 
-<a id="docker-ci-スモークテスト59"></a>
+<a id="docker-ci-スモークテスト59299"></a>
 
 ### Docker CI スモークテスト
 
-Linuxコンテナ環境またはCI上で、Docker Composeによる起動、ヘルスチェック（`public/healthcheck.php`）、更新・自動ロールバックCLI（`scripts/docker-update.sh`）、全損復旧（空Volumeへの`docker-restore.sh`）、および公開スナップショットからのDockerビルドを検証します。
+Linux コンテナ環境または CI 上で、Docker Compose による起動、ヘルスチェック（`public/healthcheck.php`）、更新・自動ロールバック CLI（`scripts/docker-update.sh`）、全損復旧（空 Volume への `docker-restore.sh`）、および公開スナップショットからの Docker ビルドを検証します。
+
+GitHub Actions の Docker CI では、Pull Request の変更内容に応じて検証範囲を 3 段階（`none`、`smoke`、`full`）に制御します。
+Markdown ドキュメントのみの変更、およびブラウザ用 JavaScript や CSS の変更では、Docker CI はコンテナ検証を実行しません（`none`）。
+PHP テンプレートや監視・品質関連の限定的な PHP コードの変更では、コンテナ起動と HTTP 疎通スモークを検証します（`smoke`）。ログイン後の `index.php` を取得し、主要画面の PHP テンプレート描画も確認します（ブラウザの表示・操作確認は含みません）。
+コア PHP コード、設定、スクリプト、Docker 資材、CI ワークフローの変更、または手動起動（`workflow_dispatch`）では、永続化、完全バックアップ・復元、更新・復旧、および公開スナップショットからのビルドを含む全手順を検証します（`full`）。
+
+<a id="docker-ci-範囲判定テスト299"></a>
+
+### Docker CI 範囲判定テスト
+
+```powershell
+node --test tests/ci-docker-scope.test.mjs
+```
+
+変更ファイル一覧から Docker CI の実行範囲（`none`、`smoke`、`full`）を判定する `scripts/ci-docker-scope.mjs` の判定ロジックと CLI 引数処理を検証します。
 
 ### JavaScript 単体・結合テスト
 ```powershell
-# 全件実行
-node --test tests/*.test.mjs
-
-# 特定のテストのみ実行
+# 通常は、変更した経路に関係するファイルを明示して実行
 node --test tests/link-router.test.mjs
+
+# 起動・import・イベント登録を変えた場合は起動確認も含める
+node --test tests/main-init.test.mjs
+
+# コア改修・広範な変更・リリース判定で必要な場合の全件実行
+node --test tests/*.test.mjs
 ```
 Node.js 標準の `node:test` ランナーを使用し、フロントエンドの幾何計算・データモデル・軽量 DOM 代替による UI 操作を検証します。
 
@@ -130,7 +154,7 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器/ビュー/系統/メモ）の保存、リソースリビジョン競合、内部仮名衝突回避、バッチ rollback、隔離PHPでmbstring関数不在時のUnicode保存・ロード・ZIP復元（iconv／PCRE経路） |
-| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`〜`v1.0.3 → v1.1.0`・`v1.1.0`同士の復元、逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
+| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`〜`v1.0.3`・`v1.1.0 → v1.2.0`・`v1.2.0`同士の復元、逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
@@ -151,25 +175,31 @@ HTTPS分岐のHTTP試験は専用prependでサーバー変数を合成します�
 ### 公開タグ実プログラムのバックアップ互換性smoke
 
 通常の互換性回帰は現コードの版定数を切り替えた隔離 fixture を使います。
-実タグ smoke では、Public の直前版 `v1.0.1` と最古の対応版 `v1.0.0` を読取専用で取得し、次の環境変数で実プログラムのコピー元を指定します。
+実タグ smoke では、Public の直前版 `v1.1.0`、既存の代表版 `v1.0.3`・`v1.0.1` と最古の対応版 `v1.0.0` を読取専用で取得し、次の環境変数で実プログラムのコピー元を指定します。
 既存の `tmp/`、配備先、本番 storage は使いません。
 下記は候補リポジトリのルートから実行する PowerShell の例です。
 公開先への書込み・タグ作成・IIS 設定変更は行いません。
 
-v1.1.0 候補では、直前公開版 `v1.0.3`（`対象変更`）を同様に取得・展開し、`NETARIUM_BACKUP_V103_ROOT` に指定します。
-Web ZIP と完全 ZIP の既存テストは、指定された公開版実プログラムで生成した ZIP の `1.0.3 → 1.1.0` 復元と候補同士の復元、逆方向・未知版・破損 ZIP 拒否を確認します。
+v1.2.0 候補では、`NETARIUM_BACKUP_V110_ROOT` に直前公開版 `v1.1.0`、`NETARIUM_BACKUP_V103_ROOT` に `v1.0.3` の展開ルートを指定します。
+Web ZIP と完全 ZIP の既存テストは、指定された公開版実プログラムで生成した ZIP の `1.1.0 → 1.2.0` を含む順方向復元と候補同士の復元、候補から全旧版への逆方向・未知版・破損 ZIP・スキーマ／形式不一致の拒否を確認します。
 この結果は IIS 実機採取 ZIP の Docker 復元とは区別します。
 
 ```powershell
 $smokeRoot = Join-Path $env:TEMP ('netarium-backup-smoke-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
-git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.0.0:refs/backup-compat/public-v1.0.0 refs/tags/v1.0.1:refs/backup-compat/public-v1.0.1
+git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.0.0:refs/backup-compat/public-v1.0.0 refs/tags/v1.0.1:refs/backup-compat/public-v1.0.1 refs/tags/v1.0.3:refs/backup-compat/public-v1.0.3 refs/tags/v1.1.0:refs/backup-compat/public-v1.1.0
 git archive --format=zip --output="$smokeRoot/v100.zip" refs/backup-compat/public-v1.0.0
 git archive --format=zip --output="$smokeRoot/v101.zip" refs/backup-compat/public-v1.0.1
+git archive --format=zip --output="$smokeRoot/v103.zip" refs/backup-compat/public-v1.0.3
+git archive --format=zip --output="$smokeRoot/v110.zip" refs/backup-compat/public-v1.1.0
 Expand-Archive -LiteralPath "$smokeRoot/v100.zip" -DestinationPath "$smokeRoot/v100"
 Expand-Archive -LiteralPath "$smokeRoot/v101.zip" -DestinationPath "$smokeRoot/v101"
+Expand-Archive -LiteralPath "$smokeRoot/v103.zip" -DestinationPath "$smokeRoot/v103"
+Expand-Archive -LiteralPath "$smokeRoot/v110.zip" -DestinationPath "$smokeRoot/v110"
 $env:NETARIUM_BACKUP_V100_ROOT = "$smokeRoot/v100"
 $env:NETARIUM_BACKUP_V101_ROOT = "$smokeRoot/v101"
+$env:NETARIUM_BACKUP_V103_ROOT = "$smokeRoot/v103"
+$env:NETARIUM_BACKUP_V110_ROOT = "$smokeRoot/v110"
 try {
     @'
 <?php
@@ -187,19 +217,20 @@ echo "PASS actual-tag Web ZIP smoke\n";
     powershell -NoProfile -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
     if ($LASTEXITCODE -ne 0) { throw 'Actual-tag full CLI smoke failed' }
 } finally {
-    Remove-Item Env:NETARIUM_BACKUP_V100_ROOT, Env:NETARIUM_BACKUP_V101_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:NETARIUM_BACKUP_V100_ROOT, Env:NETARIUM_BACKUP_V101_ROOT, Env:NETARIUM_BACKUP_V103_ROOT, Env:NETARIUM_BACKUP_V110_ROOT -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $smokeRoot -Recurse -Force
 }
 ```
 
 取得 ref の SHA は `v1.0.0 = 対象変更`、`v1.0.1 = 対象変更` と照合します。
+`v1.0.3` は `対象変更` と照合し、`v1.1.0` も取得した Public ref の SHA を実行記録に残します。
 Web smoke は実タグの HTTP 出力で ZIP を生成し、候補の preview／commit を実行します。
 元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認します。
 完全 ZIP smoke は実タグの helper で生成した ZIP を候補で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否を確認します。
 PowerShell テストは実タグ `v1.0.1` の `backup-full.ps1` で ZIP を作り、候補の `restore-full.ps1` による DB・画像・利用者復元、セッション失効、逆方向の IIS 停止前拒否を確認します（IIS 操作は既存モック）。
 候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
 これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
-実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.1.0` にした状態で結果を記録してください。
+実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.2.0` にした状態で結果を記録してください。
 
 
 ---
@@ -218,7 +249,8 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `link-bulk-data.test.mjs`: 複数リンク一括設定のデータ整合性
 - `link-systems-ui.test.mjs`: 接続系統管理モーダルの UI 操作（色変更、作成、削除禁止等）
 - `link-crossings.test.mjs`: リンク交差判定、山形ブリッジ/透過ギャップ描画計算
-- `link-display-settings.test.mjs`: 配線交差表示設定（bridge/gap 切り替え、localStorage 永続化、ラジオボタン同期）
+- `link-display-settings.test.mjs`: 交差表示と接続関係強調の独立保存、復元・保存失敗時の安全な初期値、フォーム同期
+- `connection-highlight.test.mjs`: 現在ビューの単一選択からの無向 1 ホップ強調、無効端点、選択・範囲選択との連動、交差表示・リンク前景の維持
 
 ### キャンバス & 描画・ビュー
 - `canvas-view.test.mjs`: Canvas のパン・ズーム、倍率クランプ、中央寄せ、全体 Fit 計算
@@ -283,6 +315,7 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `main-init.test.mjs`: アプリケーション起動時の初期化シーケンス
 - `palette-images.test.mjs`: 機器写真拡大ダイアログ（前後ナビゲーション、表示順序、端点制御、フォーカス復帰）
 - `toast.test.mjs`: 軽量トースト通知（3秒自動消去、二重表示防止）
+- `ci-docker-scope.test.mjs`: Docker CI 実行範囲判定スクリプト（`scripts/ci-docker-scope.mjs`）の単体テスト（変更パスの `none` / `smoke` / `full` 分類、判定優先順位、CLI 引数処理）
 
 ---
 

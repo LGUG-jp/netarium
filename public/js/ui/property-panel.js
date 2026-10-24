@@ -16,6 +16,7 @@ import { setInputError } from './field-errors.js';
 import { updateLengthFeedback, updateFormLengthFeedback } from './length-feedback.js';
 import { bindLocationSuggestion } from './location-suggestions.js';
 import { createDeviceTypePicker, closeDeviceTypePicker } from './device-type-picker.js';
+import { clearShareLinkFallback, copyShareLink } from './share-link.js';
 import {
     closeToolbarMenu,
 } from './toolbar-controls.js';
@@ -83,6 +84,11 @@ if (typeof document !== 'undefined') {
         updatePanelDraft(target);
     });
     document.addEventListener('click', async event => {
+        const copyButton = event.target?.closest?.('#p-copy-link-btn');
+        if (copyButton) {
+            await copyShareLink({ viewId: appState.currentViewId, deviceId: appState.editingDeviceId }, copyButton);
+            return;
+        }
         const button = event.target?.closest?.('#p-reload-conflict-btn, #lp-reload-conflict-btn');
         if (!button) return;
         const isDevice = button.id === 'p-reload-conflict-btn';
@@ -469,6 +475,7 @@ export function openPanel(device) {
     if (!panel || !device) {
         return false;
     }
+    clearShareLinkFallback('p-copy-link-btn');
 
     if (Number(appState.editingDeviceId) === Number(device.id) && hasUnappliedPanelChanges()) {
         return true;

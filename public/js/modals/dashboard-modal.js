@@ -42,6 +42,58 @@ const dashboardBreakdownExpanded = {
     floor: false,
     type: false
 };
+
+const DASHBOARD_TABS = ['operations', 'assets'];
+
+export function selectDashboardTab(tab, { focus = false } = {}) {
+    if (!DASHBOARD_TABS.includes(tab)) {
+        return;
+    }
+
+    DASHBOARD_TABS.forEach(name => {
+        const button = document.getElementById(`dashboard-tab-${name}`);
+        const panel = document.getElementById(`dashboard-panel-${name}`);
+        const selected = name === tab;
+        if (button) {
+            button.setAttribute('aria-selected', String(selected));
+            button.tabIndex = selected ? 0 : -1;
+            if (selected && focus) {
+                button.focus();
+            }
+        }
+        if (panel) {
+            panel.hidden = !selected;
+        }
+    });
+}
+
+export function handleDashboardTabKeydown(event) {
+    const tab = event.target?.closest?.('[data-dashboard-tab]');
+    const index = DASHBOARD_TABS.indexOf(tab?.dataset.dashboardTab);
+    if (index < 0) {
+        return;
+    }
+
+    let next;
+    switch (event.key) {
+        case 'ArrowLeft':
+            next = (index + DASHBOARD_TABS.length - 1) % DASHBOARD_TABS.length;
+            break;
+        case 'ArrowRight':
+            next = (index + 1) % DASHBOARD_TABS.length;
+            break;
+        case 'Home':
+            next = 0;
+            break;
+        case 'End':
+            next = DASHBOARD_TABS.length - 1;
+            break;
+        default:
+            return;
+    }
+    event.preventDefault();
+    selectDashboardTab(DASHBOARD_TABS[next], { focus: true });
+}
 function createCurrentDashboardModel(qualityResult = appState.dataQualityResult) {
     return buildDashboardModel({
         devices: appState.devices,
@@ -129,6 +181,8 @@ export function getDashboardFocusableElements() {
 
         return (
             !element.hidden &&
+            !element.closest('[hidden]') &&
+            element.tabIndex !== -1 &&
             element.offsetParent !== null &&
             element.getAttribute(
                 'aria-hidden'
@@ -252,6 +306,7 @@ export function openDashboard() {
     dashboardBreakdownExpanded.facility = false;
     dashboardBreakdownExpanded.floor = false;
     dashboardBreakdownExpanded.type = false;
+    selectDashboardTab('operations');
 
     appState.isDashboardNavigating = false;
 
@@ -323,6 +378,7 @@ export function hideDashboardForNavigation() {
     if (overlay) {
         overlay.hidden = true;
     }
+    registerModalClose('dashboard', { restoreFocus: false });
 
     document.body.classList.remove(
         'dashboard-open'
@@ -511,6 +567,18 @@ export function handleDashboardAction(
             openDashboardLedger({
                 status: 'unknown'
             });
+            return;
+
+        case 'ledger-maintenance-expired':
+            openDashboardLedger({ maintenanceExpiry: 'expired' });
+            return;
+
+        case 'ledger-maintenance-within1Year':
+            openDashboardLedger({ maintenanceExpiry: 'within1Year' });
+            return;
+
+        case 'ledger-maintenance-within2Years':
+            openDashboardLedger({ maintenanceExpiry: 'within2Years' });
             return;
 
         case 'quality-error':
@@ -820,13 +888,12 @@ export function setDashboardCount(
     }
 
     /*
-     * 総機器数は0件でも台帳を開ける。
+     * 総機器数と保守期限カードは0件でも台帳を開ける。
      * それ以外は0件時に無効化する。
      */
     const alwaysEnabled =
-        card.dataset
-            .dashboardAction ===
-        'ledger-all';
+        card.dataset.dashboardAction === 'ledger-all' ||
+        card.dataset.dashboardAction?.startsWith('ledger-maintenance-');
 
     if (
         card instanceof
@@ -1564,6 +1631,12 @@ export function renderDashboard() {
         );
 
     renderDashboardCounts();
+    ['expired', 'within1Year', 'within2Years', 'beyond2Years', 'unset'].forEach(category => {
+        setDashboardCount(
+            `dashboard-maintenance-${category}-count`,
+            dashboardModel?.maintenance?.[category] || 0
+        );
+    });
     renderDashboardNotices();
     renderDashboardBreakdowns();
 

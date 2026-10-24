@@ -85,5 +85,9 @@ test "$status" = 200
 grep -q '"ok":true' "$work/response"
 grep -q '"username":"poc_ci_admin"' "$work/response"
 
+# Render the authenticated main page, including its PHP templates.
+curl --fail --silent --show-error --cookie "$cookies" "$base/index.php" -o "$work/index.html"
+grep -q 'window.APP_CONFIG' "$work/index.html"
+
 # Do not print credentials or secret in CI logs.
-echo 'HTTP setup, CSRF rejection, wrong secret, re-registration, login and authenticated load: PASS'
+echo 'HTTP setup, CSRF rejection, wrong secret, re-registration, login, authenticated load and main page rendering: PASS'

@@ -1,5 +1,6 @@
 import { appState, getCurrentView } from '../core/state.js';
 import { normalizeText } from '../core/utils.js';
+import { clearShareLinkFallback } from './share-link.js';
 
 let results = [];
 let activeIndex = -1;
@@ -118,6 +119,7 @@ async function chooseView(id) {
 }
 
 export function syncViewCombobox() {
+    clearShareLinkFallback('view-copy-link-btn');
     const input = inputElement();
     if (!input) return;
     input.disabled = appState.views.length === 0;

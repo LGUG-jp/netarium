@@ -1,30 +1,49 @@
-name: Docker CI smoke
+name: Docker CI
 
 on:
   pull_request:
-    paths:
-      - Dockerfile
-      - compose.yaml
-      - compose.image.yaml
-      - .dockerignore
-      - docker/**
-      - .github/workflows/docker-poc.yml
-      - public/**
-      - src/**
-      - scripts/**
-      - resources/**
-      - tests/**
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  smoke:
+  scope:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          persist-credentials: false
+      - name: Select Docker verification scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            node scripts/ci-docker-scope.mjs --full
+          else
+            node scripts/ci-docker-scope.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi
+      - name: Verify scope classification boundaries
+        if: steps.scope.outputs.mode == 'full'
+        run: node --test tests/ci-docker-scope.test.mjs
+
+  smoke:
+    needs: scope
+    if: needs.scope.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Validate Compose configuration
         run: docker compose config --quiet
       - name: Build PoC image
@@ -114,6 +133,7 @@ jobs:
       - name: Exercise HTTP setup, login and authenticated load
         run: bash tests/docker-poc-http-smoke.sh
       - name: Seed identifiable SQLite data before recreation
+        if: needs.scope.outputs.mode == 'full'
         run: |
           docker compose exec -T web php -r '
           $db = new SQLite3(getenv("NETARIUM_DB_FILE"), SQLITE3_OPEN_READWRITE);
@@ -127,6 +147,7 @@ jobs:
           echo "Persistence marker seeded\n";
           '
       - name: Recreate and verify the original DB before any initialization
+        if: needs.scope.outputs.mode == 'full'
         run: |
           docker compose up -d --force-recreate
           docker compose exec -T web php -r '
@@ -147,6 +168,7 @@ jobs:
           echo "Existing SQLite contents retained\n";
           '
       - name: Verify original login session survived recreation
+        if: needs.scope.outputs.mode == 'full'
         run: |
           curl -fsS --cookie "$RUNNER_TEMP/netarium-poc-auth.cookies" \
             http://127.0.0.1:8080/api.php?action=load \
@@ -154,10 +176,12 @@ jobs:
           grep -q '"ok":true' "$RUNNER_TEMP/netarium-poc-after-recreate.json"
           grep -q '"username":"poc_ci_admin"' "$RUNNER_TEMP/netarium-poc-after-recreate.json"
       - name: Confirm retained DB passes install checks
+        if: needs.scope.outputs.mode == 'full'
         run: |
           docker compose exec -T web php scripts/check-install.php \
             --app-root=/var/www/html --storage-dir=/var/lib/netarium
       - name: Run docker full backup
+        if: needs.scope.outputs.mode == 'full'
         run: |
           backup_zip="$RUNNER_TEMP/poc-full-backup.zip"
           bash scripts/docker-backup.sh "$backup_zip"
@@ -165,6 +189,7 @@ jobs:
           test -r "$backup_zip"
           test $(stat -c '%s' "$backup_zip") -gt 1000
       - name: Mutate database and verify restore
+        if: needs.scope.outputs.mode == 'full'
         run: |
           # Mutate DB to prove restore actually recovers prior state
           docker compose exec -T web php -r '
@@ -186,8 +211,10 @@ jobs:
           # Sessions are invalidated by restore as required
           test "$(curl -sS -o /dev/null -w '%{http_code}' --cookie "$RUNNER_TEMP/netarium-poc-auth.cookies" http://127.0.0.1:8080/api.php?action=load)" = "401"
       - name: Run docker backup and restore unit tests
+        if: needs.scope.outputs.mode == 'full'
         run: php tests/docker-backup-runners.test.php
       - name: Reject immutable update references before stopping Web
+        if: needs.scope.outputs.mode == 'full'
         run: |
           cid="$(docker compose ps -q web)"
           started="$(docker inspect --format='{{.State.StartedAt}}' "$cid")"
@@ -202,6 +229,7 @@ jobs:
           test "$(docker inspect --format='{{.State.Running}}' "$cid")" = true
           test "$(docker inspect --format='{{.State.StartedAt}}' "$cid")" = "$started"
       - name: Verify docker update script with pre-update backup, preserved orphan image, and healthcheck
+        if: needs.scope.outputs.mode == 'full'
         run: |
           # Seed an unreferenced (orphan) floor-plan image to ensure update allows preserved images
           docker compose exec -T web php -r '
@@ -211,6 +239,7 @@ jobs:
           bash scripts/docker-update.sh
           test "$(curl -fsS http://127.0.0.1:8080/healthcheck.php | grep -o '"status":"ok"')" = '"status":"ok"'
       - name: Verify disaster recovery on fresh empty volume
+        if: needs.scope.outputs.mode == 'full'
         run: |
           # Completely destroy existing containers and volumes
           docker compose down -v
@@ -229,9 +258,11 @@ jobs:
           echo "Disaster recovery on empty volume PASS\n";
           '
       - name: Verify Docker build from public export snapshot
+        if: needs.scope.outputs.mode == 'full'
         run: |
           export_dir="$RUNNER_TEMP/netarium-public-export-check"
-          node scripts/export-public-snapshot.mjs --commit HEAD --out-dir "$export_dir"
+          node scripts/export-public-snapshot.mjs --commit HEAD --out-dir "$export_dir" \
+            --manifest-dir "$RUNNER_TEMP/netarium-public-export-manifest"
           cd "$export_dir"
           docker build -t netarium-public-export-test .
           docker run --rm netarium-public-export-test apache2ctl -t

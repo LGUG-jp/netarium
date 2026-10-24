@@ -260,16 +260,17 @@ export async function loadData() {
             );
         }
 
-
+        return true;
 
     } catch (err) {
         console.error(err);
 
-        if (err.status === 401) return;
+        if (err.status === 401) return false;
         showToast(
             `読み込みエラー: ${err.message}`,
             'error'
         );
+        return false;
 
     } finally {
         setBusy(false);

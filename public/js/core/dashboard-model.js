@@ -15,6 +15,7 @@ import {
 import { normalizeStatus } from './state.js';
 import { getUnplacedDeviceIds } from './device-placement.js';
 import { normalizeDataQualityIds } from '../modals/data-quality-modal.js';
+import { aggregateMaintenanceExpiry } from './maintenance-expiry.js';
 
 /**
  * ダッシュボードの分類値を整える。
@@ -342,7 +343,8 @@ export function buildDashboardModel({
     placements = [],
     qualityResult = null,
     dataRevision = 0,
-    dirty = false
+    dirty = false,
+    referenceDate = new Date()
 } = {}) {
     const sourceDevices = Array.isArray(devices) ? devices : [];
     const sourcePlacements = Array.isArray(placements) ? placements : [];
@@ -366,6 +368,7 @@ export function buildDashboardModel({
                 ? qualityRevision === Number(dataRevision)
                 : null,
         hasUnsavedChanges: Boolean(dirty),
+        maintenance: aggregateMaintenanceExpiry(sourceDevices, referenceDate),
         totals: {
             devices: sourceDevices.length,
             green: monitoring.green,

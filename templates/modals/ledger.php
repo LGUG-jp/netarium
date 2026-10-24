@@ -83,6 +83,10 @@
                         <option value="unplaced">未配置</option>
                     </select>
                 </div>
+                <div class="ledger-filter-control">
+                    <span>保守期限</span>
+                    <select id="ledger-maintenance-expiry-filter" multiple aria-label="保守期限"></select>
+                </div>
                 <!-- 追加ここまで -->
 
                 <button
@@ -221,6 +225,10 @@
                 ></div>
             </div>
 
+            <p class="ledger-maintenance-expiry-note">
+                保守期限の「YYYY-MM」は年月のみの情報です。区分判定・期限順では月末を暫定期限とし、元の値は変更しません。
+            </p>
+
             <div class="ledger-main-container" id="ledger-main-container">
                 <div class="ledger-table-wrap" id="ledger-table-wrap">
                     <table id="ledger-table">
@@ -331,6 +339,9 @@
                         disabled
                     >
                         次へ
+                    </button>
+                    <button id="ledger-sheet-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="機器のリンクをコピー（保存後に利用できます）">
+                        機器のリンクをコピー
                     </button>
                     <button
                         type="button"

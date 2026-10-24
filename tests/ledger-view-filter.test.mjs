@@ -63,7 +63,7 @@ class LedgerElement extends WorkspaceElement {
     }
 }
 
-const filterIds = ['ledger-search', 'ledger-view-filter', 'ledger-facility-filter', 'ledger-floor-filter', 'ledger-status-filter', 'ledger-type-filter', 'ledger-ip-presence-filter', 'ledger-placement-filter'];
+const filterIds = ['ledger-search', 'ledger-view-filter', 'ledger-facility-filter', 'ledger-floor-filter', 'ledger-status-filter', 'ledger-type-filter', 'ledger-ip-presence-filter', 'ledger-placement-filter', 'ledger-maintenance-expiry-filter'];
 
 test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件遷移を保つ', async t => {
     const keys = ['window', 'document', 'fetch', 'confirm', 'localStorage', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLButtonElement'];
@@ -83,6 +83,11 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     const table = add('table', 'ledger-table', overlay);
     add('thead', '', table);
     const rows = add('tbody', 'ledger-table-body', table);
+    const presetSelect = add('select', 'ledger-column-preset', overlay);
+    for (const value of ['standard', 'placement', 'asset', 'maintenance', 'monitoring', 'all']) {
+        const option = add('option', '', presetSelect);
+        option.value = value;
+    }
     for (const id of filterIds) {
         const element = add(id === 'ledger-search' ? 'input' : 'select', id, overlay);
         if (element.tagName === 'SELECT') element.multiple = true;
@@ -115,7 +120,12 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         setTimeout(callback, delay) { const timer = setTimeout(callback, delay); timer.unref(); return timer; }
     };
     for (const key of keys.filter(key => key === 'Element' || key.startsWith('HTML'))) globalThis[key] = LedgerElement;
-    globalThis.localStorage = { getItem: () => 'standard', setItem() {} };
+    const storage = new Map();
+    const presetWrites = [];
+    globalThis.localStorage = {
+        getItem: key => storage.get(key) ?? null,
+        setItem(key, value) { storage.set(key, value); presetWrites.push([key, value]); }
+    };
     globalThis.confirm = () => false;
     const { appState, normalizeDevice } = await import('../public/js/core/state.js');
     const { eventBus } = await import('../public/js/core/event-bus.js');
@@ -146,6 +156,8 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         appState.links = []; appState.deviceImages = [];
         appState.resourceConflicts = { devices: new Map(), views: new Map() };
         drafts.discardDeviceDrafts(); queue.clearPendingSave();
+        storage.set(ledger.LEDGER_COLUMN_PRESET_KEY, 'standard');
+        presetWrites.length = 0;
         ledger.ledgerSelectedDeviceIds.clear();
         filterIds.forEach(id => { get(id).value = ''; });
         window.APP_CONFIG.user.isAdmin = true;
@@ -195,7 +207,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         ledger.openLedgerWithFilters({
             viewId: [7, 8], facility: ['施設A', '施設B'], floor: ['1F', '2F'],
             status: ['unknown', 'green'], type: ['switch', 'router'],
-            ipPresence: ['registered', 'empty'], placement: ['placed', 'unplaced']
+            ipPresence: ['registered', 'empty'], placement: ['placed', 'unplaced'], maintenanceExpiry: 'unset'
         });
         get('ledger-search').value = '対象'; ledger.renderLedgerTable();
         assert.deepEqual(visibleIds(), [30, 10, 20, 40]);
@@ -205,7 +217,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         get('ledger-search').value = '存在しない検索'; ledger.renderLedgerTable();
         assert.deepEqual(visibleIds(), []);
         assert.deepEqual(ledger.getLedgerFilterValues(), { ...before, keyword: '存在しない検索' });
-        assert.equal(ledger.getLedgerActiveFilterItems().length, 13);
+        assert.equal(ledger.getLedgerActiveFilterItems().length, 14);
     });
 
     await t.test('各項目の1値チップと検索だけを解除でき、全解除は全値を消す', async () => {
@@ -216,7 +228,8 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
             ['status', 'status', ['unknown', 'green'], 'ledger-status-filter'],
             ['type', 'type', ['switch', 'router'], 'ledger-type-filter'],
             ['ipPresence', 'ipPresence', ['registered', 'empty'], 'ledger-ip-presence-filter'],
-            ['placement', 'placement', ['placed', 'unplaced'], 'ledger-placement-filter']
+            ['placement', 'placement', ['placed', 'unplaced'], 'ledger-placement-filter'],
+            ['maintenanceExpiry', 'maintenanceExpiry', ['expired', 'unset'], 'ledger-maintenance-expiry-filter']
         ];
         for (const [key, inputKey, values, id] of cases) {
             seed(); ledger.openLedgerWithFilters({ [inputKey]: values });
@@ -229,11 +242,127 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
             assert.deepEqual(get(id).selectedOptions.map(option => option.value), [String(values[1])]);
             ledger.resetLedgerFilters();
             assert.deepEqual(ledger.getLedgerFilterValues(), {
-                viewIds: [], keyword: '', facility: [], floor: [], status: [], type: [], ipPresence: [], placement: []
+                viewIds: [], keyword: '', facility: [], floor: [], status: [], type: [], ipPresence: [], placement: [], maintenanceExpiry: []
             });
             assert.deepEqual(visibleIds(), [30, 10, 20, 40, 50]);
         }
     });
+
+    const withExpiryReference = async callback => {
+        const OriginalDate = globalThis.Date;
+        globalThis.Date = class extends OriginalDate {
+            constructor(...args) { super(...(args.length ? args : [2026, 9, 23, 12])); }
+            static now() { return new OriginalDate(2026, 9, 23, 12).getTime(); }
+        };
+        try { await callback(); } finally { globalThis.Date = OriginalDate; }
+    };
+    const seedExpiry = () => {
+        seed();
+        const values = ['2027-10-23', '2026-10-22', '2028-10-23', '2028-10-24', ''];
+        appState.devices.forEach((device, index) => { device.maintenance_expiry = values[index]; });
+        appState.devices.push(
+            normalizeDevice({ id: 60, name: '不正期限', maintenance_expiry: '2026-02-30' }),
+            normalizeDevice({ id: 70, name: '月精度', maintenance_expiry: '2026-10', facility: '施設A', type: 'switch' }),
+            normalizeDevice({ id: 80, name: '当日期限', maintenance_expiry: '2026-10-23', facility: '施設A', type: 'switch' }),
+            normalizeDevice({ id: 90, name: '月末期限', maintenance_expiry: '2026-10-31', facility: '施設A', type: 'switch' })
+        );
+        resetResourceBaseline(appState);
+    };
+
+    await t.test('期限5区分は境界日を含めて分類し、不正を除外して年月を月末順に並べる', () => withExpiryReference(async () => {
+        seedExpiry();
+        const original = structuredClone(appState.devices);
+        for (const [category, expected] of [
+            ['expired', [10]], ['within1Year', [80, 70, 90, 30]],
+            ['within2Years', [20]], ['beyond2Years', [40]], ['unset', [50]]
+        ]) {
+            ledger.openLedgerWithFilters({ maintenanceExpiry: category });
+            assert.deepEqual(visibleIds(), expected, category);
+            assert.equal(ledger.getActiveLedgerPreset(), 'standard');
+        }
+        ledger.openLedgerWithFilters({ maintenanceExpiry: ['unset', 'within2Years', 'expired', 'within1Year', 'beyond2Years'] });
+        assert.deepEqual(visibleIds(), [10, 80, 70, 90, 30, 20, 40, 50]);
+        assert.deepEqual(appState.devices, original);
+        ledger.resetLedgerFilters();
+        assert.deepEqual(visibleIds(), original.map(device => device.id));
+    }));
+
+    await t.test('期限のORとビュー・施設・種別・検索のANDを保ち、期限チップと全解除を統合する', () => withExpiryReference(async () => {
+        seedExpiry();
+        ledger.openLedgerWithFilters({ maintenanceExpiry: ['expired', 'within1Year'], viewId: 7, facility: '施設A', type: 'switch', keyword: '対象' });
+        assert.deepEqual(visibleIds(), [30]);
+        await removeChip('maintenanceExpiry', 'within1Year');
+        assert.deepEqual(visibleIds(), []);
+        assert.deepEqual(ledger.getLedgerFilterValues().maintenanceExpiry, ['expired']);
+        await removeChip('maintenanceExpiry', 'expired');
+        assert.deepEqual(visibleIds(), [30]);
+        assert.deepEqual(ledger.getLedgerFilterValues().viewIds, [7]);
+        ledger.resetLedgerFilters();
+        assert.equal(ledger.getLedgerActiveFilterItems().length, 0);
+        assert.deepEqual(visibleIds(), [30, 10, 20, 40, 50, 60, 70, 80, 90]);
+    }));
+
+    await t.test('期限カードだけ保守列を一時表示し、解除・閉じる・通常入口では保存済み列に戻る', () => withExpiryReference(async () => {
+        seedExpiry();
+        storage.set(ledger.LEDGER_COLUMN_PRESET_KEY, 'asset');
+        ledger.openDashboardLedger({ maintenanceExpiry: ['expired', 'within1Year'] });
+        assert.equal(ledger.getActiveLedgerPreset(), 'maintenance');
+        assert.equal(presetSelect.value, 'maintenance');
+        assert.equal(storage.get(ledger.LEDGER_COLUMN_PRESET_KEY), 'asset');
+        assert.deepEqual(presetWrites, []);
+        await removeChip('maintenanceExpiry', 'expired');
+        assert.equal(ledger.getActiveLedgerPreset(), 'maintenance');
+        await removeChip('maintenanceExpiry', 'within1Year');
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        assert.equal(presetSelect.value, 'asset');
+        ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+        ledger.resetLedgerFilters();
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+        assert.equal(await ledger.closeLedger(), true);
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+        ledger.openLedger();
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        assert.deepEqual(ledger.getLedgerFilterValues().maintenanceExpiry, ['expired']);
+        ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+        ledger.openLedgerWithFilters({ viewId: 7 });
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        ledger.openDashboardLedger({ placement: 'unplaced' });
+        assert.equal(ledger.getActiveLedgerPreset(), 'asset');
+        assert.deepEqual(presetWrites, []);
+        ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+        ledger.setLedgerColumnPreset('monitoring');
+        assert.equal(storage.get(ledger.LEDGER_COLUMN_PRESET_KEY), 'monitoring');
+        assert.equal(ledger.getActiveLedgerPreset(), 'monitoring');
+        ledger.resetLedgerFilters();
+        assert.equal(ledger.getActiveLedgerPreset(), 'monitoring');
+        assert.deepEqual(presetWrites, [[ledger.LEDGER_COLUMN_PRESET_KEY, 'monitoring']]);
+    }));
+
+    await t.test('個票の保守期限編集を適用・保存すると、元の年月精度を保ち期限条件を再分類する', () => withExpiryReference(async () => {
+        seedExpiry();
+        appState.views[1].name = '別ビュー';
+        resetResourceBaseline(appState);
+        const calls = [];
+        globalThis.fetch = async (_url, options) => {
+            const payload = JSON.parse(options.body); calls.push(payload);
+            return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {},
+                devices: payload.devices.map(change => ({ ...change.device, resource_revision: 2 })),
+                views: [], placements: [], links: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
+        };
+        ledger.openLedgerWithFilters({ maintenanceExpiry: 'expired' });
+        assert.equal(await ledger.openLedgerDetail(10), true);
+        const input = get('ledger-sheet-body').querySelector('[data-field="maintenance_expiry"]');
+        input.value = '2026-10'; await input.dispatch('input');
+        assert.equal(await ledger.saveLedgerSheet(), true);
+        assert.deepEqual(visibleIds(), []);
+        assert.equal(appState.devices.find(device => device.id === 10).maintenance_expiry, '2026-10');
+        assert.equal(calls.at(-1).devices[0].device.maintenance_expiry, '2026-10');
+        await ledger.closeLedgerDetailPane();
+        ledger.openLedgerWithFilters({ maintenanceExpiry: 'within1Year' });
+        assert.deepEqual(visibleIds(), [80, 10, 70, 90, 30]);
+    }));
 
     await t.test('候補から消えた施設・フロア・種別も条件を保持し、復帰後に再び一致する', async () => {
         seed();
@@ -367,6 +496,22 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         assert.deepEqual(ledger.getLedgerSelectedDeviceIds(), []);
         assert.equal(row(30).querySelector('input[type="checkbox"]').checked, false);
     });
+
+    await t.test('期限条件の後も検索・品質診断から指定した別区分の機器を表示する', () => withExpiryReference(async () => {
+        for (const navigate of [
+            () => ledger.openLedgerForSearchedDevice(30),
+            () => ledger.openDataQualityDeviceInLedger(30)
+        ]) {
+            seedExpiry();
+            ledger.openDashboardLedger({ maintenanceExpiry: 'expired' });
+            assert.deepEqual(visibleIds(), [10]);
+            await navigate();
+            assert.deepEqual(ledger.getLedgerFilterValues().maintenanceExpiry, []);
+            assert.ok(visibleIds().includes(30));
+            assert.equal(row(30).classList.contains('search-highlight'), true);
+            assert.equal(ledger.getActiveLedgerPreset(), 'standard');
+        }
+    }));
 
     await t.test('表示ビューを台帳で変更・解除でき、条件付き入口はダッシュボードと同じく前の条件を初期化する', async () => {
         seed();
@@ -557,7 +702,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     });
 
     await t.test('viewerも限定台帳と個票を閲覧できるが既存read-only境界を越えない', async () => {
-        seed(); window.APP_CONFIG.user.isAdmin = false; ledger.openLedgerWithFilters({ viewId: 7 });
+        seed(); window.APP_CONFIG.user.isAdmin = false; ledger.openLedgerWithFilters({ viewId: 7, maintenanceExpiry: 'unset' });
         assert.deepEqual(visibleIds(), [30, 10, 20]);
         const name = row(30).querySelector('[data-field="name"]');
         assert.equal(name.readOnly, true);

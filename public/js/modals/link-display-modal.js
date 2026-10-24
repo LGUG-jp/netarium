@@ -1,4 +1,6 @@
 import {
+    getConnectionHighlightEnabled,
+    setConnectionHighlightEnabled,
     getLinkCrossingStyle,
     setLinkCrossingStyle
 } from '../core/link-display-settings.js';
@@ -13,6 +15,8 @@ function syncLinkDisplaySettings() {
     document.querySelectorAll('input[name="link-crossing-style"]').forEach(input => {
         input.checked = input.value === style;
     });
+    const checkbox = document.getElementById('connection-highlight-enabled');
+    if (checkbox) checkbox.checked = getConnectionHighlightEnabled();
 }
 
 export function openLinkDisplaySettings() {
@@ -47,4 +51,15 @@ export function initializeLinkDisplayModal() {
             }
         });
     });
+    const checkbox = document.getElementById('connection-highlight-enabled');
+    if (checkbox) {
+        checkbox.addEventListener('change', () => {
+            const requestedEnabled = checkbox.checked;
+            const actualEnabled = setConnectionHighlightEnabled(requestedEnabled);
+            syncLinkDisplaySettings();
+            if (actualEnabled !== requestedEnabled) {
+                showToast('このブラウザーの表示設定を保存できないため、接続関係の強調をオフに戻しました', 'warning');
+            }
+        });
+    }
 }

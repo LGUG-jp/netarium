@@ -1,6 +1,80 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * Parse the raw query: $_GET has already discarded duplicate parameter names.
+ * An invalid ID invalidates the whole link rather than changing its meaning.
+ */
+function parseAuthenticationDirectLink(string $query): array
+{
+    $parameters = [];
+    foreach (explode('&', $query) as $part) {
+        [$name, $value] = array_pad(explode('=', $part, 2), 2, '');
+        $name = urldecode($name);
+        if (str_starts_with($name, 'view[') || str_starts_with($name, 'device[')) {
+            return [];
+        }
+        if ($name !== 'view' && $name !== 'device') {
+            continue;
+        }
+        $value = urldecode($value);
+        if (preg_match('/\A[0-9]+\z/', $value) !== 1) {
+            return [];
+        }
+        $value = ltrim($value, '0');
+        if (
+            isset($parameters[$name])
+            || $value === ''
+            || strlen($value) > 16
+            || (strlen($value) === 16 && strcmp($value, '9007199254740991') > 0)
+        ) {
+            return [];
+        }
+        $parameters[$name] = $value;
+    }
+    return $parameters;
+}
+
+function rememberAuthenticationDirectLink(): void
+{
+    if (
+        ($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET'
+        || basename((string)($_SERVER['SCRIPT_NAME'] ?? '')) !== 'index.php'
+    ) {
+        return;
+    }
+    // Refresh/idle timeout may have destroyed the previous session.
+    startAppSession();
+    unset($_SESSION['direct_link_return']);
+    $parameters = parseAuthenticationDirectLink((string)($_SERVER['QUERY_STRING'] ?? ''));
+    if ($parameters !== []) {
+        $_SESSION['direct_link_return'] = $parameters;
+    }
+}
+
+function authenticationDirectLinkParameters(): array
+{
+    $parameters = $_SESSION['direct_link_return'] ?? [];
+    if (!is_array($parameters)) {
+        return [];
+    }
+    return parseAuthenticationDirectLink(http_build_query($parameters, '', '&', PHP_QUERY_RFC3986));
+}
+
+function consumeAuthenticationReturnUrl(): string
+{
+    $parameters = authenticationDirectLinkParameters();
+    unset($_SESSION['direct_link_return']);
+    $query = [];
+    // Keep a fixed page and fixed parameter names; never accept a destination URL.
+    foreach (['view', 'device'] as $name) {
+        if (isset($parameters[$name])) {
+            $query[$name] = $parameters[$name];
+        }
+    }
+    return 'index.php' . ($query === [] ? '' : '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
+}
+
 function requirePageAuthentication(bool $allowPasswordChange = false): void
 {
     startAppSession();
@@ -18,12 +92,14 @@ function requirePageAuthentication(bool $allowPasswordChange = false): void
     }
 
     if (!$authenticated) {
+        rememberAuthenticationDirectLink();
         recordAccessDenial('authentication_required');
         header('Location: login.php');
         exit;
     }
 
     if (!$allowPasswordChange && mustChangePassword()) {
+        rememberAuthenticationDirectLink();
         recordAccessDenial('password_change_required');
         header('Location: change-password.php');
         exit;

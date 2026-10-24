@@ -45,9 +45,9 @@ docker compose run --rm --no-deps web php scripts/check-install.php \
 ### 方式B: GHCR事前ビルド済みイメージ（推奨本番配備）
 
 ビルド環境を必要とせず、固定バージョンタグの公式イメージを利用します。`compose.image.yaml` を使用します。
-公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.1.0` です。
+公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.2.0` です。
 
-なお、本資材は公開準備中の未公開候補です。パッケージの匿名 pull および初回公開設定（Public 化）は、正式リリース公開時に確認します。公開前や開発環境では方式A（ソースビルド）を利用してください。
+公式イメージは GitHub Packages 上で Public として公開され、認証なし（匿名 pull）で取得できます。利用環境からイメージを取得できることを確認してください。
 
 ~~~sh
 # 1. 設定検証とイメージ取得
@@ -146,7 +146,7 @@ return [
 
 ### セキュリティ境界
 - Netariumの `TransportSecurity` は、`trusted_https_proxies` に登録されたIPからの接続でのみ `X-Forwarded-Proto: https` を信頼します。未登録のクライアントからのヘッダースプーフィングは拒否されます。
-- HTTPS認識時、セッションCookie属性は自動的に `__Host-netarium_session`（`Secure; SameSite=Lax`）に昇格し、設定された場合は `Strict-Transport-Security` ヘッダーが送出されます。
+- HTTPS認識時、セッションCookie属性は自動的に `__Host-netarium_session`（`Secure; HttpOnly; SameSite=Strict`、`Path=/`、`Domain` 指定なしの `__Host-` プレフィックス要件を満たす属性）に昇格し、設定された場合は `Strict-Transport-Security` ヘッダーが送出されます。
 
 ---
 
@@ -179,12 +179,23 @@ IIS環境の更新スクリプト（`scripts/update.ps1`）がIIS SiteやApplica
 ### 自動更新の実行
 
 ~~~sh
-# 通常更新（事前バックアップ採取 → ビルド/取得 → マイグレーション → 再起動 → ヘルスチェック）
+# 方式A: ソースビルド環境での更新（最新コードを取得後に実行）
 bash scripts/docker-update.sh
 
-# 事前ビルド済みイメージ（compose.image.yaml）環境での更新
+# 方式B: 事前ビルド済みイメージ（compose.image.yaml）環境での更新
+# ※ 次の版へ更新する際は、まず compose.image.yaml の image 参照を
+<a id="---新しい正式固定版タグへ切り替えてから実行します"></a>
+
+# 新しい正式固定版タグへ切り替えてから実行します。
 bash scripts/docker-update.sh -f compose.image.yaml
 ~~~
+
+#### 事前ビルド済みイメージ（GHCR固定タグ）利用時の更新手順
+GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.2.0`）で運用している環境を新しい版へ更新する際は、以下の流れで実施します。
+1. **イメージ参照の切り替え**: 稼働中の `compose.image.yaml` 内の `image:` を、新しい正式固定版タグ（例: `ghcr.io/lgug-jp/netarium:<新バージョン>`）へ書き換えます。架空のタグや digest（`@sha256:...`）ではなく、公式リリースで提供される固定タグを指定してください。
+2. **更新スクリプトの実行**: `bash scripts/docker-update.sh -f compose.image.yaml` を実行します。
+3. **事前バックアップと自動保護**: スクリプトが稼働中の現行バージョン（更新前）コンテナで自動的に事前バックアップ（`backups/pre-update-YYYYMMDD-HHMMSS-<token>.zip`）を生成し、新イメージの取得（pull）・DBマイグレーション検査・新コンテナ起動・ヘルスチェックを順次実施します。
+4. **失敗時の復旧**: 途中で検査や起動が失敗した場合は、自動的に更新前の旧イメージタグを復元した上で事前バックアップからデータを復元し、安全に元のバージョンで再開（自動ロールバック）します。自動切戻しにも失敗した場合は停止を維持（終了コード 2）し、事前バックアップZIPと保全タグ（`netarium-rollback:<ランダム値>`）から手動復旧が可能です。
 
 ### 更新の動作フロー
 1. **Web停止・自動事前バックアップ**: Webコンテナを停止し、更新前のイメージで `backups/pre-update-YYYYMMDD-HHMMSS-<token>.zip` を生成（メンテナンス完了まで停止状態を維持）。
@@ -204,7 +215,7 @@ bash scripts/docker-update.sh -f compose.image.yaml
 
 ## 8. 停止型完全バックアップ・復元・全損復旧
 
-完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の明示許可も必要です。`1.1.0` への復元元は `1.0.0`〜`1.0.3` および `1.1.0` です。
+完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の明示許可も必要です。`1.2.0` への復元元は `1.0.0`〜`1.0.3`、`1.1.0`、および `1.2.0` です。
 
 ### 完全バックアップの採取
 

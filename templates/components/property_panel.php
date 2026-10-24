@@ -38,6 +38,9 @@
                 接続設定 ⚙
             </button>
         </section>
+        <button id="p-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="現在のビューと機器のリンクをコピー（保存後に利用できます）">
+            機器のリンクをコピー
+        </button>
 
         <!-- 第1分類: 基本情報 (初期展開) -->
         <details id="p-group-basic" class="panel-group" open>

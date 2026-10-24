@@ -5,6 +5,7 @@ namespace Netarium\Tests\Suites;
 
 use Netarium\Tests\TestCase;
 use Netarium\Tests\TestHttpClient;
+use Netarium\Tests\TestResponse;
 
 class AuthTest extends TestCase
 {
@@ -13,6 +14,177 @@ class AuthTest extends TestCase
     public function __construct(TestHttpClient $client)
     {
         $this->client = $client;
+    }
+
+    private function submitLoginForm(
+        TestHttpClient $client,
+        string $username = 'viewer',
+        string $password = 'viewer123',
+        string $path = '/login.php'
+    ): TestResponse {
+        $page = $client->get($path);
+        $page->assertStatus(200);
+        $this->assertSame(1, preg_match('/name="csrf_token"\s+value="([^"]+)"/', $page->getBody(), $matches));
+        return $client->postForm($path, [
+            'csrf_token' => $matches[1],
+            'username' => $username,
+            'password' => $password,
+        ]);
+    }
+
+    public function testDirectLinkLoginReturnsOnlyValidatedIds(): void
+    {
+        foreach ([
+            'view=12' => 'index.php?view=12',
+            'device=305' => 'index.php?device=305',
+            'device=305&view=12' => 'index.php?view=12&device=305',
+            '%76iew=00012&device=000305' => 'index.php?view=12&device=305',
+            'view=1&device=9007199254740991' => 'index.php?view=1&device=9007199254740991',
+            'view=12&next=https%3A%2F%2Fevil.example&returnUrl=%2F%2Fevil.example&token=secret&name=private&ip=192.0.2.1'
+                => 'index.php?view=12',
+        ] as $query => $expected) {
+            $client = new TestHttpClient($this->client->getBaseUrl());
+            $response = $client->get('/index.php?' . $query);
+            $response->assertStatus(302);
+            $this->assertSame('login.php', $response->getHeader('Location'));
+            $client->get('/api.php?action=load')->assertStatus(401);
+            $login = $this->submitLoginForm($client);
+            $login->assertStatus(302);
+            $this->assertSame($expected, $login->getHeader('Location'), $query);
+            $client->get('/' . $expected)->assertStatus(200);
+            $this->assertSame('index.php', $client->get('/login.php')->getHeader('Location'));
+        }
+    }
+
+    public function testDirectLinkLoginRejectsMalformedAndDuplicateIds(): void
+    {
+        foreach ([
+            'view=',
+            'view=0',
+            'view=000',
+            'view=-1',
+            'view=1.5',
+            'view=1e2',
+            'view=%2B1',
+            'view=%201',
+            'view=9007199254740992',
+            'view=99999999999999999999999999999999',
+            'view=https%3A%2F%2Fevil.example',
+            'view=1%0D%0ALocation%3A%20https%3A%2F%2Fevil.example',
+            'view=1&view=2',
+            'view=1&%76iew=1',
+            'view[]=1',
+            'view=1&view[x]=2',
+            'view=12&device=',
+            'view=12&device=0',
+            'view=12&device=1e2',
+            'view=12&device=9007199254740992',
+            'view=12&device=305&device=306',
+            'device[]=305',
+            'next=https%3A%2F%2Fevil.example&returnUrl=%2F%2Fevil.example',
+        ] as $query) {
+            $client = new TestHttpClient($this->client->getBaseUrl());
+            $response = $client->get('/index.php?' . $query);
+            $response->assertStatus(302);
+            $this->assertSame('login.php', $response->getHeader('Location'));
+            $login = $this->submitLoginForm($client);
+            $login->assertStatus(302);
+            $this->assertSame('index.php', $login->getHeader('Location'), $query);
+        }
+    }
+
+    public function testDirectLinkSurvivesFailedLoginWithoutAcceptingNewDestinations(): void
+    {
+        $client = new TestHttpClient($this->client->getBaseUrl());
+        $client->get('/index.php?view=12&device=305')->assertStatus(302);
+        $client->postForm('/login.php?view=99&next=https%3A%2F%2Fevil.example', [
+            'csrf_token' => 'invalid',
+            'username' => 'viewer',
+            'password' => 'viewer123',
+        ])->assertStatus(200);
+        $failed = $this->submitLoginForm($client, 'viewer', 'wrong-password');
+        $failed->assertStatus(200);
+        $this->assertStringContains('ユーザー名またはパスワードが正しくありません', $failed->getBody());
+        $login = $this->submitLoginForm($client, 'viewer', 'viewer123', '/login.php?returnUrl=%2F%2Fevil.example');
+        $login->assertStatus(302);
+        $this->assertSame('index.php?view=12&device=305', $login->getHeader('Location'));
+    }
+
+    public function testNormalLoginAndNonIndexPagesDoNotCreateReturnTargets(): void
+    {
+        foreach (['viewer' => 'viewer123', 'admin' => 'admin123'] as $username => $password) {
+            $client = new TestHttpClient($this->client->getBaseUrl());
+            $client->get('/change-password.php?view=12')->assertStatus(302);
+            $login = $this->submitLoginForm(
+                $client, $username, $password,
+                '/login.php?view=99&next=https%3A%2F%2Fevil.example&returnUrl=%2F%2Fevil.example'
+            );
+            $login->assertStatus(302);
+            $this->assertSame('index.php', $login->getHeader('Location'));
+        }
+        $client = new TestHttpClient($this->client->getBaseUrl());
+        $client->get('/index.php?view=12')->assertStatus(302);
+        $client->get('/index.php?view=0')->assertStatus(302);
+        $this->assertSame('index.php', $this->submitLoginForm($client)->getHeader('Location'));
+    }
+
+    public function testDirectLinkDoesNotBypassForcedPasswordChangeAndReturnsAfterRelogin(): void
+    {
+        foreach (['normal' => '', 'linked' => '?view=12&device=305'] as $suffix => $query) {
+            $username = 'issue291' . $suffix;
+            $created = $this->client->postJson('/api.php?action=create_user', [
+                'username' => $username,
+                'password' => 'temporary-orbit-291',
+                'password_confirm' => 'temporary-orbit-291',
+                'role' => 'viewer',
+            ])->assertOk();
+            $client = new TestHttpClient($this->client->getBaseUrl());
+            $client->get('/index.php' . $query)->assertStatus(302);
+            $login = $this->submitLoginForm($client, $username, 'temporary-orbit-291');
+            $login->assertStatus(302);
+            $this->assertSame('change-password.php', $login->getHeader('Location'));
+            $client->get('/api.php?action=load')->assertStatus(403);
+            $this->assertSame('change-password.php', $client->get('/login.php')->getHeader('Location'));
+            $this->assertSame('change-password.php', $client->get('/index.php' . $query)->getHeader('Location'));
+            $client->postForm('/change-password.php', [
+                'csrf_token' => 'invalid',
+            ])->assertStatus(403);
+            $page = $client->get('/change-password.php');
+            $page->assertStatus(200);
+            $this->assertSame(1, preg_match('/name="csrf_token"\s+value="([^"]+)"/', $page->getBody(), $matches));
+            $change = $client->postForm('/change-password.php', [
+                'csrf_token' => $matches[1],
+                'current_password' => 'temporary-orbit-291',
+                'new_password' => 'private-galaxy-291',
+                'new_password_confirm' => 'private-galaxy-291',
+            ]);
+            $change->assertStatus(302);
+            $this->assertSame('login.php', $change->getHeader('Location'));
+            $client->get('/api.php?action=load')->assertStatus(401);
+            $relogin = $this->submitLoginForm($client, $username, 'private-galaxy-291');
+            $relogin->assertStatus(302);
+            $this->assertSame('index.php' . $query, $relogin->getHeader('Location'));
+
+            // A revoked session is destroyed during refresh. Its replacement
+            // must still remember the link, without retaining authentication.
+            $this->client->postJson('/api.php?action=update_user', [
+                'id' => $created->getJson()['user_id'],
+                'role' => 'viewer',
+                'is_active' => false,
+            ])->assertOk();
+            $denied = $client->get('/index.php' . $query);
+            $denied->assertStatus(302);
+            $this->assertSame('login.php', $denied->getHeader('Location'));
+            $client->get('/api.php?action=load')->assertStatus(401);
+            $this->client->postJson('/api.php?action=update_user', [
+                'id' => $created->getJson()['user_id'],
+                'role' => 'viewer',
+                'is_active' => true,
+            ])->assertOk();
+            $restored = $this->submitLoginForm($client, $username, 'private-galaxy-291');
+            $restored->assertStatus(302);
+            $this->assertSame('index.php' . $query, $restored->getHeader('Location'));
+        }
     }
 
     public function testSessionStorageOverridesPhpDefaultAndSurvivesAnotherProcess(): void

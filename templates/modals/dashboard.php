@@ -35,6 +35,11 @@
                 </div>
             </header>
 
+            <div id="dashboard-tabs" class="dashboard-tabs" role="tablist" aria-label="ダッシュボードの表示">
+                <button id="dashboard-tab-operations" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel-operations" tabindex="0" data-dashboard-tab="operations">運用状況</button>
+                <button id="dashboard-tab-assets" type="button" role="tab" aria-selected="false" aria-controls="dashboard-panel-assets" tabindex="-1" data-dashboard-tab="assets">資産・保守</button>
+            </div>
+
             <div class="dashboard-body">
                 <div
                     id="dashboard-notices"
@@ -58,7 +63,7 @@
                     class="dashboard-content"
                     hidden
                 >
-                    <!-- Phase 2.6B: 主要KPIサマリー帯 -->
+                    <div id="dashboard-panel-operations" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-operations">
                     <section
                         class="dashboard-kpi-bar"
                         aria-label="主要KPIサマリー"
@@ -334,7 +339,35 @@
                         </section>
                     </div>
 
-                    <!-- Phase 2.6D: 機器内訳 -->
+                    </div>
+
+                    <div id="dashboard-panel-assets" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-assets" hidden>
+                    <section class="dashboard-section dashboard-breakdown-section dashboard-maintenance-section" aria-labelledby="dashboard-maintenance-title">
+                        <div class="dashboard-section-header">
+                            <div>
+                                <h3 id="dashboard-maintenance-title">保守期限の見通し</h3>
+                            </div>
+                        </div>
+                        <div class="dashboard-maintenance-grid">
+                            <button type="button" class="dashboard-kpi-item dashboard-kpi-unplaced" data-dashboard-action="ledger-maintenance-expired">
+                                <span class="dashboard-kpi-label">期限超過</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-maintenance-expired-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
+                            </button>
+                            <button type="button" class="dashboard-kpi-item dashboard-kpi-total" data-dashboard-action="ledger-maintenance-within1Year">
+                                <span class="dashboard-kpi-label">残り1年以内</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-maintenance-within1Year-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
+                            </button>
+                            <button type="button" class="dashboard-kpi-item" data-dashboard-action="ledger-maintenance-within2Years">
+                                <span class="dashboard-kpi-label">残り1〜2年</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-maintenance-within2Years-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
+                            </button>
+                        </div>
+                        <p class="dashboard-maintenance-summary">
+                            <span>2年超：<strong id="dashboard-maintenance-beyond2Years-count">0</strong>台</span>
+                            <span>期限未登録：<strong id="dashboard-maintenance-unset-count">0</strong>台</span>
+                            <span class="dashboard-maintenance-note">年月のみの期限は月末として暫定集計します。</span>
+                        </p>
+                    </section>
                     <section
                         class="dashboard-section dashboard-breakdown-section"
                         aria-labelledby="dashboard-breakdown-title"
@@ -345,9 +378,6 @@
                                     機器内訳
                                 </h3>
 
-                                <p>
-                                    施設、フロア、種別ごとの機器構成（選択で機器台帳へドリルダウン）
-                                </p>
                             </div>
                         </div>
 
@@ -440,6 +470,7 @@
                             </section>
                         </div>
                     </section>
+                    </div>
                 </div>
             </div>
 

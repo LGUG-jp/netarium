@@ -67,6 +67,41 @@
     opacity: 0.45;
 }
 
+#toolbar #view-copy-link-btn {
+    flex: 0 0 34px;
+    width: 34px;
+    padding: 0;
+}
+
+#toolbar .share-link-fallback {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: clamp(8px, var(--share-link-left), max(8px, calc(100% - 348px)));
+    z-index: 900;
+    width: min(340px, calc(100vw - 16px));
+    box-sizing: border-box;
+    padding: var(--space-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    box-shadow: var(--shadow-lg);
+    white-space: normal;
+}
+
+#toolbar .share-link-fallback label {
+    display: block;
+    margin-bottom: var(--space-2);
+    font-size: 13px;
+}
+
+#toolbar .share-link-fallback input {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    margin-top: var(--space-2);
+}
+
 #toolbar .sep,
 .sep {
     width: 1px;

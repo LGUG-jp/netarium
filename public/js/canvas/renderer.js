@@ -18,7 +18,7 @@ import {
     clampNumber
 } from '../core/utils.js';
 import { eventBus } from '../core/event-bus.js';
-import { getLinkCrossingStyle } from '../core/link-display-settings.js';
+import { getLinkCrossingStyle, getConnectionHighlightEnabled } from '../core/link-display-settings.js';
 import { getLinkColor } from '../core/link-systems.js';
 import { calculateOriginFit } from './origin-fit.js';
 import {
@@ -73,6 +73,52 @@ import {
     isPlacementModeActive
 } from '../ui/placement-mode.js';
 import { renderCanvasNotes, createCanvasNote, finishCanvasNotes } from './canvas-notes.js';
+
+// 現在ビューの有効な端点だけを使い、無向の1ホップを描画ごとに求める。
+function getConnectionHighlight() {
+    if (!getConnectionHighlightEnabled() || appState.selectedPlacementIds.size !== 1 ||
+        appState.linkMode || appState.noteMode || appState.isRangeSelecting ||
+        appState.editingLinkId != null) return null;
+    const placements = getCurrentPlacements();
+    const selectedId = Number(appState.selectedPlacementIds.values().next().value);
+    const source = placements.find(row => Number(row.id) === selectedId);
+    if (!source || !getDeviceForPlacement(source)) return null;
+    const deviceIds = new Set(appState.devices.map(device => Number(device.id)));
+    const placedIds = new Set(placements
+        .filter(row => deviceIds.has(Number(row.device_id)))
+        .map(row => Number(row.device_id)));
+    const sourceId = Number(source.device_id);
+    const relatedIds = new Set([sourceId]);
+    const linkIds = new Set();
+    for (const link of getCurrentLinks()) {
+        const from = Number(link.from_id);
+        const to = Number(link.to_id);
+        if (!placedIds.has(from) || !placedIds.has(to)) continue;
+        if (from === sourceId || to === sourceId) {
+            relatedIds.add(from);
+            relatedIds.add(to);
+            linkIds.add(Number(link.id));
+        }
+    }
+    return { sourceId, relatedIds, linkIds };
+}
+
+function applyDeviceConnectionHighlight(element, deviceId, highlight) {
+    element.classList.toggle('connection-dimmed',
+        Boolean(highlight && !highlight.relatedIds.has(deviceId)));
+    element.classList.toggle('connection-related',
+        Boolean(highlight && deviceId !== highlight.sourceId && highlight.relatedIds.has(deviceId)));
+}
+
+export function syncConnectionHighlight(highlight = getConnectionHighlight()) {
+    appState.deviceLayer?.querySelectorAll('.device').forEach(element => {
+        applyDeviceConnectionHighlight(element, Number(element.dataset.deviceId), highlight);
+    });
+    appState.currentSvg?.querySelectorAll('.link-group').forEach(element => {
+        element.classList.toggle('connection-dimmed',
+            Boolean(highlight && !highlight.linkIds.has(Number(element.dataset.id))));
+    });
+}
 /**
  * 描画
  */
@@ -91,7 +137,8 @@ export function render({ revealLinkId = null } = {}) {
     appState.deviceLayer.replaceChildren();
 
     eventBus.emit('canvas:render-floor-plan');
-    renderLinks({ revealLinkId });
+    const connectionHighlight = getConnectionHighlight();
+    renderLinks({ revealLinkId, connectionHighlight });
     renderCanvasNotes();
 
     getCurrentPlacements().forEach(
@@ -108,7 +155,8 @@ export function render({ revealLinkId = null } = {}) {
             const element =
                 createDeviceElement(
                     placement,
-                    device
+                    device,
+                    connectionHighlight
                 );
 
             appState.deviceLayer.appendChild(element);
@@ -130,13 +178,14 @@ export function render({ revealLinkId = null } = {}) {
 /**
  * リンク描画
  */
-export function renderLinks({ revealLinkId = null } = {}) {
+export function renderLinks({ revealLinkId = null, connectionHighlight = getConnectionHighlight() } = {}) {
     if (!appState.currentSvg) {
         return;
     }
 
     syncLinkRouteEditor();
     appState.currentSvg.replaceChildren();
+    syncConnectionHighlight(connectionHighlight);
 
     const currentLinks = getCurrentLinks();
     const systemMap = new Map(appState.linkSystems.map(system => [Number(system.id), system]));
@@ -208,6 +257,8 @@ export function renderLinks({ revealLinkId = null } = {}) {
 
         group.classList.add('link-group');
         group.dataset.id = String(link.id);
+        group.classList.toggle('connection-dimmed',
+            Boolean(connectionHighlight && !connectionHighlight.linkIds.has(Number(link.id))));
         const color = getLinkColor(link, systemMap);
         const selected = Number(link.id) === Number(appState.editingLinkId);
         const active = { pathData: display?.pathData || pathData, color, selected };
@@ -337,7 +388,8 @@ export function renderLinks({ revealLinkId = null } = {}) {
  */
 export function createDeviceElement(
     placement,
-    device
+    device,
+    connectionHighlight = getConnectionHighlight()
 ) {
     const el = document.createElement('div');
 
@@ -345,6 +397,7 @@ export function createDeviceElement(
     el.classList.add(
         normalizeStatus(device.status)
     );
+    applyDeviceConnectionHighlight(el, Number(device.id), connectionHighlight);
 
     if (
         appState.selectedPlacementIds.has(

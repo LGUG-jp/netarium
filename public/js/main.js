@@ -199,10 +199,12 @@ import {
 import {
     closeDashboard,
     handleDashboardAction,
+    handleDashboardTabKeydown,
     hideDashboardForNavigation,
     inspectDashboardModel,
     openDashboard,
-    refreshDashboard
+    refreshDashboard,
+    selectDashboardTab
 } from './modals/dashboard-modal.js';
 import {
     clearDataQualityFilters,
@@ -233,6 +235,7 @@ import {
     focusDevicePlacement,
     highlightDevicePlacement,
     onCanvasClick,
+    render,
     renderLinks,
     showDeviceInPlacement
 } from './canvas/renderer.js';
@@ -253,6 +256,7 @@ import {
 import {
     renderStatusBar
 } from './ui/status-bar.js';
+import { openDirectLink } from './core/direct-link.js';
 import {
     isCurrentUserAdmin
 } from './ui/access-control.js';
@@ -328,6 +332,13 @@ export function registerStaticListeners() {
     document.getElementById('devices-csv-commit-btn')?.addEventListener('click', () => commitDevicesCsvImport());
     document.getElementById('dashboard-refresh-btn')?.addEventListener('click', () => refreshDashboard());
     document.getElementById('close-dashboard-btn')?.addEventListener('click', () => closeDashboard());
+    document.getElementById('dashboard-tabs')?.addEventListener('click', event => {
+        const tab = event.target?.closest?.('[data-dashboard-tab]');
+        if (tab) {
+            selectDashboardTab(tab.dataset.dashboardTab);
+        }
+    });
+    document.getElementById('dashboard-tabs')?.addEventListener('keydown', handleDashboardTabKeydown);
     document.getElementById('close-data-quality-btn')?.addEventListener('click', () => closeDataQuality());
     document.getElementById('select-data-quality-severity-btn')?.addEventListener('click', () => selectDataQualitySeverity('error'));
     document.getElementById('select-data-quality-severity-btn-2')?.addEventListener('click', () => selectDataQualitySeverity('warning'));
@@ -409,6 +420,8 @@ function registerApplicationEvents() {
             updateFloorPlanMenuVisibility();
         }
     );
+
+    eventBus.on('canvas:render', render);
 
     eventBus.on(
         'canvas:render-links',
@@ -530,7 +543,7 @@ function registerApplicationEvents() {
 /**
  * 初期化
  */
-function init() {
+async function init() {
     registerApplicationEvents();
     registerStaticListeners();
     initializeLinkDisplaySettings();
@@ -899,7 +912,9 @@ function init() {
     initModalFocusTrap();
 
 
-    loadData();
+    if (await loadData()) {
+        await openDirectLink(window.location.search || '');
+    }
 }
 
 

@@ -19,7 +19,8 @@ import {
     getCanvasLocalPoint
 } from './pan-zoom.js';
 import {
-    render
+    render,
+    syncConnectionHighlight
 } from './renderer.js';
 import {
     handleManagementConnectionDialogKeydown
@@ -414,6 +415,7 @@ export async function beginCanvasRangeSelection(
         );
 
     appState.isRangeSelecting = true;
+    syncConnectionHighlight();
 
     appState.canvas.classList.add(
         'selecting'
@@ -541,6 +543,7 @@ export async function beginCanvasRangeSelection(
         hideCanvasSelectionBox();
 
         appState.isRangeSelecting = false;
+        syncConnectionHighlight();
 
         appState.cancelActiveRangeSelection = null;
 
@@ -842,6 +845,7 @@ export function syncSelectedPlacementClasses() {
                 )
             );
         });
+    syncConnectionHighlight();
 }
 
 

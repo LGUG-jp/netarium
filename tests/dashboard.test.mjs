@@ -248,3 +248,32 @@ test('内訳の初期表示件数（5件制限）と展開ロジックの動作�
     // 展開時: 全件
     assert.equal(facilities.length, 7);
 });
+
+test('buildDashboardModel: 指定基準日で保守期限を集計し、既存の監視・内訳集計と元値を保つ', () => {
+    const devices = [
+        { id: 1, facility: '施設A', floor: '1F', type: 'server', status: 'green', maintenance_expiry: '2025-12' },
+        { id: 2, facility: '施設A', floor: '1F', type: 'server', status: 'red', maintenance_expiry: '2026-12' },
+        { id: 3, facility: '施設B', floor: '2F', type: 'server', status: 'unknown', maintenance_expiry: '2027-12' },
+        { id: 4, facility: '施設B', floor: '2F', type: 'server', status: 'green', maintenance_expiry: '2029-12' },
+        { id: 5, facility: '施設B', floor: '2F', type: 'server', status: 'green', maintenance_expiry: '' },
+        { id: 6, facility: '施設B', floor: '2F', type: 'server', status: 'green', maintenance_expiry: 'invalid' }
+    ];
+    const originalDevices = structuredClone(devices);
+    const model = buildDashboardModel({ devices, referenceDate: new Date(2026, 0, 1) });
+    const laterModel = buildDashboardModel({ devices, referenceDate: new Date(2027, 0, 1) });
+
+    assert.deepEqual(model.maintenance, {
+        expired: 1, within1Year: 1, within2Years: 1, beyond2Years: 1, unset: 1
+    });
+    assert.deepEqual(laterModel.maintenance, {
+        expired: 2, within1Year: 1, within2Years: 0, beyond2Years: 1, unset: 1
+    });
+    assert.deepEqual(model.totals, laterModel.totals);
+    assert.deepEqual(model.groups, laterModel.groups);
+    assert.equal(model.totals.devices, 6);
+    assert.equal(model.totals.green, 4);
+    assert.equal(model.totals.red, 1);
+    assert.equal(model.totals.unknown, 1);
+    assert.deepEqual(validateDashboardModel(model), []);
+    assert.deepEqual(devices, originalDevices);
+});

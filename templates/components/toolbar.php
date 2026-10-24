@@ -47,6 +47,12 @@
                 <div id="view-search-results" role="listbox" aria-label="ビュー候補"></div>
             </div>
         </div>
+        <button id="view-copy-link-btn" type="button" class="toolbar-btn" aria-label="現在のビューのリンクをコピー" title="現在のビューのリンクをコピー（保存後に利用できます）">
+            <svg class="toolbar-btn-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+                <rect x="8" y="8" width="12" height="12" rx="2"></rect>
+                <path d="M16 8V4H4v12h4"></path>
+            </svg>
+        </button>
 
         <div
             id="device-search"
@@ -198,7 +204,7 @@
                     id="link-display-settings-btn"
                     type="button"
                 >
-                    接続表示設定
+                    表示設定
                 </button>
 
                 <button id="link-systems-settings-btn" type="button" >

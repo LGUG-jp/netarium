@@ -126,6 +126,7 @@ import {
 
 import { fitViewToFloorPlan } from '../public/js/modals/floor-plan-modal.js';
 import { clampPosition } from '../public/js/canvas/drag-drop.js';
+import { openDirectLink } from '../public/js/core/direct-link.js';
 
 beforeEach(() => {
     mockElements.clear();
@@ -476,3 +477,37 @@ test('レスポンシブスタイル: 狭幅画面でもヘッダーとCanvasの
     assert.doesNotMatch(css, /@media[^{]*max-width:\s*820px[^{]*\{[^}]*#canvas/, '820px以下のメディアクエリでCanvasに余計な上部空白を設けない');
 });
 
+test('直接リンクは管理者・閲覧者とも指定ビューの機器を選択し詳細を開く', async () => {
+    for (const isAdmin of [true, false]) {
+        window.APP_CONFIG.user.isAdmin = isAdmin;
+        appState.views = [{ id: 1, sort_order: 1 }, { id: 12, sort_order: 2 }];
+        appState.currentViewId = 1;
+        appState.devices = [{ id: 305, name: '共有対象', type: 'router', ip: '' }];
+        appState.placements = [{ id: 30, view_id: 12, device_id: 305, x: 400, y: 300 }];
+        appState.editingDeviceId = null;
+        assert.equal(await openDirectLink('?view=12&device=305'), true);
+        assert.equal(appState.currentViewId, 12);
+        assert.equal(appState.editingDeviceId, 305);
+        assert.deepEqual([...appState.selectedPlacementIds], [30]);
+        assert.equal(document.getElementById('panel').classList.contains('hidden'), false);
+    }
+    window.APP_CONFIG.user.isAdmin = true;
+});
+
+test('直接リンクのビュー切替が中止された場合は選択・表示状態を保持する', async () => {
+    appState.views.push({ id: 12, sort_order: 2 });
+    appState.devices = [{ id: 305 }];
+    appState.placements = [{ id: 30, view_id: 12, device_id: 305 }];
+    appState.selectedPlacementIds.add(99);
+    appState.isPinging = true;
+    const before = { ...appState.viewState };
+    try {
+        assert.equal(await openDirectLink('?view=12&device=305'), false);
+        assert.equal(appState.currentViewId, 1);
+        assert.deepEqual([...appState.selectedPlacementIds], [99]);
+        assert.deepEqual(appState.viewState, before);
+        assert.equal(appState.editingDeviceId, null);
+    } finally {
+        appState.isPinging = false;
+    }
+});
