@@ -17,15 +17,65 @@ function fullSafeName(string $name): void
     }
 }
 
-function fullDatabase(string $file, string $root, bool $prepare = false): array
+function fullValidateSchema(PDO $db, int $schemaVersion): void
+{
+    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16], true)) { throw new RuntimeException('Unsupported source schema'); }
+    $reference = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    for ($version = 1; $version <= $schemaVersion; $version++) {
+        ('migrateDatabaseToVersion' . $version)($reference);
+    }
+    // Verify tables, columns, CHECKs, FKs, indexes and triggers before any source
+    // migration executes. user_version alone is not a database contract.
+    $sql = "SELECT type, name, tbl_name, sql FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name";
+    $normalize = static function (PDO $connection) use ($sql): array {
+        $rows = $connection->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) { $row['sql'] = preg_replace('/\s+/', ' ', trim((string)$row['sql'])); }
+        return $rows;
+    };
+    if ($normalize($db) !== $normalize($reference)) { throw new RuntimeException('Database schema contract mismatch'); }
+    $types = in_array($schemaVersion, [13, 14, 15, 16], true)
+        ? "'switch','l3_switch','router','firewall','ap','server','pc','printer','other'"
+        : "'switch','l3_switch','router','firewall','ap','server','printer','other'";
+    if ($db->query("SELECT 1 FROM devices WHERE type NOT IN ($types) LIMIT 1")->fetchColumn() !== false) {
+        throw new RuntimeException('Invalid source device type');
+    }
+    if ($schemaVersion === 11 && $db->query("SELECT 1 FROM views WHERE view_type NOT IN ('topology','floor') LIMIT 1")->fetchColumn() !== false) {
+        throw new RuntimeException('Invalid source view type');
+    }
+    if (in_array($schemaVersion, [12, 13, 14, 15, 16], true)) {
+        \Netarium\Services\Topology\RackLayout::validate(
+            $db->query('SELECT * FROM rack_settings')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM devices')->fetchAll(PDO::FETCH_ASSOC),
+            $schemaVersion >= 15 ? $db->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC) : [],
+            $schemaVersion >= 15 ? $db->query('SELECT * FROM rack_shelf_devices')->fetchAll(PDO::FETCH_ASSOC) : []
+        );
+        foreach (['device_placements', 'links', 'view_floor_plans'] as $table) {
+            if ($db->query("SELECT 1 FROM $table t JOIN views v ON v.id=t.view_id WHERE v.view_type='rack' LIMIT 1")->fetchColumn() !== false) {
+                throw new RuntimeException('Rack view contains XY content');
+            }
+        }
+    }
+    if ($schemaVersion === 16) {
+        \Netarium\Services\Topology\FloorRackPlacement::normalizeRows(
+            $db->query('SELECT * FROM floor_rack_placements')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+}
+
+function fullDatabase(string $file, string $root, bool $prepare = false, int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
 {
     if (!is_file($file)) { throw new RuntimeException('Database missing'); }
     $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     if ($prepare) { $db->beginTransaction(); } else { $db->exec('PRAGMA query_only=ON'); }
     try {
-        if ((int)$db->query('PRAGMA user_version')->fetchColumn() !== APP_DATABASE_SCHEMA_VERSION) {
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() !== $schemaVersion) {
             throw new RuntimeException('Incompatible database schema');
         }
+        fullValidateSchema($db, $schemaVersion);
         if ($db->query('PRAGMA integrity_check')->fetchAll(PDO::FETCH_COLUMN) !== ['ok']
             || $db->query('PRAGMA foreign_key_check')->fetch() !== false) {
             throw new RuntimeException('SQLite integrity/foreign key check failed');
@@ -41,13 +91,13 @@ function fullDatabase(string $file, string $root, bool $prepare = false): array
                 }
                 $sha = hash_file('sha256', $path);
                 if ($sha === false) { throw new RuntimeException('Cannot hash image: ' . $name); }
+                $image = getimagesize($path);
+                if ($image === false || $image[0] !== (int)$row['image_width']
+                    || $image[1] !== (int)$row['image_height'] || $image['mime'] !== $row['mime_type']) {
+                    throw new RuntimeException('Image attributes mismatch: ' . $name);
+                }
                 if ($prepare && $row['sha256'] === '') {
                     // Only the private backup snapshot may acquire a legacy digest.
-                    $image = getimagesize($path);
-                    if ($image === false || $image[0] !== (int)$row['image_width']
-                        || $image[1] !== (int)$row['image_height'] || $image['mime'] !== $row['mime_type']) {
-                        throw new RuntimeException('Image attributes mismatch: ' . $name);
-                    }
                     $stmt = $db->prepare("UPDATE $table SET sha256 = ? WHERE $key = ? AND sha256 = ''");
                     $stmt->execute([$sha, $row[$key]]);
                 } elseif (!is_string($row['sha256']) || !hash_equals($row['sha256'], $sha)) {
@@ -83,6 +133,23 @@ function fullInventory(string $root): array
     }
     ksort($files);
     return $files;
+}
+
+/** Hash only source columns, one row at a time; serialized values preserve types and binary data. */
+function fullTableFingerprint(PDO $db, string $table, array $columns, bool $excludeNewShelfSequence = false): array
+{
+    $quotedTable = '"' . str_replace('"', '""', $table) . '"';
+    $quotedColumns = array_map(static fn(string $column): string => '"' . str_replace('"', '""', $column) . '"', $columns);
+    $where = $excludeNewShelfSequence && $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
+    $rows = $db->query('SELECT ' . implode(', ', $quotedColumns) . " FROM $quotedTable$where ORDER BY rowid");
+    $hashContext = hash_init('sha256');
+    $count = 0;
+    while (($row = $rows->fetch(PDO::FETCH_NUM)) !== false) {
+        hash_update($hashContext, serialize($row));
+        $count++;
+    }
+    $rows->closeCursor();
+    return ['count' => $count, 'sha256' => hash_final($hashContext)];
 }
 
 function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles): array
@@ -159,8 +226,36 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
             } finally { fclose($in); fclose($out); }
             if (!hash_equals($expected['sha256'], hash_file('sha256', $root . '/' . $name))) { throw new RuntimeException('SHA-256 mismatch'); }
         }
-        $counts = fullDatabase($root . '/db/data.sqlite', $root);
+        $file = $root . '/db/data.sqlite';
+        $counts = fullDatabase($file, $root, false, $m['schema_version']);
         if ($counts !== $m['counts']) { throw new RuntimeException('Database count mismatch'); }
+        if (in_array($m['schema_version'], [11, 12, 13, 14, 15], true) && APP_DATABASE_SCHEMA_VERSION === 16
+            || in_array($m['schema_version'], [11, 12, 13, 14], true) && APP_DATABASE_SCHEMA_VERSION === 15
+            || in_array($m['schema_version'], [11, 12, 13], true) && APP_DATABASE_SCHEMA_VERSION === 14
+            || in_array($m['schema_version'], [11, 12], true) && APP_DATABASE_SCHEMA_VERSION === 13
+            || $m['schema_version'] === 11 && APP_DATABASE_SCHEMA_VERSION === 12) {
+            // Extraction uses exclusive-created files in a private workspace.
+            // Only this isolated DB is migrated, after all source checks finish.
+            $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $before = [];
+            foreach (array_keys($counts) as $table) {
+                $columns = [];
+                foreach ($db->query('PRAGMA table_info("' . str_replace('"', '""', $table) . '")') as $column) {
+                    $columns[] = $column['name'];
+                }
+                $before[$table] = ['columns' => $columns, 'fingerprint' => fullTableFingerprint($db, $table, $columns)];
+            }
+            migrateDatabase($db);
+            foreach ($before as $table => $source) {
+                if (fullTableFingerprint($db, $table, $source['columns'], $m['schema_version'] < 15) !== $source['fingerprint']) {
+                    throw new RuntimeException('Migration changed existing data: ' . $table);
+                }
+            }
+            $db = null;
+            // Revalidate the resulting contract and image references, not the
+            // old manifest hash/counts: those describe the unmodified source.
+            fullDatabase($file, $root);
+        }
         return $m;
     } finally { $zip->close(); }
 }

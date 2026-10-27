@@ -3,7 +3,8 @@
 ======================================================== */
 
 #panel,
-#link-panel {
+#link-panel,
+#rack-shelf-panel {
     position: fixed;
     top: var(--toolbar-height);
     right: 0;
@@ -26,7 +27,8 @@
 }
 
 #panel > *,
-#link-panel > * {
+#link-panel > *,
+#rack-shelf-panel > * {
     flex-shrink: 0;
 }
 
@@ -59,7 +61,8 @@
 }
 
 #panel h3,
-#link-panel h3 {
+#link-panel h3,
+#rack-shelf-panel h3 {
     margin: 0;
     font-size: 16px;
     font-weight: 700;

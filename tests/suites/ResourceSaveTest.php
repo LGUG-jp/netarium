@@ -43,6 +43,13 @@ class ResourceSaveTest extends TestCase
             'expected_revision' => (int)$view['resource_revision'], 'view' => $view,
             'placements' => array_values(array_filter($data['placements'], static fn($p) => (int)$p['view_id'] === $id)),
             'links' => array_values(array_filter($data['links'], static fn($l) => (int)$l['view_id'] === $id)),
+            'rack_settings' => array_values(array_filter($data['rack_settings'] ?? [], static fn($r) => (int)$r['view_id'] === $id))[0] ?? null,
+            'rack_mounts' => array_values(array_filter($data['rack_mounts'] ?? [], static fn($r) => (int)$r['view_id'] === $id)),
+            'rack_shelves' => array_values(array_filter($data['rack_shelves'] ?? [], static fn($r) => (int)$r['view_id'] === $id)),
+            'floor_rack_placements' => array_values(array_filter($data['floor_rack_placements'] ?? [], static fn($r) => (int)$r['floor_view_id'] === $id)),
+            'rack_shelf_devices' => array_values(array_filter($data['rack_shelf_devices'] ?? [],
+                static fn($r) => in_array($r['shelf_id'], array_column(array_filter($data['rack_shelves'] ?? [],
+                    static fn($s) => (int)$s['view_id'] === $id), 'id'), true))),
             'canvas_notes' => array_values(array_filter($data['canvas_notes'], static fn($n) => (int)$n['view_id'] === $id))];
     }
 
@@ -56,6 +63,704 @@ class ResourceSaveTest extends TestCase
         $this->fail("対象ID {$id} が見つかりません");
     }
 
+    public function testFloorRackPlacementLifecycleAndDeleteConflict(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $create = static fn(int $id, string $type): array => [
+                'operation' => 'create', 'id' => $id,
+                'view' => ['name' => "Floor rack {$id}", 'view_type' => $type],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'floor_rack_placements' => [],
+                'rack_settings' => $type === 'rack' ? ['view_id' => $id, 'total_u' => 42, 'location' => ''] : null,
+                'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
+            ];
+            $created = $this->save([], [$create(990001, 'floor'), $create(990002, 'rack'), $create(990003, 'floor')], $client);
+            $floorId = (int)$created['id_maps']['views'][990001];
+            $rackId = (int)$created['id_maps']['views'][990002];
+            $otherId = (int)$created['id_maps']['views'][990003];
+            $data = $this->load($client);
+            $floor = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            $floor['floor_rack_placements'] = [['floor_view_id' => $floorId, 'rack_view_id' => $rackId, 'x' => -12.5, 'y' => 45]];
+            $saved = $this->save([], [$floor], $client);
+            $this->assertSame($rackId, (int)$saved['floor_rack_placements'][0]['rack_view_id']);
+            $data = $this->load($client);
+            $this->assertSame(-12.5, (float)$data['floor_rack_placements'][0]['x']);
+            $other = $this->viewOperation($data, $this->find($data['views'], $otherId));
+            $other['floor_rack_placements'] = [array_replace($data['floor_rack_placements'][0], ['floor_view_id' => $otherId])];
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$other]])->assertStatus(400);
+            $floor = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            foreach (['12', true, null] as $invalidX) {
+                $bad = $floor;
+                $bad['floor_rack_placements'][0]['x'] = $invalidX;
+                $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$bad]])->assertStatus(400);
+            }
+            $bad = $floor;
+            $bad['floor_rack_placements'][0]['rack_view_id'] = $otherId;
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$bad]])->assertStatus(400);
+            $missing = $data;
+            unset($missing['floor_rack_placements']);
+            $client->postJson('/api.php?action=save', $missing)->assertStatus(400);
+            $client->postJson('/api.php?action=save', $data)->assertOk();
+            $data = $this->load($client);
+            $floor = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            $missingOperation = $floor;
+            unset($missingOperation['floor_rack_placements']);
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$missingOperation]])->assertStatus(400);
+            $floor['floor_rack_placements'][0]['x'] = 200;
+            $this->save([], [$floor], $client);
+            $data = $this->load($client);
+            $this->assertSame(200.0, (float)$data['floor_rack_placements'][0]['x']);
+            $source = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            $target = $this->viewOperation($data, $this->find($data['views'], $otherId));
+            $target['floor_rack_placements'] = [array_replace($source['floor_rack_placements'][0], ['floor_view_id' => $otherId])];
+            $source['floor_rack_placements'] = [];
+            $moved = $this->save([], [$source, $target], $client);
+            $this->assertSame($otherId, (int)$moved['floor_rack_placements'][0]['floor_view_id']);
+            $data = $this->load($client);
+            $source = $this->viewOperation($data, $this->find($data['views'], $otherId));
+            $target = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            $target['floor_rack_placements'] = [array_replace($source['floor_rack_placements'][0], ['floor_view_id' => $floorId])];
+            $source['floor_rack_placements'] = [];
+            $this->save([], [$source, $target], $client);
+            $copy = $create(990004, 'floor');
+            $this->save([], [$copy], $client);
+            $this->assertSame(1, count($this->load($client)['floor_rack_placements']));
+            $viewer = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($viewer->login('viewer', 'viewer123'));
+            $viewer->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$floor]])->assertStatus(403);
+            $data = $this->load($client);
+            $staleFloor = $this->viewOperation($data, $this->find($data['views'], $floorId));
+            $rack = $this->find($data['views'], $rackId);
+            $deleted = $this->save([], [['operation' => 'delete', 'id' => $rackId,
+                'expected_revision' => (int)$rack['resource_revision']]], $client);
+            $this->assertTrue(in_array($floorId, $deleted['affected_view_ids'], true));
+            $this->assertSame([], $deleted['floor_rack_placements']);
+            $this->assertTrue((int)$this->find($deleted['views'], $floorId)['resource_revision'] > $staleFloor['expected_revision']);
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$staleFloor]])->assertStatus(409);
+            $this->assertSame([], $this->load($client)['floor_rack_placements']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testFloorRackMigrationAndFiniteCoordinates(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        $db = new PDO('sqlite::memory:');
+        \Netarium\Core\Database::configure($db);
+        foreach (range(1, 15) as $version) { ('migrateDatabaseToVersion' . $version)($db); }
+        $db->exec("INSERT INTO views(id,name,view_type) VALUES (1,'Floor','floor'),(2,'Rack','rack')");
+        $before = $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC);
+        migrateDatabase($db);
+        $this->assertSame($before, $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC));
+        $this->assertSame([], $db->query('SELECT * FROM floor_rack_placements')->fetchAll());
+        foreach ([INF, -INF, NAN] as $x) {
+            try {
+                \Netarium\Services\Topology\FloorRackPlacement::normalizeRows(
+                    [['floor_view_id' => 1, 'rack_view_id' => 2, 'x' => $x, 'y' => 0]], $before);
+                $this->fail('非有限の座標を受理しました');
+            } catch (\Netarium\Core\ApiException $e) {
+                $this->assertTrue(true);
+            }
+        }
+        $db->exec('INSERT INTO floor_rack_placements VALUES (1,2,10,20)');
+        $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
+        $db->exec('DELETE FROM views WHERE id=2');
+        $this->assertSame([], $db->query('SELECT * FROM floor_rack_placements')->fetchAll());
+        $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn() > $revision);
+    }
+
+    public function testShelfFullSaveAllocatesLocalIdsAndRejectsMissingArrays(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $created = $this->save([], [[
+                'operation' => 'create', 'id' => 990001,
+                'view' => ['name' => 'Full-save shelf rack', 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'rack_settings' => ['view_id' => 990001, 'total_u' => 42, 'location' => ''],
+                'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
+            ]], $client);
+            $rackId = (int)$created['id_maps']['views'][990001];
+            $data = $this->load($client);
+            $data['rack_shelves'] = [['id' => -3, 'view_id' => $rackId, 'name' => 'Full-save shelf',
+                'face' => 'rear', 'start_u' => 4, 'height_u' => 1, 'depth' => 'half']];
+            $data['rack_shelf_devices'] = [['device_id' => (int)$data['devices'][0]['id'], 'shelf_id' => -3, 'sort_order' => 0]];
+            $saved = $client->postJson('/api.php?action=save', $data)->assertOk()->getJson();
+            $shelfId = (int)$saved['id_maps']['rack_shelves']['-3'];
+            $this->assertTrue($shelfId > 0);
+            $this->assertSame($shelfId, (int)$saved['rack_shelf_devices'][0]['shelf_id']);
+            $before = $this->load($client);
+            $missing = $before;
+            unset($missing['rack_shelves'], $missing['rack_shelf_devices']);
+            $client->postJson('/api.php?action=save', $missing)->assertStatus(400);
+            $this->assertSame($before['rack_shelves'], $this->load($client)['rack_shelves']);
+            $device = $before['devices'][0];
+            $this->save([['operation' => 'delete', 'id' => (int)$device['id'],
+                'expected_revision' => (int)$device['resource_revision']]], [], $client);
+            $after = $this->load($client);
+            $this->assertSame([], $after['rack_shelf_devices']);
+            $this->assertTrue((int)$this->find($after['views'], $rackId)['resource_revision']
+                > (int)$this->find($before['views'], $rackId)['resource_revision']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testShelfMigrationPreservesSchemaFourteenAndDeletionBumpsOwnerRevision(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        $db = new PDO('sqlite::memory:');
+        \Netarium\Core\Database::configure($db);
+        foreach (range(1, 14) as $version) { ('migrateDatabaseToVersion' . $version)($db); }
+        $db->exec("INSERT INTO views(id,name,view_type) VALUES (1,'Rack','rack')");
+        $db->exec("INSERT INTO devices(id,name) VALUES (1,'Child')");
+        $db->exec("INSERT INTO rack_settings VALUES (1,42,'Room')");
+        $before = [];
+        foreach (['views', 'devices', 'rack_settings', 'resource_sequences', 'app_meta'] as $table) {
+            $before[$table] = $db->query("SELECT * FROM $table")->fetchAll(PDO::FETCH_ASSOC);
+        }
+        migrateDatabase($db);
+        foreach ($before as $table => $rows) {
+            $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
+            $this->assertSame($rows, $db->query("SELECT * FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+        }
+        $db->exec("INSERT INTO rack_shelves VALUES (7,1,'Shelf','front',1,1,'half')");
+        $db->exec('INSERT INTO rack_shelf_devices VALUES (1,7,0)');
+        $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
+        $db->exec('DELETE FROM devices WHERE id=1');
+        $this->assertSame([], $db->query('SELECT * FROM rack_shelf_devices')->fetchAll());
+        $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn() > $revision);
+        $db->exec('DELETE FROM rack_shelves');
+        $db->beginTransaction();
+        $this->assertSame(8, \Netarium\Core\ResourceId::allocate($db, 'rack_shelves'));
+        $db->rollBack();
+    }
+
+    public function testShelfResourceRoundTripTransferMissingPayloadAndDeletionGuards(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $deviceId = (int)$this->load($client)['devices'][0]['id'];
+            $create = static fn($id) => ['operation' => 'create', 'id' => $id,
+                'view' => ['name' => "Shelf rack $id", 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'rack_settings' => ['view_id' => $id, 'total_u' => 42, 'location' => ''],
+                'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => []];
+            $origin = $create(990001);
+            $origin['rack_shelves'] = [['id' => -1, 'view_id' => 990001, 'name' => ' Shelf ',
+                'face' => 'front', 'start_u' => 2, 'height_u' => 1, 'depth' => 'full']];
+            $origin['rack_shelf_devices'] = [['device_id' => $deviceId, 'shelf_id' => -1, 'sort_order' => 0]];
+            $created = $this->save([], [$origin, $create(990002)], $client);
+            $shelfId = (int)$created['id_maps']['rack_shelves']['-1'];
+            $originId = (int)$created['id_maps']['views'][990001];
+            $targetId = (int)$created['id_maps']['views'][990002];
+            $this->assertTrue($shelfId > 0);
+            $data = $this->load($client);
+            $this->assertSame('Shelf', $data['rack_shelves'][0]['name']);
+            $source = $this->viewOperation($data, $this->find($data['views'], $originId));
+            $target = $this->viewOperation($data, $this->find($data['views'], $targetId));
+            $missing = $source;
+            unset($missing['rack_shelves'], $missing['rack_shelf_devices']);
+            $reject = function (array $operations) use ($client, $data): void {
+                $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => $operations])->assertStatus(400);
+                $this->assertSame($data['rack_shelves'], $this->load($client)['rack_shelves']);
+                $this->assertSame($data['rack_shelf_devices'], $this->load($client)['rack_shelf_devices']);
+            };
+            $reject([$missing]);
+            $remove = $source;
+            $remove['rack_shelves'] = [];
+            $remove['rack_shelf_devices'] = [];
+            $reject([$remove]);
+            $target['rack_shelves'] = [array_replace($source['rack_shelves'][0], ['view_id' => $targetId])];
+            $target['rack_shelf_devices'] = $source['rack_shelf_devices'];
+            $reject([$target]);
+            $source['rack_shelves'] = [];
+            $source['rack_shelf_devices'] = [];
+            $moved = $this->save([], [$source, $target], $client);
+            $this->assertSame($shelfId, (int)$moved['rack_shelves'][0]['id']);
+            $this->assertSame($targetId, (int)$moved['rack_shelves'][0]['view_id']);
+            $this->assertTrue(in_array($deviceId, array_column($moved['devices'], 'id'), true));
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$target]])->assertStatus(409);
+            $data = $this->load($client);
+            $target = $this->viewOperation($data, $this->find($data['views'], $targetId));
+            $target['rack_shelf_devices'] = [];
+            $this->save([], [$target], $client);
+            $data = $this->load($client);
+            $target = $this->viewOperation($data, $this->find($data['views'], $targetId));
+            $target['rack_shelves'] = [];
+            $this->save([], [$target], $client);
+            $this->assertSame([], $this->load($client)['rack_shelves']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testShelvesSharePhysicalOccupancyAndRejectDuplicateMembership(): void
+    {
+        $views = [['id' => 1, 'view_type' => 'rack']];
+        $devices = [['id' => 1], ['id' => 2]];
+        $settings = [['view_id' => 1, 'total_u' => 42, 'location' => '']];
+        $shelf = ['id' => 1, 'view_id' => 1, 'name' => 'Shelf', 'face' => 'front',
+            'start_u' => 2, 'height_u' => 2, 'depth' => 'half'];
+        $mount = ['device_id' => 1, 'view_id' => 1, 'face' => 'rear', 'start_u' => 2,
+            'height_u' => 1, 'width_slot' => 'right', 'depth' => 'half'];
+        $member = ['device_id' => 2, 'shelf_id' => 1, 'sort_order' => 0];
+        $validate = static fn($mounts, $shelves, $members) =>
+            \Netarium\Services\Topology\RackLayout::validate($settings, $mounts, $views, $devices, $shelves, $members);
+        $this->assertSame([$settings, [$mount], [$shelf], [$member]], $validate([$mount], [$shelf], [$member]));
+        foreach ([
+            [[$mount], [array_replace($shelf, ['depth' => 'full'])], []],
+            [[array_replace($mount, ['face' => 'front'])], [$shelf], []],
+            [[$mount], [$shelf], [array_replace($member, ['device_id' => 1])]],
+            [[], [$shelf], [$member, $member]],
+            [[], [$shelf], [$member, array_replace($member, ['device_id' => 1])]],
+            [[], [$shelf], [array_replace($member, ['shelf_id' => 99])]],
+            [[], [array_replace($shelf, ['face' => 'both'])], []],
+            [[], [array_replace($shelf, ['start_u' => 42])], []],
+            [[], [$shelf], [array_replace($member, ['sort_order' => -1])]],
+        ] as [$mounts, $shelves, $members]) {
+            try {
+                $validate($mounts, $shelves, $members);
+                $this->fail('Invalid shelf configuration accepted');
+            } catch (\Netarium\Core\ApiException $e) {
+                $this->assertSame(400, $e->getHttpStatus());
+            }
+        }
+    }
+
+    public function testPcCreateUpdateAndRackMountUseExistingDeviceFlow(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $created = $this->save([['operation' => 'create', 'id' => 990001,
+                'device' => ['name' => 'PC登録', 'type' => 'pc', 'ip' => '']]], [], $client);
+            $id = (int)$created['id_maps']['devices'][990001];
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->assertSame('pc', $device['type']);
+            $this->assertSame('', $device['ip']);
+            foreach (['', '192.0.2.31', ''] as $ip) {
+                $device['name'] = 'PC更新';
+                $device['ip'] = $ip;
+                $this->save([$this->deviceOperation($device)], [], $client);
+                $device = $this->find($this->load($client)['devices'], $id);
+                $this->assertSame('pc', $device['type']);
+                $this->assertSame('PC更新', $device['name']);
+                $this->assertSame($ip, $device['ip']);
+            }
+            $rack = $this->save([], [[
+                'operation' => 'create', 'id' => 990002,
+                'view' => ['name' => 'PCラック', 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'rack_settings' => ['view_id' => 990002, 'total_u' => 42, 'location' => ''],
+                'rack_mounts' => [['device_id' => $id, 'view_id' => 990002, 'face' => 'front',
+                    'start_u' => 1, 'height_u' => 1, 'width_slot' => 'full']],
+            ]], $client);
+            $rackId = (int)$rack['id_maps']['views'][990002];
+            $mounts = $this->load($client)['rack_mounts'];
+            $this->assertSame(1, count($mounts));
+            $this->assertSame($id, (int)$mounts[0]['device_id']);
+            $this->assertSame($rackId, (int)$mounts[0]['view_id']);
+            $this->assertSame('half', $mounts[0]['depth']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+
+    public function testRackMigrationPreservesVersionElevenDataAndTriggers(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        $db = new PDO('sqlite::memory:');
+        \Netarium\Core\Database::configure($db);
+        foreach (range(1, 11) as $version) {
+            ('migrateDatabaseToVersion' . $version)($db);
+        }
+        $db->exec("INSERT INTO views(id,name) VALUES (1,'Before migration')");
+        $db->exec("INSERT INTO devices(id,name) VALUES (1,'Device')");
+        $db->exec('INSERT INTO device_placements(id,device_id,view_id,x,y) VALUES (1,1,1,12,34)');
+        $db->exec("INSERT INTO canvas_notes(id,view_id,text) VALUES (1,1,'Preserve')");
+        $before = [];
+        foreach (['views', 'devices', 'device_placements', 'canvas_notes', 'resource_sequences'] as $table) {
+            $before[$table] = $db->query("SELECT * FROM {$table}")->fetchAll(PDO::FETCH_ASSOC);
+        }
+        migrateDatabase($db);
+        foreach ($before as $table => $rows) {
+            $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
+            $this->assertSame($rows, $db->query("SELECT * FROM {$table}{$where}")->fetchAll(PDO::FETCH_ASSOC));
+        }
+        $this->assertSame(16, (int)$db->query('PRAGMA user_version')->fetchColumn());
+        $this->assertSame(1, (int)$db->query('PRAGMA foreign_keys')->fetchColumn());
+        $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+        $db->exec("INSERT INTO views(id,name,view_type) VALUES (2,'Rack','rack')");
+        $db->exec("INSERT INTO rack_settings(view_id,total_u,location) VALUES (2,42,'Room')");
+        $db->exec("INSERT INTO rack_mounts(device_id,view_id,face,start_u,height_u,width_slot) VALUES (1,2,'both',1,2,'full')");
+        $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=2')->fetchColumn();
+        $db->exec('DELETE FROM devices WHERE id=1');
+        $this->assertSame(0, (int)$db->query('SELECT COUNT(*) FROM rack_mounts')->fetchColumn());
+        $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=2')->fetchColumn() > $revision);
+        $db->exec("UPDATE canvas_notes SET text='After' WHERE id=1");
+        $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn() > (int)$before['views'][0]['resource_revision']);
+    }
+
+    public function testRackLayoutFaceSlotBoundsAndStrictIntegers(): void
+    {
+        $views = [['id' => 1, 'view_type' => 'rack'], ['id' => 2, 'view_type' => 'rack']];
+        $devices = array_map(static fn($id) => ['id' => $id], range(1, 4));
+        $settings = [['view_id' => 1, 'total_u' => 42, 'location' => ''], ['view_id' => 2, 'total_u' => 42, 'location' => '']];
+        $mount = static fn($id, $face, $slot, $start = 1, $height = 1) =>
+            ['device_id' => $id, 'view_id' => 1, 'face' => $face, 'start_u' => $start, 'height_u' => $height, 'width_slot' => $slot];
+        $valid = [$mount(1, 'front', 'left'), $mount(2, 'front', 'right'), $mount(3, 'rear', 'left'), $mount(4, 'both', 'full', 41, 2)];
+        $expected = array_map(static fn($row) => $row + ['depth' => 'half'], $valid);
+        $this->assertSame([$settings, $expected, [], []], \Netarium\Services\Topology\RackLayout::validate($settings, $valid, $views, $devices));
+        $bad = [
+            [$valid[0], $mount(2, 'front', 'full')],
+            [$valid[0], $mount(2, 'both', 'full')],
+            [$mount(1, 'both', 'left')], [$mount(1, 'rear', 'full', 42, 2)],
+            [$mount(1, 'front', 'left', 0)], [$mount(1, 'front', 'left', 1.5)],
+            [$mount(1, 'front', 'left', '1')], [$mount(1, 'front', 'left', 1, 0)],
+            [$mount(99, 'front', 'left')], [$valid[0], array_replace($valid[0], ['view_id' => 2])],
+            [array_replace($valid[0], ['view_id' => 99])],
+        ];
+        foreach ($bad as $rows) {
+            try {
+                \Netarium\Services\Topology\RackLayout::validate($settings, $rows, $views, $devices);
+                $this->fail('Invalid rack layout accepted');
+            } catch (\Netarium\Core\ApiException $e) {
+                $this->assertTrue(true);
+            }
+        }
+    }
+
+    public function testRackDepthPhysicalSlotsMultiUAndDefaults(): void
+    {
+        $views = [['id' => 1, 'view_type' => 'rack']];
+        $devices = [['id' => 1], ['id' => 2]];
+        $settings = [['view_id' => 1, 'total_u' => 42, 'location' => '']];
+        $base = ['device_id' => 1, 'view_id' => 1, 'face' => 'front', 'width_slot' => 'left',
+            'start_u' => 2, 'height_u' => 3];
+        $other = array_replace($base, ['device_id' => 2, 'face' => 'rear']);
+        $validate = static fn($rows) => \Netarium\Services\Topology\RackLayout::validate($settings, $rows, $views, $devices);
+        $this->assertSame('half', $validate([$base, $other])[1][0]['depth']);
+        foreach (['front', 'rear'] as $face) {
+            $full = array_replace($base, ['face' => $face, 'depth' => 'full']);
+            $opposite = array_replace($other, ['face' => $face === 'front' ? 'rear' : 'front', 'start_u' => 4, 'height_u' => 1]);
+            foreach (['left', 'full'] as $slot) {
+                foreach ([[$full, array_replace($opposite, ['width_slot' => $slot])],
+                    [array_replace($opposite, ['width_slot' => $slot]), $full]] as $rows) {
+                    try {
+                        $validate($rows);
+                        $this->fail('Full-depth physical overlap accepted');
+                    } catch (\Netarium\Core\ApiException $e) {
+                        $this->assertSame(400, $e->getHttpStatus());
+                    }
+                }
+            }
+            $right = array_replace($opposite, ['width_slot' => 'right', 'depth' => 'half']);
+            $above = array_replace($opposite, ['start_u' => 5, 'depth' => 'half']);
+            $this->assertTrue([$full, $right] == $validate([$full, $right])[1], 'Opposite physical half remains usable');
+            $this->assertTrue([$full, $above] == $validate([$full, $above])[1], 'First U above the full-depth range remains usable');
+            try {
+                $validate([array_replace($full, ['width_slot' => 'full']), array_replace($opposite, ['width_slot' => 'right'])]);
+                $this->fail('Full-width depth overlap accepted');
+            } catch (\Netarium\Core\ApiException $e) {
+                $this->assertSame(400, $e->getHttpStatus());
+            }
+        }
+        foreach ([null, '', 'quarter', 1, false] as $depth) {
+            try {
+                $validate([array_replace($base, ['depth' => $depth])]);
+                $this->fail('Invalid depth accepted');
+            } catch (\Netarium\Core\ApiException $e) {
+                $this->assertSame(400, $e->getHttpStatus());
+            }
+        }
+    }
+
+    public function testRackDepthMigrationPreservesDevelopmentSchemasAndRevisions(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        foreach ([12, 13] as $sourceVersion) {
+            $db = new PDO('sqlite::memory:');
+            \Netarium\Core\Database::configure($db);
+            foreach (range(1, $sourceVersion) as $version) {
+                ('migrateDatabaseToVersion' . $version)($db);
+            }
+            $db->exec("INSERT INTO views(id,name,view_type,memo) VALUES (1,'Legacy rack','rack','rack memo')");
+            $db->exec("INSERT INTO devices(id,name) VALUES (1,'Legacy device')");
+            $db->exec("INSERT INTO rack_settings VALUES (1,42,'room')");
+            $db->exec("INSERT INTO rack_mounts VALUES (1,1,'rear',2,3,'left')");
+            $db->exec("INSERT INTO canvas_notes(id,view_id,text) VALUES (1,1,'existing note')");
+            $before = [];
+            foreach (['views', 'devices', 'rack_settings', 'rack_mounts', 'canvas_notes', 'resource_sequences', 'app_meta'] as $table) {
+                $before[$table] = $db->query("SELECT * FROM $table")->fetchAll(PDO::FETCH_ASSOC);
+            }
+            migrateDatabase($db);
+            foreach ($before as $table => $rows) {
+                if ($table === 'rack_mounts') {
+                    $rows = array_map(static fn($row) => $row + ['depth' => 'half'], $rows);
+                }
+                $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
+                $this->assertSame($rows, $db->query("SELECT * FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+            }
+            $this->assertSame(16, (int)$db->query('PRAGMA user_version')->fetchColumn());
+            $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+            $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
+            $db->exec("UPDATE rack_mounts SET depth='full' WHERE device_id=1");
+            $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn() > $revision);
+            try {
+                $db->exec("UPDATE rack_mounts SET depth='invalid'");
+                $this->fail('Depth CHECK missing');
+            } catch (\PDOException $e) {
+                $this->assertSame('23000', $e->getCode());
+            }
+            try {
+                $db->exec("UPDATE rack_mounts SET face='both',width_slot='left'");
+                $this->fail('Historical both/full CHECK lost');
+            } catch (\PDOException $e) {
+                $this->assertSame('23000', $e->getCode());
+            }
+        }
+    }
+
+    public function testRackSaveLoadTransferConflictsAndNonDestructiveFailures(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $originalClient = $this->client;
+        try {
+            $server->start();
+            $this->client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($this->client->login('admin', 'admin123'));
+            $create = static fn($id) => ['operation' => 'create', 'id' => $id,
+                'view' => ['name' => "Rack-$id", 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'rack_settings' => ['view_id' => $id, 'total_u' => 42, 'location' => 'Room'],
+                'rack_mounts' => []];
+            $created = $this->save([], [$create(990001), $create(990002)]);
+            $originId = (int)$created['id_maps']['views'][990001];
+            $targetId = (int)$created['id_maps']['views'][990002];
+            $data = $this->load();
+            $device = $data['devices'][0];
+            $deviceId = (int)$device['id'];
+            $mount = ['device_id' => $deviceId, 'view_id' => $originId, 'face' => 'rear',
+                'start_u' => 40, 'height_u' => 2, 'width_slot' => 'left', 'depth' => 'full'];
+            $origin = $this->viewOperation($data, $this->find($data['views'], $originId));
+            $origin['rack_mounts'] = [$mount];
+            $this->save([], [$origin]);
+            $data = $this->load();
+            $this->assertSame([$mount], $data['rack_mounts']);
+            $origin = $this->viewOperation($data, $this->find($data['views'], $originId));
+            $target = $this->viewOperation($data, $this->find($data['views'], $targetId));
+            $badOperations = [];
+            $shrink = $origin;
+            $shrink['rack_settings']['total_u'] = 40;
+            $badOperations[] = [$shrink];
+            $oldClient = $origin;
+            unset($oldClient['rack_settings'], $oldClient['rack_mounts']);
+            $badOperations[] = [$oldClient];
+            $convert = $origin;
+            $convert['view']['view_type'] = 'topology';
+            $convert['rack_settings'] = null;
+            $convert['rack_mounts'] = [];
+            $badOperations[] = [$convert];
+            $badOperations[] = [['operation' => 'delete', 'id' => $originId, 'expected_revision' => $origin['expected_revision']]];
+            $target['rack_mounts'] = [array_replace($mount, ['view_id' => $targetId])];
+            $badOperations[] = [$target];
+            $xy = $origin;
+            $xy['placements'] = [['id' => 990001, 'device_id' => $deviceId, 'view_id' => $originId, 'x' => 1, 'y' => 2]];
+            $badOperations[] = [$xy];
+            foreach ([null, 'invalid'] as $depth) {
+                $invalidDepth = $origin;
+                $invalidDepth['rack_mounts'][0]['depth'] = $depth;
+                $badOperations[] = [$invalidDepth];
+            }
+            $opposite = $origin;
+            $secondDeviceId = (int)$data['devices'][1]['id'];
+            $opposite['rack_mounts'][] = array_replace($mount, [
+                'device_id' => $secondDeviceId, 'face' => 'front', 'depth' => 'half',
+                'start_u' => 41, 'height_u' => 1,
+            ]);
+            $badOperations[] = [$opposite];
+            foreach ($badOperations as $operations) {
+                $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => $operations])->assertStatus(400);
+                $this->assertSame($data, $this->load());
+            }
+            $oldWhole = $data;
+            unset($oldWhole['rack_settings'], $oldWhole['rack_mounts']);
+            $this->client->postJson('/api.php?action=save', $oldWhole)->assertStatus(400);
+            $this->assertSame($data, $this->load());
+            $origin['rack_mounts'] = [];
+            $staleTarget = $target;
+            $staleTarget['expected_revision']--;
+            $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$origin, $staleTarget]])->assertStatus(409);
+            $this->assertSame($data, $this->load());
+            $moved = $this->save([], [$origin, $target]);
+            $this->assertSame([array_replace($mount, ['view_id' => $targetId])], $moved['rack_mounts']);
+            foreach ([$originId, $targetId] as $rackId) {
+                $beforeView = $this->find($data['views'], $rackId);
+                $this->assertTrue((int)$this->find($moved['views'], $rackId)['resource_revision'] > (int)$beforeView['resource_revision']);
+            }
+            $data = $this->load();
+            $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$origin, $target]])->assertStatus(409);
+            $this->assertSame($data, $this->load());
+            $normal = array_values(array_filter($data['views'], static fn($v) => $v['view_type'] !== 'rack'))[0];
+            $this->save([], [$this->viewOperation($data, $normal)]);
+            $device = $this->find($this->load()['devices'], $deviceId);
+            $device['memo'] = 'Keep rack mount';
+            $this->save([$this->deviceOperation($device)]);
+            $data = $this->load();
+            $this->assertSame([array_replace($mount, ['view_id' => $targetId])], $data['rack_mounts']);
+            $whole = $this->client->postJson('/api.php?action=save', $data)->assertOk()->getJson();
+            $this->assertSame($data['rack_settings'], $whole['rack_settings']);
+            $this->assertSame($data['rack_mounts'], $whole['rack_mounts']);
+            $device = $this->find($whole['devices'], $deviceId);
+            $targetBefore = $this->find($whole['views'], $targetId);
+            $deleted = $this->save([$this->deviceOperation($device, 'delete')]);
+            $this->assertSame([], $deleted['rack_mounts']);
+            $this->assertTrue((int)$this->find($deleted['views'], $targetId)['resource_revision'] > (int)$targetBefore['resource_revision']);
+        } finally {
+            $this->client = $originalClient;
+            $server->stop();
+        }
+    }
+
+    public function testRackCanvasNotesSaveCloneConflictsAndDelete(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $originalClient = $this->client;
+        try {
+            $server->start();
+            $this->client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($this->client->login('admin', 'admin123'));
+            $created = $this->save([], [[
+                'operation' => 'create', 'id' => 990001,
+                'view' => ['name' => 'Rack notes', 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'rack_mounts' => [],
+                'rack_settings' => ['view_id' => 990001, 'total_u' => 42, 'location' => 'Room'],
+                'canvas_notes' => [['id' => 990002, 'view_id' => 990001, 'text' => " ラック\n<b>注釈</b> ",
+                    'x' => 12.5, 'y' => 22, 'width' => 360, 'height' => 180,
+                    'background_color' => '#fff3b0', 'background_opacity' => 0.4,
+                    'text_color' => '#abcdef', 'font_size' => 24]],
+            ]]);
+            $viewId = (int)$created['id_maps']['views'][990001];
+            $noteId = (int)$created['id_maps']['canvas_notes'][990002];
+            $note = $this->find($created['canvas_notes'], $noteId);
+            $this->assertNotSame(990002, $noteId);
+            $this->assertSame($viewId, (int)$note['view_id']);
+            $this->assertSame(" ラック\n<b>注釈</b> ", $note['text']);
+            $this->assertSame('#ABCDEF', $note['text_color']);
+            $data = $this->load();
+            $this->assertSame($note, $this->find($data['canvas_notes'], $noteId));
+            $staleWhole = $data;
+            $stale = $this->viewOperation($data, $this->find($data['views'], $viewId));
+            $update = $stale;
+            $update['canvas_notes'][0]['text'] = '更新済み';
+            $updated = $this->save([], [$update]);
+            $this->assertSame($noteId, (int)$updated['canvas_notes'][0]['id']);
+            $this->assertTrue((int)$updated['views'][0]['resource_revision'] > $stale['expected_revision']);
+            $latest = $this->load();
+            $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$stale]])->assertStatus(409);
+            $this->client->postJson('/api.php?action=save', $staleWhole)->assertStatus(409);
+            $this->assertSame($latest, $this->load());
+            $operation = $this->viewOperation($latest, $this->find($latest['views'], $viewId));
+            $invalid = $operation;
+            $invalid['canvas_notes'][0]['width'] = 119;
+            $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$invalid]])->assertStatus(400);
+            $this->assertSame($latest, $this->load());
+
+            // 複製元の実IDが送られても、別ビューの注釈は新規採番して独立させる。
+            $clone = $operation;
+            $clone['operation'] = 'create';
+            $clone['id'] = 990003;
+            unset($clone['expected_revision']);
+            $clone['view']['name'] = 'Rack notes copy';
+            $clone['rack_settings']['view_id'] = 990003;
+            $clone['canvas_notes'][0]['view_id'] = 990003;
+            $copy = $this->save([], [$clone]);
+            $copyId = (int)$copy['id_maps']['views'][990003];
+            $copyNoteId = (int)$copy['id_maps']['canvas_notes'][$noteId];
+            $this->assertNotSame($noteId, $copyNoteId);
+            $this->assertSame(array_replace($operation['canvas_notes'][0], ['id' => $copyNoteId, 'view_id' => $copyId]),
+                $this->find($copy['canvas_notes'], $copyNoteId));
+            $data = $this->load();
+            $normal = array_values(array_filter($data['views'], static fn($v) => $v['view_type'] !== 'rack'))[0];
+            $this->save([], [$this->viewOperation($data, $normal)]);
+            $data = $this->load();
+            $data['canvas_notes'][] = ['id' => 990004, 'view_id' => $viewId, 'text' => '全体保存の注釈'];
+            $whole = $this->client->postJson('/api.php?action=save', $data)->assertOk()->getJson();
+            $wholeNoteId = (int)$whole['id_maps']['canvas_notes'][990004];
+            $this->assertNotSame(990004, $wholeNoteId);
+            $this->assertSame('全体保存の注釈', $this->find($whole['canvas_notes'], $wholeNoteId)['text']);
+            $this->assertSame($whole['canvas_notes'], $this->load()['canvas_notes']);
+            $operation = $this->viewOperation($whole, $this->find($whole['views'], $viewId));
+            $operation['canvas_notes'] = [];
+            $this->save([], [$operation]);
+            $data = $this->load();
+            $this->assertSame([], array_values(array_filter($data['canvas_notes'], static fn($n) => (int)$n['view_id'] === $viewId)));
+            $this->assertSame('更新済み', $this->find($data['canvas_notes'], $copyNoteId)['text']);
+            $this->save([], [['operation' => 'delete', 'id' => $copyId,
+                'expected_revision' => (int)$this->find($data['views'], $copyId)['resource_revision']]]);
+            $this->assertSame([], array_values(array_filter($this->load()['canvas_notes'], static fn($n) => (int)$n['view_id'] === $copyId)));
+        } finally {
+            $this->client = $originalClient;
+            $server->stop();
+        }
+    }
+
+    public function testConcurrentViewCreationPreservesRackWithCollidingTemporaryId(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $originalClient = $this->client;
+        try {
+            $server->start();
+            $this->client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($this->client->login('admin', 'admin123'));
+            $other = $this->secondClient();
+            $snapshot = $this->load($other);
+            $localId = max(array_column($snapshot['views'], 'id')) + 1;
+            $rack = [
+                'operation' => 'create', 'id' => $localId,
+                'view' => ['name' => 'Concurrent Rack', 'view_type' => 'rack'],
+                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'rack_settings' => ['view_id' => $localId, 'total_u' => 42, 'location' => 'Room'],
+                'rack_mounts' => [['device_id' => 1, 'view_id' => $localId, 'face' => 'rear',
+                    'start_u' => 2, 'height_u' => 2, 'width_slot' => 'left']],
+            ];
+            $created = $this->save([], [$rack]);
+            $rackId = (int)$created['id_maps']['views'][$localId];
+            $this->assertSame($localId, $rackId);
+            $before = $this->load();
+            $normal = ['operation' => 'create', 'id' => $localId,
+                'view' => ['name' => 'Independent View', 'view_type' => 'topology'],
+                'placements' => [['id' => 900001, 'view_id' => $localId, 'device_id' => 2, 'x' => 10, 'y' => 20]],
+                'links' => [], 'canvas_notes' => []];
+            $saved = $this->save([], [$normal], $other);
+            $normalId = (int)$saved['id_maps']['views'][$localId];
+            $this->assertNotSame($rackId, $normalId);
+            $after = $this->load($other);
+            $this->assertSame($before['rack_settings'], $after['rack_settings']);
+            $this->assertSame($before['rack_mounts'], $after['rack_mounts']);
+            $this->assertSame($this->find($before['views'], $rackId), $this->find($after['views'], $rackId));
+            $placement = array_values(array_filter($after['placements'], static fn($row) => $row['view_id'] === $normalId));
+            $this->assertSame(2, $placement[0]['device_id']);
+        } finally {
+            $this->client = $originalClient;
+            $server->stop();
+        }
+    }
 
     public function testUnsafeIdsAndExhaustionPreserveResourceState(): void
     {

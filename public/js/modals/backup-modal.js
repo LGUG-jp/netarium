@@ -372,6 +372,16 @@ export async function previewBackupRestore() {
         );
         setTextContent('backup-restore-link-systems', counts.link_systems || 0);
         setTextContent('backup-restore-notes', counts.canvas_notes || 0);
+        setTextContent('backup-restore-racks', counts.rack_settings || 0);
+        setTextContent('backup-restore-mounts', counts.rack_mounts || 0);
+        const removal = data.rack_removal || {};
+        const rackIds = removal.rack_settings || [];
+        const removedMounts = removal.rack_mounts || [];
+        const removedShelves = removal.rack_shelves || [];
+        const removedShelfDevices = removal.rack_shelf_devices || [];
+        setTextContent('backup-restore-rack-removal', rackIds.length || removedMounts.length || removedShelves.length || removedShelfDevices.length
+            ? `構成全体の置換により、現在のラック ${rackIds.length}件・直付け搭載 ${removedMounts.length}件・棚板 ${removedShelves.length}件・棚板上の所属 ${removedShelfDevices.length}件が削除または移設されます（ラックID: ${rackIds.join(', ') || 'なし'}、直付け機器ID: ${removedMounts.map(row => row.device_id).join(', ') || 'なし'}）。復元前の構成ZIPへ自動退避します。利用者・セッション・画像実体は変更しません。`
+            : 'ラック属性・搭載情報・棚板・棚板上の所属も構成全体の置換対象です。');
         setTextContent(
             'backup-restore-floor-plans',
             counts.floor_plans || 0

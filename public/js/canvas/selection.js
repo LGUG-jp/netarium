@@ -6,10 +6,11 @@ import {
     RANGE_SELECTION_DRAG_THRESHOLD
 } from '../core/constants.js';
 
-import { appState } from '../core/state.js';
+import { appState, getCurrentView, getDeviceById } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
 import { endLinkMode } from '../core/link-mode.js';
 import { getTopModalContainer, requestModalClose } from '../core/modal-focus.js';
+import { isCurrentUserAdmin } from '../ui/access-control.js';
 import { closeDeviceTypePicker } from '../ui/device-type-picker.js';
 import { closeLinkSystemPicker } from '../ui/link-system-picker.js';
 import {
@@ -50,6 +51,9 @@ import {
 import {
     handleDashboardDialogKeydown
 } from '../modals/dashboard-modal.js';
+import { getSelectedFloorRackPlacement, clearFloorRackSelection } from './floor-racks.js';
+import { isPlacementModeActive, exitPlacementMode } from '../ui/placement-mode.js';
+import { hasResourceConflict } from '../core/save-queue.js';
 
 let rangeSelectionInitialIds = new Set();
 
@@ -291,6 +295,7 @@ export function getPlacementIdsInClientRect(
 export function replaceSelectedPlacementIds(
     placementIds
 ) {
+    clearFloorRackSelection();
     appState.selectedPlacementIds.clear();
 
     placementIds.forEach(
@@ -764,6 +769,11 @@ export async function onKeyDown(event) {
         document.getElementById('linkBtn')?.focus();
         return;
     }
+    if (event.key === 'Escape' && !event.isComposing && isPlacementModeActive()) {
+        event.preventDefault();
+        exitPlacementMode();
+        return;
+    }
 
     const active =
         document.activeElement;
@@ -777,6 +787,35 @@ export async function onKeyDown(event) {
      * キーボード操作を実行しない。
      */
     if (isInput) {
+        return;
+    }
+    if (getCurrentView()?.view_type === 'rack') {
+        if (event.key === 'Delete' && !event.isComposing) {
+            if (appState.editingDeviceId != null && isCurrentUserAdmin()) {
+                const deviceId = Number(appState.editingDeviceId);
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                const { shelfForDevice, removeShelfDevice } = await import('./rack-shelves.js');
+                const shelf = shelfForDevice(deviceId);
+                const isMounted = (shelf && Number(shelf.view_id) === Number(appState.currentViewId)) ||
+                    appState.rackMounts.some(row => Number(row.device_id) === deviceId && Number(row.view_id) === Number(appState.currentViewId));
+                if (isMounted) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    const device = getDeviceById(deviceId);
+                    const name = device?.name || '選択した機器';
+                    if (!window.confirm(`${name}を${shelf ? '棚板' : 'ラック'}から取り外しますか？\n機器台帳と他ビューの配置は削除されません。`)) {
+                        return;
+                    }
+                    const { removeRackMount } = await import('./rack-view.js');
+                    if (shelf ? removeShelfDevice(deviceId) : removeRackMount(deviceId)) {
+                        await closePanel();
+                        appState.editingDeviceId = null;
+                        eventBus.emit('rack:changed');
+                    }
+                }
+            }
+        }
         return;
     }
     if (event.key === 'Delete' && appState.editingLinkId !== null) {
@@ -796,6 +835,7 @@ export async function onKeyDown(event) {
             return;
         }
         appState.selectedPlacementIds.clear();
+        clearFloorRackSelection();
 
         render();
         return;
@@ -809,7 +849,7 @@ export async function onKeyDown(event) {
         event.key === 'Backspace'
     ) {
         if (
-            appState.selectedPlacementIds.size > 0
+            appState.selectedPlacementIds.size > 0 || getSelectedFloorRackPlacement()
         ) {
             event.preventDefault();
             await deleteSelected();
@@ -825,6 +865,7 @@ export async function onKeyDown(event) {
  */
 
 export function syncSelectedPlacementClasses() {
+    if (appState.selectedPlacementIds.size > 0) clearFloorRackSelection();
     if (!appState.deviceLayer) {
         return;
     }
@@ -851,7 +892,7 @@ export function syncSelectedPlacementClasses() {
 
 export function updateSelectionCount() {
     const count =
-        appState.selectedPlacementIds.size;
+        appState.selectedPlacementIds.size + Number(Boolean(getSelectedFloorRackPlacement()));
 
     const label =
         document.getElementById(
@@ -862,7 +903,7 @@ export function updateSelectionCount() {
         label.textContent =
             count === 0
                 ? '選択なし'
-                : `${count}台選択中`;
+                : getSelectedFloorRackPlacement() ? 'ラック選択中' : `${count}台選択中`;
     }
 
     const statusCountLabel =
@@ -882,7 +923,9 @@ export function updateSelectionCount() {
 
     if (deleteButton) {
         deleteButton.disabled =
-            count === 0;
+            count === 0 || (Boolean(getSelectedFloorRackPlacement()) &&
+                (!isCurrentUserAdmin() || appState.authExpired || appState.appStatus.state === 'unconfirmed' ||
+                    hasResourceConflict('views', appState.currentViewId)));
     }
 }
 

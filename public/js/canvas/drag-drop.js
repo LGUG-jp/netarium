@@ -49,6 +49,7 @@ export function onCanvasPointerDown(event) {
     if (
         event.target instanceof Element &&
         event.target.closest(
+            '.floor-rack, ' +
             '.device, ' +
             '.link-group, ' +
             '.link-route-editor, ' +

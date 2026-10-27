@@ -16,7 +16,7 @@ import { validateDeviceValues } from '../core/device-validation.js';
 import { getDeviceStatusLabel } from '../core/device-monitoring.js';
 import { setInputError } from '../ui/field-errors.js';
 import { bindLocationSuggestion } from '../ui/location-suggestions.js';
-import { getPlacedDeviceIds } from '../core/device-placement.js';
+import { getPlacedDeviceIds, getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import { MAINTENANCE_EXPIRY_LABELS, classifyMaintenanceExpiry, getMaintenanceExpiryDate } from '../core/maintenance-expiry.js';
 import { syncLedgerFilterPicker, closeLedgerFilterPickers } from '../ui/ledger-filter-picker.js';
 import { clearShareLinkFallback, copyShareLink } from '../ui/share-link.js';
@@ -64,7 +64,6 @@ import {
     getCurrentView,
     getDeviceById,
     getPlacementForDeviceInCurrentView,
-    getPlacementsForDevice,
     normalizeStatus
 } from '../core/state.js';
 import {
@@ -582,7 +581,7 @@ export function getLedgerDeviceTypeLabel(
         firewall: DEVICE_TYPES.firewall.label,
         ap: 'アクセスポイント',
         server: 'サーバー',
-        pc: 'パソコン',
+        pc: DEVICE_TYPES.pc.label,
         printer: 'プリンタ・複合機',
         other: 'その他'
     };
@@ -613,12 +612,20 @@ export function updateLedgerFilters() {
         )
     );
 
+    const typeOrder = Object.keys(DEVICE_TYPES);
+    const typeCandidates = [...new Set([
+        ...uniqueSortedValues(appState.devices, 'type'),
+        ...selectedLedgerValues('ledger-type-filter')
+    ])];
+    typeCandidates.sort((a, b) => {
+        const aIndex = typeOrder.indexOf(a);
+        const bIndex = typeOrder.indexOf(b);
+        return (aIndex < 0 ? typeOrder.length : aIndex) -
+            (bIndex < 0 ? typeOrder.length : bIndex) || a.localeCompare(b, 'ja');
+    });
     fillLedgerSelect(
         'ledger-type-filter',
-        uniqueSortedValues(
-            appState.devices,
-            'type'
-        ),
+        typeCandidates,
         getLedgerDeviceTypeLabel
     );
 }
@@ -658,10 +665,11 @@ export function getLedgerFilterValues() {
 export function getFilteredLedgerDevices() {
     const filters =
         getLedgerFilterValues();
-    const placedIds = getPlacedDeviceIds(appState.placements);
+    const placedIds = getPlacedDeviceIds(appState.placements, getRackDeviceMounts(appState));
     const viewIds = new Set(filters.viewIds);
     const viewDeviceIds = viewIds.size ? getPlacedDeviceIds(
-        appState.placements.filter(placement => viewIds.has(Number(placement.view_id)))
+        appState.placements.filter(placement => viewIds.has(Number(placement.view_id))),
+        getRackDeviceMounts(appState).filter(mount => viewIds.has(Number(mount.view_id)))
     ) : null;
 
     const referenceDate = new Date();
@@ -1358,6 +1366,12 @@ export async function selectDeviceFromLedger(
         getDeviceById(deviceId);
 
     if (!device) {
+        return;
+    }
+    const mount = getRackDeviceMounts(appState).find(row => Number(row.device_id) === Number(deviceId));
+    if (mount && (!getPlacementForDeviceInCurrentView(deviceId) || getCurrentView()?.view_type === 'rack')) {
+        if (!await closeLedger()) return;
+        eventBus.emit('rack:show-device', { deviceId: Number(deviceId), viewId: Number(mount.view_id) });
         return;
     }
 
@@ -2287,17 +2301,28 @@ export function renderLedgerDeviceSheet(device) {
     placeTable.appendChild(createSheetRow('フロア', createSheetInput('floor', 50)));
     placeTable.appendChild(createSheetRow('設置場所詳細', createSheetInput('location', 150)));
 
-    const placements = getPlacementsForDevice(device.id);
+    const destinations = getDeviceDestinations(device.id, appState.placements, getRackDeviceMounts(appState), appState.views);
     const viewsWrap = document.createElement('div');
     viewsWrap.className = 'ledger-sheet-view-pills';
-    if (placements.length === 0) {
+    if (destinations.length === 0) {
         viewsWrap.innerHTML = '<span class="form-support">未配置（どのビューにも配置されていません）</span>';
     } else {
-        placements.forEach(p => {
-            const view = (appState.views || []).find(v => Number(v.id) === Number(p.view_id));
-            const pill = document.createElement('span');
+        destinations.forEach(item => {
+            const pill = document.createElement(item.kind === 'rack' ? 'button' : 'span');
             pill.className = 'ledger-sheet-view-pill';
-            pill.textContent = view ? view.name : `ビューID: ${p.view_id}`;
+            pill.textContent = item.view.name;
+            if (item.kind === 'rack') {
+                pill.type = 'button';
+                const mount = item.mount;
+                pill.textContent += `（ラック / ${mount.shelf_name ? `${mount.shelf_name} / ` : ''}${mount.start_u}〜${Number(mount.start_u) + Number(mount.height_u) - 1}U）`;
+                pill.title = [item.view.facility, item.view.floor,
+                    (appState.rackSettings || []).find(row => Number(row.view_id) === Number(item.view.id))?.location,
+                    '搭載しても台帳の施設・フロア・設置場所は変更しません'].filter(Boolean).join(' / ');
+                pill.addEventListener('click', async () => {
+                    if (!await closeLedger()) return;
+                    eventBus.emit('rack:show-device', { deviceId: Number(device.id), viewId: Number(item.view.id) });
+                });
+            }
             viewsWrap.appendChild(pill);
         });
     }
@@ -2609,7 +2634,7 @@ function showPlaceViewModal() {
     }
 
     viewSelect.replaceChildren();
-    (appState.views || []).forEach(v => {
+    (appState.views || []).filter(v => v.view_type !== 'rack').forEach(v => {
         const opt = document.createElement('option');
         opt.value = String(v.id);
         opt.textContent = `${v.name} (${v.view_type === 'floor' ? 'フロア図面' : '論理構成図'})`;
@@ -2643,6 +2668,10 @@ export async function confirmPlaceDevicesToView() {
     const targetView = (appState.views || []).find(v => Number(v.id) === targetViewId);
     if (!targetView) {
         showToast('配置先のビューが見つかりません', 'warning');
+        return;
+    }
+    if (targetView.view_type === 'rack') {
+        showToast('ラックの空きUから搭載位置を指定してください', 'warning');
         return;
     }
     const targetViewName = targetView ? targetView.name : `ビューID:${targetViewId}`;

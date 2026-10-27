@@ -1,6 +1,6 @@
-import { appState, getCurrentCanvasNotes, allocateLocalId } from '../core/state.js';
+import { appState, getCurrentCanvasNotes, getCurrentView, allocateLocalId } from '../core/state.js';
 import { endLinkMode } from '../core/link-mode.js';
-import { DEFAULT_CANVAS_NOTE, CANVAS_NOTE_LIMITS } from '../core/canvas-note-data.js';
+import { DEFAULT_CANVAS_NOTE, CANVAS_NOTE_LIMITS, RACK_NOTE_REGION_X, RACK_NOTE_REGIONS, getRackNoteRegion } from '../core/canvas-note-data.js';
 import { eventBus } from '../core/event-bus.js';
 import { hasResourceConflict, scheduleSave } from '../core/save-queue.js';
 import { mappedResourceId } from '../core/resource-save.js';
@@ -93,6 +93,7 @@ function syncMode() {
     syncLinkModeButton();
 }
 export async function toggleCanvasNoteMode() {
+    if (getCurrentView()?.view_type === 'rack') return;
     if (appState.noteMode) { finishCanvasNotes(); return; }
     if (!requireAdminUiAction() || appState.currentViewId == null || appState.authExpired || appState.isPinging ||
         hasResourceConflict('views', appState.currentViewId)) return;
@@ -159,6 +160,12 @@ export function finishCanvasNotes(reason = 'finish') {
 }
 export async function selectCanvasNote(id) {
     const note = findNote(id);
+    if (getCurrentView()?.view_type === 'rack') {
+        const textarea = el('rack-notes-area')?.querySelector(`.rack-note-editor[data-note-id="${id}"]`) ||
+            el('rack-notes-area')?.querySelector(`[data-note-id="${id}"]`);
+        textarea?.focus({ preventScroll: true });
+        return Boolean(textarea);
+    }
     if (!note || Number(note.view_id) !== Number(appState.currentViewId)) return false;
     if (Number(appState.selectedCanvasNoteId) === Number(id)) return true;
     if (!await closePanel() || !await closeLinkPanel()) return false;
@@ -181,6 +188,7 @@ export async function selectCanvasNote(id) {
     return true;
 }
 export function beginCanvasNoteText(created = false) {
+    if (getCurrentView()?.view_type === 'rack') return false;
     const note = selectedNote();
     if (!canEdit(note)) return false;
     if (!commitCanvasNoteText()) return false;
@@ -200,6 +208,7 @@ export function beginCanvasNoteText(created = false) {
 }
 export async function createCanvasNote(event) {
     if (!appState.noteMode || !requireAdminUiAction() || !canEdit({ view_id: appState.currentViewId })) return false;
+    if (getCurrentView()?.view_type === 'rack') return false;
     const point = screenToWorld(event.clientX, event.clientY);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return false;
     if (!commitCanvasNoteText()) return false;
@@ -218,6 +227,40 @@ export function deleteCanvasNote() {
     cancelDrag();
     appState.canvasNotes = appState.canvasNotes.filter(row => Number(row.id) !== Number(note.id));
     finishCanvasNotes();
+    save();
+    return true;
+}
+function makeTrashIcon() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '14');
+    svg.setAttribute('height', '14');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    polyline.setAttribute('points', '3 6 5 6 21 6');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2');
+    svg.append(polyline, path);
+    return svg;
+}
+export function deleteRackNote(id) {
+    const note = findNote(id);
+    if (!note || Number(note.view_id) !== Number(appState.currentViewId)) return false;
+    if (!canEdit(note) || !requireAdminUiAction()) return false;
+    if (!window.confirm('このラックメモを削除しますか？')) return false;
+    if (editing?.id === Number(id)) {
+        discardEditing();
+    } else if (editing) {
+        commitCanvasNoteText();
+    }
+    cancelDrag();
+    appState.canvasNotes = appState.canvasNotes.filter(row => Number(row.id) !== Number(id));
+    renderCanvasNotes();
     save();
     return true;
 }
@@ -271,9 +314,161 @@ function makeNote(note) {
     resize.addEventListener('pointerdown', event => beginDrag(event, element, true));
     return element;
 }
+function makeRackEditor(note, region) {
+    const item = document.createElement('div');
+    item.className = note ? 'rack-note-item' : 'rack-note-item rack-note-item-blank';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'rack-note-editor';
+    textarea.spellcheck = false;
+    textarea.setAttribute('aria-label', `${region.label}の${note ? 'メモ本文' : '新しいメモ'}`);
+    textarea.setAttribute('placeholder', note ? '' : `${region.label}のメモを入力`);
+    textarea.addEventListener('pointerdown', event => event.stopPropagation());
+    textarea.addEventListener('click', event => event.stopPropagation());
+    if (note) {
+        item.dataset.noteId = String(note.id);
+        textarea.dataset.noteId = String(note.id);
+    }
+    const begin = () => {
+        const id = Number(textarea.dataset.noteId);
+        const current = findNote(id);
+        if (!canEdit(current) || Number(current.view_id) !== Number(appState.currentViewId)) return;
+        if (editing?.textarea !== textarea && !commitCanvasNoteText()) return;
+        editing = { id, viewId: Number(current.view_id), textarea, direct: true };
+    };
+    textarea.addEventListener('focus', begin);
+    textarea.addEventListener('input', () => {
+        if (!canEdit({ view_id: appState.currentViewId })) return;
+        if (!textarea.dataset.noteId) {
+            if (!textarea.value.trim()) return;
+            if (!commitCanvasNoteText()) return;
+            const created = { ...DEFAULT_CANVAS_NOTE, id: allocateLocalId('canvasNotes'),
+                view_id: Number(appState.currentViewId), text: '',
+                ...(region.y ? { x: RACK_NOTE_REGION_X, y: region.y } : {}) };
+            appState.canvasNotes.push(created);
+            item.className = 'rack-note-item';
+            item.dataset.noteId = String(created.id);
+            textarea.dataset.noteId = String(created.id);
+            textarea.setAttribute('aria-label', `${region.label}のメモ本文`);
+            textarea.setAttribute('placeholder', '');
+            editing = { id: Number(created.id), viewId: Number(created.view_id), textarea, direct: true, created: true };
+            appendRackNoteDeleteButton(item, textarea, region);
+            renderCanvasNotes();
+        } else if (editing?.textarea !== textarea) {
+            begin();
+        }
+    });
+    textarea.addEventListener('blur', () => {
+        if (editing?.textarea === textarea) commitCanvasNoteText();
+    });
+    item.appendChild(textarea);
+    if (note) appendRackNoteDeleteButton(item, textarea, region);
+    return item;
+}
+function appendRackNoteDeleteButton(item, textarea, region) {
+    if (item.querySelector('.rack-note-delete-btn')) return;
+    const noteId = Number(item.dataset.noteId);
+    if (!noteId) return;
+    const note = findNote(noteId);
+    if (!note) return;
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'rack-note-delete-btn';
+    deleteBtn.setAttribute('aria-label', `${region.label}のメモを削除`);
+    deleteBtn.title = 'メモを削除';
+    deleteBtn.appendChild(makeTrashIcon());
+    deleteBtn.disabled = !canEdit(note);
+    deleteBtn.hidden = !isCurrentUserAdmin();
+    deleteBtn.addEventListener('pointerdown', event => event.stopPropagation());
+    deleteBtn.addEventListener('click', event => {
+        event.stopPropagation();
+        deleteRackNote(Number(item.dataset.noteId || textarea.dataset.noteId));
+    });
+    item.appendChild(deleteBtn);
+}
+function renderRackNotes() {
+    const host = el('rack-notes-area');
+    if (!host) return;
+    if (host.dataset.viewId !== String(appState.currentViewId)) {
+        host.replaceChildren();
+        host.dataset.viewId = String(appState.currentViewId);
+    }
+    let regions = host.querySelector('.rack-note-regions');
+    if (!regions) {
+        const heading = host.querySelector('.rack-notes-heading') || document.createElement('h3');
+        heading.className = 'rack-notes-heading';
+        heading.textContent = 'メモ';
+        regions = document.createElement('div');
+        regions.className = 'rack-note-regions';
+        if (!heading.parentElement) host.appendChild(heading);
+        host.appendChild(regions);
+        for (const region of RACK_NOTE_REGIONS) {
+            const section = document.createElement('section');
+            section.className = 'rack-note-region';
+            section.dataset.region = region.key;
+            section.setAttribute('aria-label', `${region.label}のメモ`);
+            const title = document.createElement('h4');
+            title.className = 'rack-note-region-heading';
+            title.textContent = region.label;
+            const list = document.createElement('div');
+            list.className = 'rack-note-editors';
+            section.append(title, list);
+            regions.appendChild(section);
+        }
+    }
+    const existing = new Map([...host.querySelectorAll('.rack-note-item')].filter(item => item.dataset.noteId)
+        .map(item => [Number(item.dataset.noteId), item]));
+    const notes = getCurrentCanvasNotes();
+    for (const [index, region] of RACK_NOTE_REGIONS.entries()) {
+        const list = regions.children[index].querySelector('.rack-note-editors');
+        for (const note of notes.filter(note => getRackNoteRegion(note).key === region.key)) {
+            const id = Number(note.id);
+            let item = existing.get(id);
+            if (!item) {
+                item = makeRackEditor(note, region);
+                list.appendChild(item);
+            }
+            if (item.parentElement !== list) list.appendChild(item);
+            existing.delete(id);
+            const editor = item.querySelector('.rack-note-editor');
+            if (editing?.textarea !== editor) editor.value = note.text;
+            editor.readOnly = !canEdit(note);
+            editor.style.fontSize = `${note.font_size}px`;
+            editor.style.color = note.text_color;
+            const rgb = [1, 3, 5].map(offset => parseInt(note.background_color.slice(offset, offset + 2), 16));
+            editor.style.backgroundColor = `rgba(${rgb.join(', ')}, ${note.background_opacity})`;
+            const deleteBtn = item.querySelector('.rack-note-delete-btn');
+            if (deleteBtn) {
+                deleteBtn.disabled = !canEdit(note);
+                deleteBtn.hidden = !isCurrentUserAdmin();
+            }
+        }
+        let blank = [...list.children].find(item => !item.dataset.noteId);
+        if (!blank) {
+            blank = makeRackEditor(null, region);
+            list.appendChild(blank);
+        }
+        const blankEditor = blank.querySelector('.rack-note-editor') || blank;
+        blankEditor.readOnly = !canEdit({ view_id: appState.currentViewId });
+        blank.hidden = blankEditor.readOnly;
+        blankEditor.hidden = blankEditor.readOnly;
+    }
+    for (const item of existing.values()) item.remove();
+}
 export function renderCanvasNotes() {
     const layer = appState.noteLayer;
     if (!layer) return;
+    const rack = getCurrentView()?.view_type === 'rack';
+    if (editing && (!findNote(editing.id) || editing.viewId !== Number(appState.currentViewId))) discardEditing();
+    if (rack) {
+        appState.noteMode = false;
+        appState.selectedCanvasNoteId = null;
+        hideCanvasContextToolbar('canvas-note');
+        syncMode();
+        layer.replaceChildren();
+        renderRackNotes();
+        return;
+    }
+    el('rack-notes-area')?.replaceChildren();
     const notes = getCurrentCanvasNotes();
     if (appState.selectedCanvasNoteId != null &&
         (appState.selectedPlacementIds.size > 0 || appState.editingLinkId != null || appState.floorPlanAdjustMode)) {
@@ -496,10 +691,22 @@ eventBus.on('resources:ids-remapped', maps => {
     for (const element of appState.noteLayer?.children || []) {
         element.dataset.noteId = String(mappedResourceId(maps.canvas_notes, Number(element.dataset.noteId)));
     }
+    for (const item of el('rack-notes-area')?.querySelectorAll('.rack-note-item') || []) {
+        if (item.dataset.noteId) item.dataset.noteId = String(mappedResourceId(maps.canvas_notes, Number(item.dataset.noteId)));
+    }
+    for (const editor of el('rack-notes-area')?.querySelectorAll('.rack-note-editor') || []) {
+        if (editor.dataset.noteId) editor.dataset.noteId = String(mappedResourceId(maps.canvas_notes, Number(editor.dataset.noteId)));
+    }
     if (editing) editing.viewId = mappedResourceId(maps.views, editing.viewId);
     if (drag) drag.viewId = mappedResourceId(maps.views, drag.viewId);
+    const host = el('rack-notes-area');
+    if (host?.dataset.viewId) host.dataset.viewId = String(mappedResourceId(maps.views, Number(host.dataset.viewId)));
 });
-function discardCanvasNotes() { discardEditing(); finishCanvasNotes('reload'); }
+function discardCanvasNotes() {
+    discardEditing();
+    finishCanvasNotes('reload');
+    renderCanvasNotes();
+}
 eventBus.on('resources:reloaded', discardCanvasNotes);
 eventBus.on('resource:reloaded', ({ kind, id }) => {
     if (kind === 'views' && Number(id) === Number(appState.currentViewId)) discardCanvasNotes();

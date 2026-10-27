@@ -9,6 +9,7 @@ import {
 
 import { appState } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
+import { getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import {
     getDeviceTypeSearchText,
     normalizeMatchText,
@@ -18,8 +19,7 @@ import {
 import {
     compareViews,
     getDeviceById,
-    getPlacementForDeviceInCurrentView,
-    getPlacementsForDevice
+    getPlacementForDeviceInCurrentView
 } from '../core/state.js';
 import {
     showToast
@@ -42,6 +42,18 @@ let deviceSearchResults = [];
 let deviceSearchActiveIndex = -1;
 let deviceSearchViewDeviceId = null;
 let deviceSearchHighlightTimer = null;
+
+function destinationsFor(deviceId) {
+    return getDeviceDestinations(deviceId, appState.placements, getRackDeviceMounts(appState), appState.views);
+}
+
+function showDestination(device, destination) {
+    if (destination.kind === 'rack') {
+        eventBus.emit('rack:show-device', { deviceId: Number(device.id), viewId: Number(destination.view.id) });
+    } else {
+        showDeviceInPlacement(device, destination.placement);
+    }
+}
 
 eventBus.on('resources:ids-remapped', maps => {
     if (deviceSearchViewDeviceId !== null) {
@@ -432,10 +444,7 @@ export function createDeviceSearchResult(
         .filter(Boolean)
         .join(' / ');
 
-    const placementCount =
-        getPlacementsForDevice(
-            device.id
-        ).length;
+    const placementCount = destinationsFor(device.id).length;
 
     detail.textContent = [
         typeLabel,
@@ -673,10 +682,7 @@ export function selectDeviceSearchResult(
 
     closeDeviceSearchPopup();
 
-    const devicePlacements =
-        getPlacementsForDevice(
-            device.id
-        );
+    const devicePlacements = destinationsFor(device.id);
 
     /*
      * どのビューにも配置されていない場合は、
@@ -707,7 +713,7 @@ export function selectDeviceSearchResult(
      * 配置先が1件だけの場合は、
      * そのビューで対象機器を表示する。
      */
-    showDeviceInPlacement(
+    showDestination(
         device,
         devicePlacements[0]
     );
@@ -751,23 +757,8 @@ export function openDeviceSearchViewSelector(
 
     list.replaceChildren();
 
-    getPlacementsForDevice(device.id)
-        .map(placement => ({
-            placement,
-            view: appState.views.find(view =>
-                Number(view.id) ===
-                Number(
-                    placement.view_id
-                )
-            )
-        }))
-        .filter(item => item.view)
-        .sort((a, b) =>
-            compareViews(
-                a.view,
-                b.view
-            )
-        )
+    destinationsFor(device.id)
+        .sort((a, b) => compareViews(a.view, b.view))
         .forEach(item => {
             const button =
                 document.createElement(
@@ -793,11 +784,8 @@ export function openDeviceSearchViewSelector(
                     'span'
                 );
 
-            detail.textContent =
-                item.view.view_type ===
-                'floor'
-                    ? '物理・フロア配置図'
-                    : '論理・全体構成図';
+            detail.textContent = item.kind === 'rack' ? 'ラック搭載図' :
+                item.view.view_type === 'floor' ? '物理・フロア配置図' : '論理・全体構成図';
 
             button.appendChild(name);
             button.appendChild(detail);
@@ -816,10 +804,7 @@ export function openDeviceSearchViewSelector(
                         return;
                     }
 
-                    showDeviceInPlacement(
-                        selectedDevice,
-                        item.placement
-                    );
+                    showDestination(selectedDevice, item);
                 }
             );
 

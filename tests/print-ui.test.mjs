@@ -5,6 +5,7 @@ import { getTopModalContainer } from '../public/js/core/modal-focus.js';
 import { initializePrintModal, closePrintModal, executePrint } from '../public/js/modals/print-modal.js';
 import { onKeyDown } from '../public/js/canvas/selection.js';
 import { installPrintDom } from './helpers/print-dom.mjs';
+import { RACK_NOTE_REGION_X } from '../public/js/core/canvas-note-data.js';
 
 function setup(t) {
     const dom = installPrintDom();
@@ -102,6 +103,7 @@ test('一括選択解除・配線とラベルの依存・図面対象外・viewp
     await dom.get('print-select-all').dispatch('click');
     assert.equal(dom.get('print-type-switch').checked, true);
     assert.equal(dom.get('print-sheet-container').children[0].querySelectorAll('.print-device').length, 2);
+    assert.equal(dom.get('print-notes').parentElement.querySelector('strong').textContent, 'キャンバスメモ');
     await change(dom, 'print-links', false);
     assert.equal(dom.get('print-labels').disabled, true);
     assert.equal(dom.get('print-labels').checked, false);
@@ -215,25 +217,25 @@ test('印刷DOMは共通系統のsnapshot色だけを使い、hover・選択の�
 
 test('印刷プレビューの機器種別は短縮名で表示され、機器名・種別のチェックで表示を制御できる', async t => {
     const dom = setup(t);
-    const types = ['switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'other'];
+    const types = ['switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'pc', 'other'];
     appState.devices = types.map((type, idx) => ({ id: idx + 1, type, name: `機器_${type}`, ip: `192.168.1.${idx + 1}` }));
     appState.placements = types.map((_, idx) => ({ id: idx + 1, view_id: 1, device_id: idx + 1, x: idx * 120, y: 100 }));
     appState.links = [];
     await dom.get('palette-print-btn').dispatch('click');
     const sheet = dom.get('print-sheet-container').children[0];
     const typeEls = sheet.querySelectorAll('.print-device-type');
-    assert.equal(typeEls.length, 8);
+    assert.equal(typeEls.length, 9);
     assert.deepEqual(
         typeEls.map(el => el.textContent),
-        ['L2SW', 'L3SW', 'RT', 'FW', 'AP', 'SV', 'PR', 'etc']
+        ['L2SW', 'L3SW', 'RT', 'FW', 'AP', 'SV', 'PR', 'PC', 'etc']
     );
-    assert.equal(sheet.querySelectorAll('.print-device-name').length, 8);
+    assert.equal(sheet.querySelectorAll('.print-device-name').length, 9);
 
     // 機器名をOFFにする
     await change(dom, 'print-deviceName', false);
     const sheetNoName = dom.get('print-sheet-container').children[0];
     assert.equal(sheetNoName.querySelectorAll('.print-device-name').length, 0);
-    assert.equal(sheetNoName.querySelectorAll('.print-device-type').length, 8);
+    assert.equal(sheetNoName.querySelectorAll('.print-device-type').length, 9);
 
     // 機器種別をOFFにする
     await change(dom, 'print-deviceType', false);
@@ -244,6 +246,89 @@ test('印刷プレビューの機器種別は短縮名で表示され、機器�
     // 機器名を再度ONにする
     await change(dom, 'print-deviceName', true);
     const sheetNameOnly = dom.get('print-sheet-container').children[0];
-    assert.equal(sheetNameOnly.querySelectorAll('.print-device-name').length, 8);
+    assert.equal(sheetNameOnly.querySelectorAll('.print-device-name').length, 9);
     assert.equal(sheetNameOnly.querySelectorAll('.print-device-type').length, 0);
+});
+
+test('rack preview renders both faces with U geometry, mirrors rear halves and remains printable when empty', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.rackSettings = [{ view_id: 1, total_u: 8, location: '試験ラック位置' }];
+    appState.rackMounts = [
+        { device_id: 1, view_id: 1, face: 'both', start_u: 4, height_u: 2, width_slot: 'full' },
+        { device_id: 2, view_id: 1, face: 'rear', start_u: 1, height_u: 1, width_slot: 'left' }
+    ];
+    const before = stateSnapshot();
+    await dom.get('palette-print-btn').dispatch('click');
+    const sheet = dom.get('print-sheet-container').children[0];
+    const svg = sheet.querySelector('svg');
+    const groups = svg.querySelectorAll('g');
+    assert.equal(groups.length, 3, 'both is one device block on each face, not one per occupied U');
+    assert.equal(groups.filter(group => group.getAttribute('data-device-id') === '1').length, 2);
+    const rearHalf = groups.find(group => group.getAttribute('data-device-id') === '2');
+    assert.equal(rearHalf.getAttribute('data-rack-face'), 'rear');
+    assert.equal(Number(rearHalf.querySelector('rect').getAttribute('x')), 425);
+    assert.deepEqual(svg.querySelectorAll('text').filter(text => /^\d+$/.test(text.textContent))
+        .map(text => text.textContent), ['8', '7', '6', '5', '4', '3', '2', '1']);
+    assert.equal(svg.querySelectorAll('script').length, 0);
+    assert.equal(dom.get('print-links').disabled, true);
+    assert.equal(dom.get('print-notes').disabled, false);
+    assert.equal(dom.get('print-notes').parentElement.querySelector('strong').textContent, 'ラックメモ');
+    assert.equal(svg.querySelector('.print-note-text').textContent, '<b>合成メモ</b>\n2行目');
+    assert.equal(svg.querySelector('.print-note-text').style.fontSize, '20px');
+    await change(dom, 'print-notes', false);
+    assert.equal(dom.get('print-sheet-container').children[0].querySelector('.print-note'), null);
+    await change(dom, 'print-notes', true);
+    assert.equal(dom.get('print-sheet-container').children[0].querySelector('.print-note-text').textContent, '<b>合成メモ</b>\n2行目');
+    assert.ok(document.querySelectorAll('input[name="print-range"]').every(input => input.disabled));
+    assert.equal(dom.get('print-execute').disabled, false);
+    await dom.get('print-clear-all').dispatch('click');
+    const emptySvg = dom.get('print-sheet-container').children[0].querySelector('svg');
+    assert.equal(emptySvg.querySelectorAll('g').length, 0);
+    assert.equal(emptySvg.querySelectorAll('rect').length, 2);
+    assert.equal(dom.get('print-execute').disabled, false);
+    await dom.get('print-execute').dispatch('click');
+    assert.equal(dom.printCalls(), 1);
+    assert.deepEqual(stateSnapshot(), before);
+});
+
+test('ラックの印刷見出しで上中下を区別し、本文と全件表示を維持する', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.rackSettings = [{ view_id: 1, total_u: 1 }];
+    appState.rackMounts = [];
+    const base = appState.canvasNotes[0];
+    appState.canvasNotes = [
+        { ...base, id: 3, x: RACK_NOTE_REGION_X, y: 2, text: '<b>下段</b>' },
+        { ...base, id: 2, x: RACK_NOTE_REGION_X, y: 1, text: '中段\n全文' },
+        { ...base, id: 1, text: '既存上段' }
+    ];
+    const before = stateSnapshot();
+    await dom.get('palette-print-btn').dispatch('click');
+    const sheet = dom.get('print-sheet-container').children[0];
+    assert.deepEqual(sheet.querySelectorAll('.print-note-heading').map(node => node.textContent), ['上段', '中段', '下段']);
+    assert.deepEqual(sheet.querySelectorAll('.print-note-text').map(node => node.textContent), ['既存上段', '中段\n全文', '<b>下段</b>']);
+    assert.equal(sheet.querySelectorAll('b').length, 0);
+    await change(dom, 'print-notes', false);
+    assert.equal(dom.get('print-sheet-container').children[0].querySelectorAll('.print-note').length, 0);
+    await change(dom, 'print-notes', true);
+    assert.equal(dom.get('print-sheet-container').children[0].querySelectorAll('.print-note').length, 3);
+    assert.equal(dom.get('print-execute').disabled, false);
+    await dom.get('print-execute').dispatch('click');
+    assert.equal(dom.printCalls(), 1);
+    assert.deepEqual(stateSnapshot(), before);
+});
+
+test('1Uハーフ幅機器もIP設定の有効・無効を印刷テキストへ反映する', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.devices = [{ id: 1, name: '1U機器', type: 'switch', ip: '192.168.100.254' }];
+    appState.rackSettings = [{ view_id: 1, total_u: 4, location: '' }];
+    appState.rackMounts = [{ device_id: 1, view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'left' }];
+    await dom.get('palette-print-btn').dispatch('click');
+    const printedTexts = () => dom.get('print-sheet-container').children[0].querySelector('svg').querySelectorAll('text').map(row => row.textContent);
+    await change(dom, 'print-ip', true);
+    assert.ok(printedTexts().includes('192.168.100.254'), 'SVG titleだけでなく用紙上にIPを出す');
+    await change(dom, 'print-ip', false);
+    assert.ok(!printedTexts().includes('192.168.100.254'));
 });

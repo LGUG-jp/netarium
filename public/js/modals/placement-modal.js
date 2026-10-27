@@ -1,3 +1,4 @@
+import { getRackDeviceMounts } from '../core/device-placement.js';
 /**
  * Netarium - modals/placement-modal.js
  */
@@ -381,6 +382,22 @@ export function createPlacementManagerOption(
     view,
     recommended
 ) {
+    if (view.view_type === 'rack') {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'placement-manager-option';
+        const mount = getRackDeviceMounts(appState).find(row =>
+            Number(row.device_id) === Number(placementManagerDeviceId));
+        const mountedHere = mount && Number(mount.view_id) === Number(view.id);
+        button.textContent = `${view.name} / ラック / ${[view.facility, view.floor].filter(Boolean).join(' / ')} — ${
+            mountedHere ? `${mount.start_u}U・搭載位置を編集` : mount ? 'このラックへ移設' : '搭載位置を指定'}`;
+        button.addEventListener('click', async () => {
+            const deviceId = placementManagerDeviceId;
+            if (!await closePlacementManager()) return;
+            eventBus.emit('rack:mount-device', { viewId: Number(view.id), deviceId: Number(deviceId) });
+        });
+        return button;
+    }
     const label =
         document.createElement('label');
 
@@ -473,6 +490,7 @@ export function createPlacementManagerOption(
 export function getPlacementManagerChanges() {
     const addedViewIds =
         [...placementManagerSelectedViewIds]
+            .filter(viewId => appState.views.some(view => Number(view.id) === Number(viewId) && view.view_type !== 'rack'))
             .filter(viewId =>
                 !placementManagerInitialViewIds
                     .has(viewId)

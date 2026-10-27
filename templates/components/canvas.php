@@ -66,5 +66,6 @@
             aria-hidden="true"
             hidden
         ></div>
+        <section id="rack-view" class="rack-view" aria-label="ラック搭載図" hidden></section>
 
     </main>

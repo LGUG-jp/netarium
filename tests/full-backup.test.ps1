@@ -123,7 +123,7 @@ Assert-ScriptTest -Name 'check-install accepts --allow-orphan-images flag' -Cond
         Remove-Item -LiteralPath $tempStorage -Recurse -Force
     }
 }
-# Schema 10 uploads migrated to schema 11 must work through the production entry points.
+# Legacy image digests must survive normal migration and production backup/restore.
 & {
     $sourceStorage = Join-Path ([IO.Path]::GetTempPath()) ('netarium-prod-src-' + [guid]::NewGuid().ToString('N'))
     $targetStorage = Join-Path ([IO.Path]::GetTempPath()) ('netarium-prod-dst-' + [guid]::NewGuid().ToString('N'))
@@ -155,7 +155,7 @@ require $argv[2];
 $action = $argv[3];
 $root = $argv[4];
 $db = new PDO('sqlite:' . $argv[1], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-if ($action === 'init') {
+if ($action === 'init' || $action === 'init-legacy') {
     for ($version = 1; $version <= 10; $version++) {
         ('migrateDatabaseToVersion' . $version)($db);
     }
@@ -187,6 +187,7 @@ if ($action === 'init') {
         || (int)$db->query("SELECT COUNT(*) FROM view_floor_plans WHERE sha256 = ''")->fetchColumn() !== 1) {
         throw new RuntimeException('Migration did not preserve empty legacy digests');
     }
+    if ($action === 'init') { migrateDatabase($db); }
 } elseif ($action === 'state') {
     echo json_encode($db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), JSON_THROW_ON_ERROR);
 } elseif ($action === 'verify') {
@@ -326,7 +327,7 @@ if ($action === 'init') {
         function Get-WebConfigurationProperty { param($PSPath, $Location, $Filter, $Name, [string]$ErrorAction) return $null }
 
         $backupScript = Join-Path $repoRoot 'scripts/backup-full.ps1'
-        Assert-ScriptTest -Name 'Schema 10 to 11: production backup/restore preserves live data, references, credentials, orphan images, sessions and ACLs' -Condition {
+        Assert-ScriptTest -Name 'Schema 10 to current: production backup/restore preserves live data, references, credentials, orphan images, sessions and ACLs' -Condition {
             $env:NETARIUM_STORAGE_DIR = $sourceStorage
             $env:NETARIUM_DB_FILE = $srcDb
             $before = Get-BackupSourceState $sourceStorage
@@ -517,6 +518,18 @@ if ($action === 'init') {
                 Copy-Item -LiteralPath (Join-Path $legacySource 'bootstrap.php') -Destination (Join-Path $legacyRoot 'bootstrap.php') -Force
                 [IO.File]::WriteAllText((Join-Path $legacyRoot 'version.php'), "<?php`n`ndeclare(strict_types=1);`n`nconst NETARIUM_VERSION = '1.0.1';`n", (New-Object System.Text.UTF8Encoding($false)))
                 if ($legacySource -ne $repoRoot) { Copy-Item -LiteralPath (Join-Path $legacySource 'version.php') -Destination (Join-Path $legacyRoot 'version.php') -Force }
+                if ($legacySource -eq $repoRoot) {
+                    $legacySchema = Join-Path $legacyRoot 'src/Core/DatabaseSchema.php'
+                    $schemaCode = [IO.File]::ReadAllText($legacySchema).Replace('const APP_DATABASE_SCHEMA_VERSION = 16;', 'const APP_DATABASE_SCHEMA_VERSION = 11;')
+                    [IO.File]::WriteAllText($legacySchema, $schemaCode, (New-Object System.Text.UTF8Encoding($false)))
+                }
+                # A historical helper needs its own genuine schema11 data, not the current live DB.
+                $legacyStorage = Join-Path $legacyWork 'source'
+                foreach ($d in @('db', 'db/csv-import', 'uploads/floorplans', 'uploads/device_images', 'temp/backup-export', 'backups/auto', 'temp/backup-restore', 'logs', 'temp', 'sessions')) {
+                    New-Item -ItemType Directory -Path (Join-Path $legacyStorage $d) -Force | Out-Null
+                }
+                $legacyDb = Join-Path $legacyStorage 'db/data.sqlite'
+                Invoke-BackupFixture $legacyDb 'init-legacy' $legacyStorage | Out-Null
                 $script:compatInstallRoot = $legacyRoot
                 function Get-Website {
                     param($Name, [string]$ErrorAction)
@@ -527,8 +540,8 @@ if ($action === 'init') {
                         Bindings = [pscustomobject]@{ Collection = @([pscustomobject]@{ protocol = 'http'; bindingInformation = '127.0.0.1:49249:'; sslFlags = 0; certificateHash = ''; certificateStoreName = '' }) }
                     }
                 }
-                $env:NETARIUM_STORAGE_DIR = $sourceStorage
-                $env:NETARIUM_DB_FILE = $srcDb
+                $env:NETARIUM_STORAGE_DIR = $legacyStorage
+                $env:NETARIUM_DB_FILE = $legacyDb
                 $legacyArchive = Invoke-MaintenanceTestCli (Join-Path $legacyRoot 'scripts/backup-full.ps1') @{ InstallRoot = $legacyRoot; SiteName = $siteName; ApplicationPoolName = $poolName; BackupDirectory = $legacyBackup; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') }
                 if (-not $legacyArchive -or -not (Test-Path -LiteralPath $legacyArchive.Archive)) { throw 'v1.0.1 archive generation failed' }
 
@@ -538,7 +551,7 @@ if ($action === 'init') {
                 Set-Content -LiteralPath (Join-Path $targetStorage 'sessions/sess_101102abcdef101102abcdef101102ab') -Value 'session_before_restore'
                 $restored = Invoke-MaintenanceTestCli (Join-Path $repoRoot 'scripts/restore-full.ps1') @{ InstallRoot = $repoRoot; SiteName = $siteName; ApplicationPoolName = $poolName; Archive = $legacyArchive.Archive; WorkRoot = $workRoot; PhpPath = $php; VerificationUrl = @('http://127.0.0.1:49249/') }
                 if (-not $restored -or -not $restored.Restored) { throw 'v1.0.1 -> candidate restore failed' }
-                Invoke-BackupFixture $env:NETARIUM_DB_FILE 'verify' $targetStorage @($srcDb, $legacyArchive.Archive, $sourceStorage) | Out-Null
+                Invoke-BackupFixture $env:NETARIUM_DB_FILE 'verify' $targetStorage @($legacyDb, $legacyArchive.Archive, $legacyStorage) | Out-Null
                 if (@(Get-ChildItem -LiteralPath (Join-Path $targetStorage 'sessions') -Force).Count -ne 0) { throw 'Restore did not clear sessions' }
 
                 $script:compatInstallRoot = $legacyRoot

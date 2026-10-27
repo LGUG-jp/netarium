@@ -111,6 +111,7 @@ if (typeof globalThis.document === 'undefined') {
         body: createMockElement('body'),
         addEventListener() {},
         getElementById: (id) => {
+            if (id === 'rack-position-section') return null;
             if (!mockElements.has(id)) {
                 const isSelect = id === 'ledger-place-view-select' || /^ledger-(view|facility|floor|status|type|ip-presence|placement)-filter$/.test(id);
                 const element = createMockElement(isSelect ? 'select' : 'div');
@@ -207,6 +208,8 @@ beforeEach(() => {
         { id: 101, device_id: 1, view_id: 1, x: 100, y: 100 },
         { id: 102, device_id: 4, view_id: 2, x: 200, y: 200 }
     ];
+    appState.rackMounts = [];
+    appState.rackSettings = [];
 
     appState.nextDeviceId = 10;
     appState.nextPlacementId = 200;
@@ -636,6 +639,7 @@ test('短縮表記: 各機器種別に指定のshortLabelが定義されてい�
     assert.equal(DEVICE_TYPES.ap.shortLabel, 'AP');
     assert.equal(DEVICE_TYPES.server.shortLabel, 'Server');
     assert.equal(DEVICE_TYPES.printer.shortLabel, 'Printer');
+    assert.equal(DEVICE_TYPES.pc.shortLabel, 'PC');
     assert.equal(DEVICE_TYPES.other.shortLabel, 'etc');
 });
 
@@ -652,6 +656,21 @@ test('新規機器配置: 初期状態は未選択(null)で、未選択時のク
     assert.equal(appState.placements.length, initialPlacementsCount);
     assert.equal(appState.devices.length, initialDevicesCount);
     assert.equal(appState.appStatus.dirty, false);
+});
+
+test('PCをIP空欄のまま新規配置でき、台帳にもPCとして表示する', async () => {
+    const { setPlacementNewDeviceType } = await import('../public/js/ui/placement-mode.js');
+    const { getLedgerDeviceTypeLabel } = await import('../public/js/modals/ledger-modal.js');
+    enterPlacementMode({ tab: 'new' });
+    setPlacementNewDeviceType('pc');
+    const count = appState.devices.length;
+    assert.equal(handleCanvasPlacementClick({ clientX: 300, clientY: 300 }), true);
+    assert.equal(appState.devices.length, count + 1);
+    const pc = appState.devices.at(-1);
+    assert.equal(pc.type, 'pc');
+    assert.equal(pc.ip, '');
+    assert.equal(appState.placements.some(row => row.device_id === pc.id && row.view_id === appState.currentViewId), true);
+    assert.equal(getLedgerDeviceTypeLabel(pc.type), 'PC');
 });
 
 test('ゴースト表示: 新規タブで未選択時は非表示、選択後に初めて表示される', async () => {
@@ -855,4 +874,47 @@ test('安全整数上限付近の既存IDがあっても仮IDは安全な整数�
     assert.equal(fourth, 3);
     assert.equal(Number.isSafeInteger(fourth), true);
     assert.ok(fourth > 0 && fourth <= Number.MAX_SAFE_INTEGER);
+});
+
+test('rack-only mounting excludes all-view unplaced but allows independent normal-view XY placement', () => {
+    appState.rackMounts = [{ device_id: 2, view_id: 3, face: 'front', start_u: 1, height_u: 1, width_slot: 'left' }];
+    assert.deepEqual(getUnplacedCandidates('all-views').map(device => device.id), [3, 5]);
+    assert.deepEqual(getUnplacedCandidates('current-view').map(device => device.id), [2, 3, 4, 5]);
+});
+
+test('rack views refuse stamp/queue placement even if a stale normal-view placement mode remains active', () => {
+    appState.views.push({ id: 3, name: 'Rack', view_type: 'rack' });
+    appState.currentViewId = 3;
+    assert.equal(enterPlacementMode({ tab: 'new', deviceType: 'switch' }), false);
+    placementState.active = true;
+    placementState.tab = 'new';
+    placementState.newDeviceType = 'switch';
+    const before = structuredClone({ devices: appState.devices, placements: appState.placements });
+    assert.equal(handleCanvasPlacementClick({ clientX: 300, clientY: 200 }), false);
+    placementState.tab = 'unplaced';
+    placementState.queue = [{ id: 2, name: 'Mounted device' }];
+    assert.equal(handleCanvasPlacementClick({ clientX: 300, clientY: 200 }), false);
+    assert.deepEqual({ devices: appState.devices, placements: appState.placements }, before);
+    assert.equal(placementState.queue.length, 1);
+});
+
+test('placement manager exposes rack destinations as mount actions instead of XY checkboxes', async () => {
+    const manager = await import('../public/js/modals/placement-modal.js');
+    const { eventBus } = await import('../public/js/core/event-bus.js');
+    const rack = { id: 3, name: 'Rack', view_type: 'rack', facility: '別施設', floor: '別階' };
+    appState.views.push(rack);
+    appState.rackSettings = [{ view_id: 3, total_u: 8 }];
+    appState.rackMounts = [{ device_id: 2, view_id: 3, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' }];
+    manager.openPlacementManager(2);
+    const option = manager.createPlacementManagerOption(rack, false);
+    assert.equal(option.tagName, 'BUTTON');
+    assert.equal(option.children.length, 0, 'no XY checkbox is created for a rack');
+    assert.ok(option.textContent.includes('搭載位置を編集'));
+    assert.deepEqual(manager.getPlacementManagerChanges(), { addedViewIds: [], removedViewIds: [] });
+    const before = structuredClone({ devices: appState.devices, placements: appState.placements, mounts: appState.rackMounts });
+    const requested = [];
+    const stop = eventBus.on('rack:mount-device', request => requested.push(request));
+    try { await option._listeners.click(); } finally { stop(); }
+    assert.deepEqual(requested, [{ viewId: 3, deviceId: 2 }]);
+    assert.deepEqual({ devices: appState.devices, placements: appState.placements, mounts: appState.rackMounts }, before);
 });

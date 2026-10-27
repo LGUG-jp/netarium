@@ -147,7 +147,7 @@ final class BackupAcceptanceTest extends TestCase
             $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
             $this->assertSame('netarium-config', $manifest['format']);
             $this->assertSame(1, $manifest['format_version']);
-            $this->assertSame(11, $manifest['schema_version']);
+            $this->assertSame(16, $manifest['schema_version']);
             $this->assertSame(1200, $manifest['summary']['device_images']);
             $this->assertSame(10, $manifest['summary']['floor_plans']);
             $this->assertSame(400, $manifest['summary']['devices']);

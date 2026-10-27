@@ -1,3 +1,4 @@
+import { getRackDeviceMounts } from '../core/device-placement.js';
 /**
  * Netarium - ui/workspace-navigation.js
  *
@@ -177,7 +178,7 @@ function buildControls(content) {
     linkPanel.appendChild(list);
 }
 
-function renderDevices(placements) {
+function renderDevices(placements, isRack) {
     const panel = document.getElementById('workspace-nav-devices');
     panel.replaceChildren();
     const tools = element('div', 'workspace-nav-tools');
@@ -209,9 +210,16 @@ function renderDevices(placements) {
         row.setAttribute('role', 'listitem');
         const button = element('button', 'workspace-nav-item workspace-nav-device-item');
         button.type = 'button';
-        button.setAttribute('data-placement-id', String(placement.id));
-        button.setAttribute('data-nav-focus', `device-${placement.id}`);
-        if (appState.selectedPlacementIds.has(Number(placement.id))) button.classList.add('is-selected');
+        if (isRack) {
+            button.setAttribute('data-rack-device-id', String(device.id));
+            button.setAttribute('data-nav-focus', `rackdevice-${device.id}`);
+            if (appState.editingDeviceId != null &&
+                Number(appState.editingDeviceId) === Number(device.id)) button.classList.add('is-selected');
+        } else {
+            button.setAttribute('data-placement-id', String(placement.id));
+            button.setAttribute('data-nav-focus', `device-${placement.id}`);
+            if (appState.selectedPlacementIds.has(Number(placement.id))) button.classList.add('is-selected');
+        }
         const info = element('div', 'workspace-nav-device-info');
         const title = element('div', 'workspace-nav-device-title', device.name || '(名称未設定)');
         const typeLabel = DEVICE_TYPES[device.type]?.label || 'その他';
@@ -222,9 +230,15 @@ function renderDevices(placements) {
         button.setAttribute('aria-label', `${title.textContent} / ${typeLabel} / ${ipText} / ${statusDescription}`);
         info.append(title, sub);
         button.appendChild(info);
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
             if (window.innerWidth <= 900) closeWorkspaceNavigation();
-            focusDevicePlacement(device, placement);
+            if (isRack) {
+                const { showRackDevice } = await import('../canvas/rack-view.js');
+                await showRackDevice({ viewId: Number(placement.view_id), deviceId: Number(device.id) });
+                renderWorkspaceNavigation();
+            } else {
+                focusDevicePlacement(device, placement);
+            }
         });
         row.appendChild(button);
         list.appendChild(row);
@@ -307,7 +321,13 @@ export function renderWorkspaceNavigation() {
         content.replaceChildren();
         buildControls(content);
     }
-    const placements = getCurrentPlacements();
+    const isRack = getCurrentView().view_type === 'rack';
+    const placements = isRack
+        ? [...new Map(getRackDeviceMounts(appState)
+            .filter(mount => Number(mount.view_id) === Number(appState.currentViewId) &&
+                getDeviceById(mount.device_id))
+            .map(mount => [Number(mount.device_id), mount])).values()]
+        : getCurrentPlacements();
     const links = getCurrentLinks();
     for (const [key, label, count] of [['devices', '機器', placements.length], ['links', '接続', links.length]]) {
         const tab = document.getElementById(`workspace-nav-tab-${key}`);
@@ -318,7 +338,7 @@ export function renderWorkspaceNavigation() {
     }
     const search = document.getElementById('workspace-nav-search');
     if (search.value !== searchQuery) search.value = searchQuery;
-    renderDevices(placements);
+    renderDevices(placements, isRack);
     renderLinks(links, isCurrentUserAdmin() && !appState.authExpired);
     if (focusKey) {
         const item = content.querySelector(`[data-nav-focus="${focusKey}"]`);
@@ -331,6 +351,10 @@ export function renderWorkspaceNavigation() {
 export function initWorkspaceNavigation() {
     eventBus.on('canvas:render-complete', renderWorkspaceNavigation);
     eventBus.on('link-systems:changed', renderWorkspaceNavigation);
+    eventBus.on('rack:changed', renderWorkspaceNavigation);
+    eventBus.on('device-panel:opened', () => {
+        if (getCurrentView()?.view_type === 'rack') renderWorkspaceNavigation();
+    });
     eventBus.on('resources:ids-remapped', maps => {
         selectionViewId = mappedResourceId(maps.views, selectionViewId);
         remapResourceSet(selectedLinkIds, maps.links);
@@ -338,7 +362,7 @@ export function initWorkspaceNavigation() {
         const key = focused?.getAttribute('data-nav-focus');
         if (key && key !== 'ledger') {
             const [kind, id] = key.split('-');
-            const map = kind === 'device' ? maps.placements : maps.links;
+            const map = kind === 'device' ? maps.placements : kind === 'rackdevice' ? maps.devices : maps.links;
             focused.setAttribute('data-nav-focus', `${kind}-${mappedResourceId(map, Number(id))}`);
         }
         renderWorkspaceNavigation();

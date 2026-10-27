@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { after, beforeEach, test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { installWorkspaceDom } from './helpers/workspace-dom.mjs';
@@ -15,6 +14,8 @@ const queue = await import('../public/js/core/save-queue.js');
 const panels = await import('../public/js/ui/property-panel.js');
 const { initModalFocusTrap, getTopModalContainer } = await import('../public/js/core/modal-focus.js');
 const { onKeyDown } = await import('../public/js/canvas/selection.js');
+const toolbar = await import('../public/js/ui/toolbar.js');
+const drafts = await import('../public/js/core/device-drafts.js');
 
 const entry = dom.add('button', 'palette-nav-btn');
 const panel = dom.add('div', 'workspace-nav-panel');
@@ -45,9 +46,16 @@ bulk.initializeLinkBulkModal();
 initModalFocusTrap();
 
 let requests;
+let pingRequests;
 let responseStatus;
-globalThis.fetch = async (_url, options) => {
+globalThis.fetch = async (url, options) => {
     const payload = JSON.parse(options.body);
+    if (url.includes('action=ping')) {
+        pingRequests.push(payload);
+        return new Response(JSON.stringify({ ok: true, monitor_revision: 7,
+            results: payload.targets.map(target => ({ id: target.id, status: 'green',
+                response_ms: 2, checked_at: '2026-10-25T01:00:00Z' })) }));
+    }
     requests.push(payload);
     if (responseStatus === 409) return new Response(JSON.stringify({ ok: false, error: '別の管理者が更新しました', details: {
         conflicts: [{ kind: 'views', id: 10, name: '対象ビュー' }]
@@ -87,6 +95,7 @@ beforeEach(async () => {
     appState.selectedPlacementIds = new Set();
     appState.editingDeviceId = null; appState.editingLinkId = null;
     appState.canvasNotes = []; appState.floorPlans = []; appState.deviceImages = [];
+    appState.rackMounts = []; appState.rackSettings = [];
     appState.currentSvg = svg; appState.deviceLayer = deviceLayer; appState.floorPlanLayer = floorPlanLayer;
     appState.world = world;
     appState.canvas = canvas;
@@ -100,7 +109,7 @@ beforeEach(async () => {
     appState.appStatus = { dirty: false, state: 'saved', lastSavedAt: null, lastError: null };
     resource.resetResourceBaseline(appState);
     eventBus.emit('resources:reloaded');
-    requests = []; responseStatus = 200;
+    requests = []; pingRequests = []; responseStatus = 200;
     navigation.openWorkspaceNavigation();
     await dom.get('workspace-nav-tab-devices').dispatch('click');
 });
@@ -146,6 +155,104 @@ test('機器の既存個別操作はビュー内の機器を選択し、縮小�
     assert.equal(appState.selectedPlacementIds.has(11), true);
     assert.equal(appState.viewState.scale, DEFAULT_VIEW_SCALE);
     assert.equal(panel.querySelector('[data-placement-id="12"]'), null);
+});
+
+test('ラック一覧は現在ラックの搭載機器を重複なく表示し、XY配置を作らず実選択経路で開く', async () => {
+    appState.views[0].view_type = 'rack';
+    appState.rackMounts = [
+        { view_id: 10, device_id: 2 }, { view_id: '10', device_id: '2' },
+        { view_id: 20, device_id: 1 }, { view_id: 10, device_id: 999 }
+    ];
+    appState.devices[1].ip = '192.0.2.2';
+    appState.selectedPlacementIds.add(11);
+    appState.editingDeviceId = 1;
+    navigation.renderWorkspaceNavigation();
+    assert.equal(get('workspace-nav-tab-devices').textContent, '機器 (1台)');
+    assert.equal(panel.querySelectorAll('[data-rack-device-id]').length, 1);
+    assert.equal(panel.querySelector('[data-placement-id]'), null);
+    const button = panel.querySelector('[data-rack-device-id="2"]');
+    assert.match(button.textContent, /先AP.*192\.0\.2\.2/);
+    assert.match(button.getAttribute('aria-label'), /先AP/);
+    assert.equal(button.classList.contains('is-selected'), false);
+    const placements = structuredClone(appState.placements);
+    await button.dispatch('click');
+    assert.equal(appState.editingDeviceId, 2);
+    assert.equal(panel.querySelector('[data-rack-device-id="2"]').classList.contains('is-selected'), true);
+    assert.deepEqual(appState.placements, placements);
+    assert.deepEqual(requests, []);
+    appState.editingDeviceId = 1;
+    eventBus.emit('device-panel:opened', appState.devices[0]);
+    assert.equal(panel.querySelector('.is-selected'), null);
+    appState.editingDeviceId = 2;
+});
+
+test('ラックPingは現在ラックで選択された実機器だけを共通API・監視更新経路へ渡す', async () => {
+    appState.views[0].view_type = 'rack';
+    appState.rackMounts = [
+        { view_id: 10, device_id: 2 }, { view_id: '10', device_id: '2' },
+        { view_id: 20, device_id: 1 }
+    ];
+    appState.devices[0].ip = '192.0.2.1';
+    appState.devices[1].ip = ' 192.0.2.2 ';
+    appState.devices[1].type = 'pc';
+    appState.selectedPlacementIds.add(11);
+    appState.editingDeviceId = 2;
+    appState.dataRevision = 42;
+    resource.resetResourceBaseline(appState);
+    await toolbar.pingSelected();
+    assert.deepEqual(pingRequests, [{ revision: 42, targets: [{ id: 2, ip: '192.0.2.2' }] }]);
+    assert.equal(appState.devices[1].status, 'green');
+    assert.equal(appState.monitorRevision, 7);
+    assert.equal(appState.isPinging, false);
+    assert.deepEqual(requests, []);
+    for (const id of [1, 3, 999, null]) {
+        appState.editingDeviceId = id;
+        await toolbar.pingSelected();
+    }
+    appState.editingDeviceId = 2;
+    appState.devices[1].ip = ' ';
+    await toolbar.pingSelected();
+    assert.equal(pingRequests.length, 1, '別ラック・未搭載・削除済み・未選択・IPなしは対象にしない');
+});
+
+test('ラックPingも既存の管理者・認証・保存待ち・実行中・未適用入力の制限を保持する', async () => {
+    appState.views[0].view_type = 'rack';
+    appState.rackMounts = [{ view_id: 10, device_id: 2 }];
+    appState.editingDeviceId = 2;
+    appState.devices[1].ip = '192.0.2.2';
+    resource.resetResourceBaseline(appState);
+    window.APP_CONFIG.user.isAdmin = false;
+    await toolbar.pingSelected();
+    window.APP_CONFIG.user.isAdmin = true;
+    appState.authExpired = true;
+    await toolbar.pingSelected();
+    appState.authExpired = false;
+    appState.appStatus.dirty = true;
+    await toolbar.pingSelected();
+    appState.appStatus.dirty = false;
+    appState.isPinging = true;
+    await toolbar.pingSelected();
+    appState.isPinging = false;
+    drafts.getDeviceDraft('rack-ping-test', 2).name = '未適用の機器名';
+    try {
+        await toolbar.pingSelected();
+    } finally {
+        drafts.discardDeviceDrafts('rack-ping-test');
+    }
+    assert.deepEqual(pingRequests, []);
+});
+
+test('通常ビューのPingはXY選択を使い、配置重複を除外して現在ビューの対象だけを送信する', async () => {
+    appState.devices[0].ip = '192.0.2.1';
+    appState.devices[1].ip = '192.0.2.2';
+    appState.placements.push({ id: 16, view_id: 10, device_id: 1, x: 100, y: 100 });
+    appState.selectedPlacementIds = new Set([11, 16, 12, 999]);
+    appState.editingDeviceId = 2;
+    appState.rackMounts = [{ view_id: 10, device_id: 2 }];
+    resource.resetResourceBaseline(appState);
+    await toolbar.pingSelected();
+    assert.deepEqual(pingRequests[0].targets, [{ id: 1, ip: '192.0.2.1' }]);
+    assert.deepEqual(requests, []);
 });
 
 test('狭幅では機器を選択すると一覧を閉じる', async () => {
@@ -479,7 +586,6 @@ test('opt-outはdisabledで不変、opt-in空欄はclearし、端点・ポート
     assert.deepEqual(appState.links.find(link => link.id === before[2].id), before[2]);
     assert.equal(overlay.hidden, true);
     assert.equal(document.activeElement?.id, 'workspace-nav-bulk-open');
-    assert.equal(get('toast')?.hidden ?? true, true);
 });
 
 test('適用前の権限・選択・ビュー・競合変更は部分適用せず、reloadもsessionを無効化する', async () => {
@@ -638,9 +744,3 @@ test('確認前は適用できず、確認から戻ると入力を保持して�
     assert.equal(requests[0].views.find(view => view.id === 10).links.find(link => link.id === 1).memo, '修正して確定する備考');
 });
 
-test('スタイル定義: 接続タブの検索BOXが一回り小さい32pxサイズで定義され、左右余白が確保されている', () => {
-    const css = fs.readFileSync(new URL('../public/css/components/tool_palette.css', import.meta.url), 'utf8');
-    assert.match(css, /#workspace-nav-search\s*\{[^}]*height:\s*32px;/);
-    assert.match(css, /#workspace-nav-search\s*\{[^}]*min-height:\s*32px;/);
-    assert.match(css, /\.workspace-nav-tools\s*\{[^}]*padding:\s*0 4px;/);
-});

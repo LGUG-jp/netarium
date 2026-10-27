@@ -33,6 +33,7 @@
     overflow: hidden;
 }
 
+
 /* Header */
 .dashboard-dialog .placement-manager-header {
     display: flex;
@@ -99,26 +100,23 @@
 
 .dashboard-maintenance-grid .dashboard-kpi-item {
     align-items: flex-start;
-    min-height: 100px;
-    padding: 16px 18px;
-    gap: 6px;
+    min-height: 68px;
+    padding: 8px 12px;
+    gap: 4px;
     text-align: left;
 }
 
 .dashboard-maintenance-grid .dashboard-kpi-value {
-    font-size: 28px;
+    font-size: 24px;
 }
 
-.dashboard-maintenance-grid .dashboard-kpi-unplaced {
-    background-color: var(--warning-bg);
-}
 
 .dashboard-maintenance-summary {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: 6px 20px;
-    margin: 10px 0 0;
+    margin: 8px 0 0;
     color: var(--text-muted);
     font-size: 12px;
 }
@@ -137,8 +135,12 @@
 }
 
 @media (max-width: 640px) {
-    .dashboard-maintenance-grid {
-        grid-template-columns: 1fr;
+    .dashboard-maintenance-grid .dashboard-kpi-item {
+        padding: 8px;
+    }
+
+    .dashboard-maintenance-grid .dashboard-kpi-label {
+        white-space: normal;
     }
 }
 
@@ -772,39 +774,193 @@
     color: var(--text-muted);
 }
 
+
+.dashboard-rack-row:hover {
+    background-color: var(--primary-soft);
+}
+
+.dashboard-rack-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+
+
+.dashboard-rack-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.dashboard-rack-info {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.dashboard-rack-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.dashboard-rack-heading strong {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+}
+
+.dashboard-rack-count {
+    flex-shrink: 0;
+    font-size: 12px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-rack-info small {
+    display: block;
+}
+
+.dashboard-rack-faces {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 4px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-rack-info small {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.dashboard-rack-occupancy-track {
+    display: block;
+    height: 7px;
+    margin-top: 3px;
+    border-radius: var(--radius-xs);
+    background-color: var(--bg-toolbar-hover);
+    overflow: hidden;
+}
+
+.dashboard-rack-occupancy-bar {
+    display: block;
+    height: 100%;
+    background-color: var(--link-system-indigo);
+}
+
+@media (max-width: 480px) {
+    .dashboard-rack-faces {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+    }
+}
+
+
 /* ========================================================
    Phase 2.6D: Breakdown Section (Facility, Floor, Type)
 ======================================================== */
-.dashboard-breakdown-section {
-    padding: 8px 10px;
+.dashboard-asset-card {
+    min-width: 0;
+    padding: 10px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-sm);
     background-color: #ffffff;
     box-shadow: var(--shadow-sm);
 }
 
-.dashboard-breakdown-section .dashboard-section-header {
+.dashboard-asset-card .dashboard-section-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    min-height: 28px;
     margin-bottom: 6px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid var(--border-light);
 }
 
-.dashboard-breakdown-section .dashboard-section-header h3 {
+.dashboard-asset-card .dashboard-section-header h3 {
     margin: 0;
     color: var(--text-main);
     font-size: 13px;
     font-weight: 700;
 }
 
-.dashboard-breakdown-section .dashboard-section-header p {
+.dashboard-asset-card .dashboard-section-header p {
     margin: 1px 0 0;
     color: var(--text-muted);
     font-size: 11px;
     line-height: 1.3;
+}
+
+.dashboard-details-toggle {
+    min-height: 28px;
+    margin-left: auto;
+    padding: 4px 8px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background-color: var(--neutral-bg);
+    color: var(--primary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.dashboard-details-toggle:hover {
+    background-color: var(--primary-soft);
+}
+
+.dashboard-asset-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr));
+    gap: 8px;
+}
+
+.dashboard-asset-metric {
+    min-width: 0;
+    padding: 8px 12px;
+    border: 1px solid var(--border-light);
+    border-top: 3px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-panel);
+}
+
+.dashboard-assets-breakdown .dashboard-asset-metric {
+    border-top-color: var(--primary);
+}
+
+.dashboard-assets-racks .dashboard-asset-metric {
+    border-top-color: var(--link-system-indigo);
+}
+
+.dashboard-asset-metric .dashboard-kpi-value {
+    font-size: 24px;
+}
+
+.dashboard-asset-card .dashboard-kpi-item {
+    box-shadow: none;
+}
+
+.dashboard-asset-details {
+    margin-top: 10px;
+}
+
+.dashboard-asset-details[hidden] {
+    display: none;
 }
 
 .dashboard-breakdown-grid {

@@ -44,6 +44,7 @@ import {
     closeToolbarMenu,
     closePlacePopover,
     syncLinkModeButton,
+    syncViewCapabilities,
     togglePlacePopover
 } from './ui/toolbar-controls.js';
 import {
@@ -262,6 +263,13 @@ import {
 } from './ui/access-control.js';
 
 export function registerStaticListeners() {
+    for (const section of ['breakdown', 'racks']) {
+        document.getElementById(`dashboard-${section}-toggle`)?.addEventListener('click', () => handleDashboardAction(`toggle-${section}`));
+    }
+    const rackView = document.getElementById('rack-view');
+    for (const type of ['pointerdown', 'click', 'dblclick', 'wheel', 'contextmenu']) {
+        rackView?.addEventListener(type, event => event.stopPropagation(), { passive: true });
+    }
     document.getElementById('floor-plan-reset-btn')?.addEventListener('click', () => resetCurrentFloorPlanSettings());
     document.getElementById('floor-plan-finish-btn')?.addEventListener('click', () => finishFloorPlanAdjustMode());
     document.getElementById('lp-close-btn')?.addEventListener('click', () => closeLinkPanel());
@@ -391,6 +399,9 @@ export function registerStaticListeners() {
     document.getElementById('placement-manager-apply-btn')?.addEventListener('click', () => applyPlacementManager());
     document.getElementById('close-view-manager-btn')?.addEventListener('click', () => closeViewManager());
     document.getElementById('view-add-btn')?.addEventListener('click', () => addView());
+    for (const type of ['topology', 'floor', 'rack']) {
+        document.getElementById(`view-add-${type}-btn`)?.addEventListener('click', () => addView(type));
+    }
     document.getElementById('view-duplicate-btn')?.addEventListener('click', () => duplicateSelectedView());
     document.getElementById('view-delete-btn')?.addEventListener('click', () => deleteSelectedView());
     document.getElementById('view-manager-form')?.addEventListener('submit', event => event.preventDefault());
@@ -418,6 +429,7 @@ function registerApplicationEvents() {
             renderViewSelector();
             renderStatusBar();
             updateFloorPlanMenuVisibility();
+            syncViewCapabilities();
         }
     );
 

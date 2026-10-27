@@ -17,6 +17,7 @@ import {
     getCurrentView,
     getDeviceById
 } from '../core/state.js';
+import { getPlacedDeviceIds, getRackDeviceMounts } from '../core/device-placement.js';
 
 import {
     clampPosition
@@ -60,10 +61,16 @@ import {
 
 import { eventBus } from '../core/event-bus.js';
 import { endLinkMode } from '../core/link-mode.js';
+import { FLOOR_RACK_ICON } from '../canvas/floor-racks.js';
+import { hasResourceConflict } from '../core/save-queue.js';
 
 let ghostClientPoint = null;
 
 eventBus.on('placement-mode:exit', exitPlacementMode);
+eventBus.on('placement-mode:view-changed', () => {
+    if (placementState.tab === 'rack' || getCurrentView()?.view_type === 'rack') exitPlacementMode();
+    else syncPlacementModeUi();
+});
 eventBus.on('canvas:render-complete', () => {
     if (placementState.active) {
         renderPlacementPalette();
@@ -77,8 +84,9 @@ eventBus.on('canvas:view-transformed', () => {
 // 配置モード内部状態
 export const placementState = {
     active: false,
-    tab: 'new', // 'new' | 'unplaced'
+    tab: 'new', // 'new' | 'unplaced' | 'rack'
     newDeviceType: null,
+    selectedRackId: null,
     unplacedScope: 'current-view', // 'current-view' | 'all-views'
     unplacedSearchKeyword: '',
     selectedUnplacedIds: new Set(),
@@ -89,6 +97,9 @@ eventBus.on('resources:ids-remapped', maps => {
     placementState.selectedUnplacedIds = new Set([...placementState.selectedUnplacedIds]
         .map(id => Number(maps.devices?.[id] ?? id)));
     placementState.queue.forEach(row => { row.id = Number(maps.devices?.[row.id] ?? row.id); });
+    if (placementState.selectedRackId != null) {
+        placementState.selectedRackId = Number(maps.views?.[placementState.selectedRackId] ?? placementState.selectedRackId);
+    }
 });
 
 export function isPlacementModeActive() {
@@ -108,6 +119,10 @@ export function enterPlacementMode(options = {}) {
     }
     if (appState.currentViewId === null) {
         showToast('表示中のビューがありません', 'warning');
+        return false;
+    }
+    if (getCurrentView()?.view_type === 'rack') {
+        showToast('ラックでは空きUから既存機器を搭載してください', 'warning');
         return false;
     }
 
@@ -144,6 +159,12 @@ function setupPlacementMode(options) {
     if (options.tab) {
         placementState.tab = options.tab;
     }
+    if (placementState.tab === 'rack' && getCurrentView()?.view_type !== 'floor') placementState.tab = 'new';
+    const rackTab = document.getElementById('place-tab-btn-rack');
+    if (rackTab) {
+        rackTab.hidden = getCurrentView()?.view_type !== 'floor';
+        rackTab.onclick = () => switchPlacementTab('rack');
+    }
     placementState.newDeviceType = options.deviceType && DEVICE_TYPES[options.deviceType]
         ? options.deviceType
         : null;
@@ -173,6 +194,7 @@ export function exitPlacementMode() {
     }
     placementState.active = false;
     placementState.newDeviceType = null;
+    placementState.selectedRackId = null;
     hidePlacementGhost();
     syncPlacementModeUi();
     return flushSaveQueue({ silent: true });
@@ -193,7 +215,7 @@ export async function togglePlacementMode() {
  * タブ切り替え
  */
 export function switchPlacementTab(tab) {
-    if (tab !== 'new' && tab !== 'unplaced') return;
+    if (!['new', 'unplaced', 'rack'].includes(tab) || (tab === 'rack' && getCurrentView()?.view_type !== 'floor')) return;
     placementState.tab = tab;
 
     const newTabBtn = document.getElementById('place-tab-btn-new');
@@ -216,8 +238,16 @@ export function switchPlacementTab(tab) {
     if (unplacedContent) {
         unplacedContent.hidden = tab !== 'unplaced';
     }
+    const rackTab = document.getElementById('place-tab-btn-rack');
+    if (rackTab) {
+        rackTab.hidden = getCurrentView()?.view_type !== 'floor';
+        rackTab.classList.toggle('is-active', tab === 'rack');
+        rackTab.setAttribute('aria-selected', String(tab === 'rack'));
+    }
+    const rackContent = document.getElementById('place-content-rack');
+    if (rackContent) rackContent.hidden = tab !== 'rack';
     if (badge) {
-        badge.textContent = tab === 'new' ? '新規' : '未配置';
+        badge.textContent = tab === 'rack' ? 'ラック' : tab === 'new' ? '新規' : '未配置';
     }
 
     if (ghostClientPoint) {
@@ -292,6 +322,8 @@ export function syncPlacementModeUi() {
     if (panel) {
         panel.hidden = !placementState.active;
     }
+    const rackTab = document.getElementById('place-tab-btn-rack');
+    if (rackTab) rackTab.hidden = !placementState.active || getCurrentView()?.view_type !== 'floor';
 
     if (placeBtn) {
         placeBtn.classList.toggle('active', placementState.active);
@@ -328,11 +360,44 @@ export function syncPlacementModeUi() {
 export function renderPlacementPalette() {
     if (typeof document === 'undefined') return;
 
-    if (placementState.tab === 'new') {
+    if (placementState.tab === 'rack') {
+        renderPlacementRacks();
+    } else if (placementState.tab === 'new') {
         renderPlacementNewTypes();
     } else {
         renderPlacementQueue();
         renderPlacementUnplacedList();
+    }
+}
+
+export function renderPlacementRacks() {
+    const list = document.getElementById('placement-rack-list');
+    if (!list) return;
+    list.replaceChildren();
+    const racks = appState.views.filter(view => view.view_type === 'rack');
+    if (!racks.length) {
+        const empty = document.createElement('p');
+        empty.textContent = 'ビュー管理でラックを先に登録してください。';
+        list.appendChild(empty);
+    }
+    for (const rack of racks) {
+        const placed = (appState.floorRackPlacements || []).some(row => Number(row.rack_view_id) === Number(rack.id));
+        const totalU = appState.rackSettings.find(row => Number(row.view_id) === Number(rack.id))?.total_u;
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'placement-rack-item';
+        button.disabled = placed || appState.authExpired || appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', appState.currentViewId) ||
+            hasResourceConflict('views', rack.id);
+        button.classList.toggle('is-selected', Number(placementState.selectedRackId) === Number(rack.id));
+        button.setAttribute('aria-pressed', String(Number(placementState.selectedRackId) === Number(rack.id)));
+        const icon = document.createElement('img'); icon.src = FLOOR_RACK_ICON; icon.alt = '';
+        const text = document.createElement('span');
+        const name = document.createElement('strong'); name.textContent = rack.name;
+        const detail = document.createElement('span'); detail.textContent = `${totalU ?? '—'}U / ${placed ? '配置済み' : '未配置'}`;
+        text.append(name, detail); button.append(icon, text);
+        button.addEventListener('click', () => {
+            placementState.selectedRackId = Number(rack.id); renderPlacementRacks();
+        });
+        list.appendChild(button);
     }
 }
 
@@ -393,9 +458,7 @@ export function getUnplacedCandidates(scope = placementState.unplacedScope) {
         currentPlacements.map(p => Number(p.device_id))
     );
 
-    const allPlacedDeviceIds = new Set(
-        appState.placements.map(p => Number(p.device_id))
-    );
+    const allPlacedDeviceIds = getPlacedDeviceIds(appState.placements, getRackDeviceMounts(appState));
 
     const queueDeviceIds = new Set(
         placementState.queue.map(d => Number(d.id))
@@ -785,7 +848,9 @@ export function updatePlacementGhost(clientX, clientY) {
 
     ghostClientPoint = { x: clientX, y: clientY };
 
-    if (placementState.tab === 'new') {
+    if (placementState.tab === 'rack') {
+        if (!placementState.selectedRackId) { hidePlacementGhost(); return; }
+    } else if (placementState.tab === 'new') {
         if (!placementState.newDeviceType || !DEVICE_TYPES[placementState.newDeviceType]) {
             hidePlacementGhost();
             return;
@@ -813,7 +878,10 @@ export function updatePlacementGhost(clientX, clientY) {
     ghost.style.top = `${pos.y}px`;
     ghost.hidden = false;
 
-    if (placementState.tab === 'new') {
+    if (placementState.tab === 'rack') {
+        if (ghostIcon) ghostIcon.src = FLOOR_RACK_ICON;
+        if (ghostLabel) ghostLabel.textContent = appState.views.find(view => Number(view.id) === Number(placementState.selectedRackId))?.name || '';
+    } else if (placementState.tab === 'new') {
         const typeDef = DEVICE_TYPES[placementState.newDeviceType];
         if (ghostIcon) ghostIcon.src = typeDef.icon;
         if (ghostLabel) ghostLabel.textContent = typeDef.shortLabel || typeDef.label;
@@ -845,6 +913,7 @@ export function handleCanvasPlacementClick(event) {
     if (!placementState.active) return false;
     if (!requireAdminUiAction()) return false;
     if (appState.currentViewId === null) return false;
+    if (getCurrentView()?.view_type === 'rack') return false;
 
     // クリック位置のワールド座標を計算
     const worldPoint = screenToWorld(event.clientX, event.clientY);
@@ -852,6 +921,24 @@ export function handleCanvasPlacementClick(event) {
         worldPoint.x - DEFAULT_DEVICE_WIDTH / 2,
         worldPoint.y - DEFAULT_DEVICE_HEIGHT / 2
     );
+
+    if (placementState.tab === 'rack') {
+        if (getCurrentView()?.view_type !== 'floor' || appState.authExpired || appState.appStatus.state === 'unconfirmed' ||
+            hasResourceConflict('views', appState.currentViewId)) return true;
+        const rack = appState.views.find(view => view.view_type === 'rack' && Number(view.id) === Number(placementState.selectedRackId));
+        if (!rack) { showToast('配置するラックを選択してください', 'warning'); return true; }
+        if (hasResourceConflict('views', rack.id)) return true;
+        if ((appState.floorRackPlacements || []).some(row => Number(row.rack_view_id) === Number(rack.id))) {
+            showToast('このラックは既に配置されています', 'warning'); renderPlacementRacks(); return true;
+        }
+        appState.floorRackPlacements.push({
+            floor_view_id: Number(appState.currentViewId), rack_view_id: Number(rack.id), x: position.x, y: position.y
+        });
+        appState.selectedPlacementIds.clear();
+        markDirty(); scheduleSave({ silent: true });
+        exitPlacementMode(); render();
+        return true;
+    }
 
     if (placementState.tab === 'new') {
         if (!placementState.newDeviceType || !DEVICE_TYPES[placementState.newDeviceType]) {

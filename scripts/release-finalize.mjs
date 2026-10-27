@@ -7,7 +7,9 @@ const REPOSITORY = 'LGUG-jp/netarium';
 const PREFIX = `/repos/${REPOSITORY}`;
 const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?![\s\S])/;
 const SHA = /^[a-f0-9]{40}(?![\s\S])/;
-const IDENTITY = { name: 'Netarium Release', email: 'release@users.noreply.github.com' };
+const IDENTITY = Object.freeze({ name: 'netarium-release-publisher-lgug[bot]', email: '344701945+netarium-release-publisher-lgug[bot]@users.noreply.github.com' });
+const LEGACY_IDENTITY = Object.freeze({ name: 'Netarium Release', email: 'release@users.noreply.github.com' });
+export { IDENTITY as RELEASE_IDENTITY, LEGACY_IDENTITY as LEGACY_RELEASE_IDENTITY };
 class ReleaseError extends Error {}
 const requireThat = (condition, message) => { if (!condition) throw new ReleaseError(message); };
 const newer = (left, right) => {
@@ -16,7 +18,9 @@ const newer = (left, right) => {
     return false;
 };
 const branchVersion = ref => typeof ref === 'string' && ref.startsWith('release/v') && VERSION.test(ref.slice(9)) ? ref.slice(9) : null;
-const identityMatches = value => value?.name === IDENTITY.name && value.email === IDENTITY.email;
+const identityMatches = value =>
+    (value?.name === IDENTITY.name && value?.email === IDENTITY.email) ||
+    (value?.name === LEGACY_IDENTITY.name && value?.email === LEGACY_IDENTITY.email);
 const sameDate = (a, b) => typeof a === 'string' && typeof b === 'string' && Number.isFinite(Date.parse(a)) && Date.parse(a) === Date.parse(b);
 
 export function githubTransport(token) {
@@ -108,6 +112,7 @@ export function createFinalizer({ request, sleep = ms => new Promise(resolve => 
             const merged = await api('GET', `/git/commits/${mergedSha}`);
             requireThat(head.sha === pr.head.sha && merged.sha === mergedSha && Array.isArray(head.parents) && head.parents.length === 1
                 && head.message === title && identityMatches(head.author) && identityMatches(head.committer)
+                && head.author.name === head.committer.name && head.author.email === head.committer.email
                 && sameDate(head.author.date, head.committer.date), 'release head commitの内容・署名者が一致しません');
             requireThat(Array.isArray(merged.parents) && merged.parents.length === 1 && SHA.test(head.tree?.sha || '')
                 && merged.tree?.sha === head.tree.sha, 'squash/rebase commitとrelease treeが一致しません');

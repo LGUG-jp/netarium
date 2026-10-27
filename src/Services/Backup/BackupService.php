@@ -174,7 +174,7 @@ class BackupService
     }
 
 
-    public function fetchBackupTables(): array
+    public function fetchBackupTables(int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
     {
         $views = $this->db->query("
             SELECT
@@ -331,6 +331,18 @@ class BackupService
             'view_floor_plans' => $floorPlans,
             'device_images' => $deviceImages,
             'app_meta' => $appMeta,
+            ...(in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? [
+                'rack_settings' => $this->db->query('SELECT view_id, total_u, location FROM rack_settings ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC),
+                'rack_mounts' => $this->db->query('SELECT device_id, view_id, face, start_u, height_u, width_slot'
+                    . ($schemaVersion >= 14 ? ', depth' : '') . ' FROM rack_mounts ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion >= 15 ? [
+                'rack_shelves' => $this->db->query('SELECT * FROM rack_shelves ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+                'rack_shelf_devices' => $this->db->query('SELECT * FROM rack_shelf_devices ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion === 16 ? [
+                'floor_rack_placements' => $this->db->query('SELECT * FROM floor_rack_placements ORDER BY rack_view_id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
         ];
     }
 
@@ -414,6 +426,11 @@ class BackupService
                 'canvas_notes' => count($tables['canvas_notes']),
                 'floor_plans' => count($tables['view_floor_plans']),
                 'device_images' => count($tables['device_images']),
+                'rack_settings' => count($tables['rack_settings']),
+                'rack_mounts' => count($tables['rack_mounts']),
+                'rack_shelves' => count($tables['rack_shelves']),
+                'rack_shelf_devices' => count($tables['rack_shelf_devices']),
+                'floor_rack_placements' => count($tables['floor_rack_placements']),
                 'files' => 1,
                 'total_bytes' => $entry['size'],
             ],
@@ -880,7 +897,10 @@ class BackupService
         }
         $this->requireExactBackupKeys(
             $summary,
-            ['views', 'devices', 'placements', 'links', 'link_systems', 'canvas_notes', 'floor_plans', 'device_images', 'files', 'total_bytes'],
+            array_merge(['views', 'devices', 'placements', 'links', 'link_systems', 'canvas_notes', 'floor_plans', 'device_images', 'files', 'total_bytes'],
+                in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings', 'rack_mounts'] : [],
+                $schemaVersion >= 15 ? ['rack_shelves', 'rack_shelf_devices'] : [],
+                $schemaVersion === 16 ? ['floor_rack_placements'] : []),
             'manifest.summary'
         );
 
@@ -1081,7 +1101,7 @@ class BackupService
     }
 
 
-    public function validateBackupViews(array $views, array $config = []): array
+    public function validateBackupViews(array $views, array $config = [], int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
     {
         if (count($views) < 1) {
             throw new ApiException('ビューが1件も含まれていません', 400);
@@ -1112,7 +1132,7 @@ class BackupService
             $name = $this->requireJsonString($view['name'], 'views.name', 100, false);
             $type = (string)$view['view_type'];
 
-            if (!in_array($type, ['topology', 'floor'], true)) {
+            if (!in_array($type, in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['topology', 'floor', 'rack'] : ['topology', 'floor'], true)) {
                 throw new ApiException('views.view_typeが不正です', 400);
             }
 
@@ -1131,7 +1151,7 @@ class BackupService
         return $viewsById;
     }
 
-    public function validateBackupDevices(array $devices): array
+    public function validateBackupDevices(array $devices, int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
     {
         $expectedKeys = [
             'id', 'name', 'type', 'ip', 'x', 'y', 'facility', 'floor', 'location',
@@ -1144,6 +1164,9 @@ class BackupService
         $allowedTypes = [
             'switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'other',
         ];
+        if (in_array($schemaVersion, [13, 14, 15, 16], true)) {
+            $allowedTypes[] = 'pc';
+        }
 
         foreach ($devices as $device) {
             if (!is_array($device)) {
@@ -1627,11 +1650,18 @@ class BackupService
 
     public function validateCompleteBackupRestoreData(
         array $tables,
-        array $config = []
+        array $config = [],
+        int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
     ): array
     {
-        $this->requireExactBackupKeys($tables, ['views', 'devices', 'device_monitor_status',
-            'device_placements', 'links', 'link_systems', 'canvas_notes', 'view_floor_plans', 'device_images', 'app_meta'], 'テーブル');
+        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16], true)) {
+            throw new ApiException('未対応の構成スキーマです', 400);
+        }
+        $this->requireExactBackupKeys($tables, array_merge(['views', 'devices', 'device_monitor_status',
+            'device_placements', 'links', 'link_systems', 'canvas_notes', 'view_floor_plans', 'device_images', 'app_meta'],
+            in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings', 'rack_mounts'] : [],
+            $schemaVersion >= 15 ? ['rack_shelves', 'rack_shelf_devices'] : [],
+            $schemaVersion === 16 ? ['floor_rack_placements'] : []), 'テーブル');
         $this->validateRestoreIds($tables);
         $notes = $this->requireBackupTable($tables, 'canvas_notes');
         foreach ($notes as $row) {
@@ -1650,8 +1680,8 @@ class BackupService
         $appMeta = $this->requireBackupTable($tables, 'app_meta');
         $validatedSystems = $this->validateBackupLinkSystems($this->requireBackupTable($tables, 'link_systems'));
 
-        $validatedViews = $this->validateBackupViews($views, $config);
-        $validatedDevices = $this->validateBackupDevices($devices);
+        $validatedViews = $this->validateBackupViews($views, $config, $schemaVersion);
+        $validatedDevices = $this->validateBackupDevices($devices, $schemaVersion);
         $deviceIds = array_fill_keys(array_keys($validatedDevices), true);
 
         $validatedStatuses = $this->validateBackupMonitorStatuses($monitorStatuses, $deviceIds);
@@ -1669,6 +1699,54 @@ class BackupService
             $config
         );
         $validatedMeta = $this->validateBackupAppMeta($appMeta);
+        $rackSettings = [];
+        $rackMounts = [];
+        $rackShelves = $schemaVersion >= 15 ? $this->requireBackupTable($tables, 'rack_shelves') : [];
+        $rackShelfDevices = $schemaVersion >= 15 ? $this->requireBackupTable($tables, 'rack_shelf_devices') : [];
+        foreach (['rack_shelves' => $rackShelves, 'rack_shelf_devices' => $rackShelfDevices] as $table => $rows) {
+            $keys = $table === 'rack_shelves'
+                ? ['id', 'view_id', 'name', 'face', 'start_u', 'height_u', 'depth']
+                : ['device_id', 'shelf_id', 'sort_order'];
+            foreach ($rows as $row) {
+                if (!is_array($row)) { throw new ApiException("{$table}の行形式が不正です", 400); }
+                $this->requireExactBackupKeys($row, $keys, $table);
+                foreach ($table === 'rack_shelves' ? ['id', 'view_id'] : ['device_id', 'shelf_id'] as $field) {
+                    ResourceId::parse($row[$field] ?? null, "{$table}.{$field}", ResourceId::MAX_RESTORE);
+                }
+            }
+        }
+        if (in_array($schemaVersion, [12, 13, 14, 15, 16], true)) {
+            $rackSettings = $this->requireBackupTable($tables, 'rack_settings');
+            $rackMounts = $this->requireBackupTable($tables, 'rack_mounts');
+            foreach ($rackSettings as $row) {
+                if (!is_array($row)) { throw new ApiException('rack_settingsの行形式が不正です', 400); }
+                $this->requireExactBackupKeys($row, ['view_id', 'total_u', 'location'], 'rack_settings');
+            }
+            foreach ($rackMounts as $row) {
+                if (!is_array($row)) { throw new ApiException('rack_mountsの行形式が不正です', 400); }
+                $this->requireExactBackupKeys($row, array_merge(
+                    ['device_id', 'view_id', 'face', 'start_u', 'height_u', 'width_slot'],
+                    $schemaVersion >= 14 ? ['depth'] : []
+                ), 'rack_mounts');
+            }
+            [$rackSettings, $rackMounts, $rackShelves, $rackShelfDevices] = \Netarium\Services\Topology\RackLayout::validate(
+                $rackSettings, $rackMounts, $validatedViews, $validatedDevices, $rackShelves, $rackShelfDevices
+            );
+            foreach (array_merge($validatedPlacements, $validatedLinks, $validatedFloorPlans) as $row) {
+                if (($validatedViews[$row['view_id']]['view_type'] ?? '') === 'rack') {
+                    throw new ApiException('ラックビューにXY配置・配線・図面は保存できません', 400);
+                }
+            }
+        }
+        $floorRacks = $schemaVersion === 16 ? $this->requireBackupTable($tables, 'floor_rack_placements') : [];
+        foreach ($floorRacks as $row) {
+            if (!is_array($row)) { throw new ApiException('ラック配置の行形式が不正です', 400); }
+            $this->requireExactBackupKeys($row, ['floor_view_id', 'rack_view_id', 'x', 'y'], 'floor_rack_placements');
+            foreach (['floor_view_id', 'rack_view_id'] as $field) {
+                ResourceId::parse($row[$field], "floor_rack_placements.{$field}", ResourceId::MAX_RESTORE);
+            }
+        }
+        $floorRacks = \Netarium\Services\Topology\FloorRackPlacement::normalizeRows($floorRacks, $validatedViews);
 
 
         return [
@@ -1682,7 +1760,59 @@ class BackupService
             'view_floor_plans' => $validatedFloorPlans,
             'device_images' => $validatedDeviceImages,
             'app_meta' => $validatedMeta,
+            ...(in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings' => $rackSettings, 'rack_mounts' => $rackMounts] : []),
+            ...($schemaVersion >= 15 ? ['rack_shelves' => $rackShelves, 'rack_shelf_devices' => $rackShelfDevices] : []),
+            ...($schemaVersion === 16 ? ['floor_rack_placements' => $floorRacks] : []),
         ];
+    }
+
+    public function validateBackupSummary(array $tables, array $manifest): void
+    {
+        $mapping = ['views' => 'views', 'devices' => 'devices', 'placements' => 'device_placements',
+            'links' => 'links', 'link_systems' => 'link_systems', 'canvas_notes' => 'canvas_notes',
+            'floor_plans' => 'view_floor_plans', 'device_images' => 'device_images'];
+        if (in_array($manifest['schema_version'], [12, 13, 14, 15, 16], true)) {
+            $mapping += ['rack_settings' => 'rack_settings', 'rack_mounts' => 'rack_mounts'];
+        }
+        if ($manifest['schema_version'] >= 15) {
+            $mapping += ['rack_shelves' => 'rack_shelves', 'rack_shelf_devices' => 'rack_shelf_devices'];
+        }
+        if ($manifest['schema_version'] === 16) {
+            $mapping += ['floor_rack_placements' => 'floor_rack_placements'];
+        }
+        foreach ($mapping as $key => $table) {
+            if (($manifest['summary'][$key] ?? null) !== count($this->requireBackupTable($tables, $table))) {
+                throw new ApiException('マニフェストの件数が一致しません: ' . $key, 400);
+            }
+        }
+        if (($manifest['summary']['files'] ?? null) !== count($manifest['files'])
+            || ($manifest['summary']['total_bytes'] ?? null) !== array_sum(array_column($manifest['files'], 'size'))) {
+            throw new ApiException('マニフェストの合計が一致しません', 400);
+        }
+    }
+
+    public function convertBackupRestoreData(array $tables, int $sourceSchemaVersion, array $config = []): array
+    {
+        // Validate the source contract without adding fields or rewriting metadata.
+        $this->validateCompleteBackupRestoreData($tables, $config, $sourceSchemaVersion);
+        if ($sourceSchemaVersion === 11) {
+            $tables['rack_settings'] = [];
+            $tables['rack_mounts'] = [];
+        }
+        if (in_array($sourceSchemaVersion, [12, 13], true)) {
+            foreach ($tables['rack_mounts'] as &$mount) {
+                $mount['depth'] = 'half';
+            }
+            unset($mount);
+        }
+        if ($sourceSchemaVersion < 15) {
+            $tables['rack_shelves'] = [];
+            $tables['rack_shelf_devices'] = [];
+        }
+        if ($sourceSchemaVersion < 16) {
+            $tables['floor_rack_placements'] = [];
+        }
+        return $this->validateCompleteBackupRestoreData($tables, $config, APP_DATABASE_SCHEMA_VERSION);
     }
 
     private function validateImageDigest(mixed $value): string
@@ -1772,6 +1902,7 @@ class BackupService
             'devices' => 'devices', 'views' => 'views', 'placements' => 'device_placements',
             'links' => 'links', 'canvas_notes' => 'canvas_notes', 'link_systems' => 'link_systems',
             'device_images' => 'device_images',
+            'rack_shelves' => 'rack_shelves',
         ] as $name => $table) {
             $counter = $name === 'device_images' ? ($imageSequence === false ? 0 : $imageSequence) : ($sequences[$name] ?? null);
             $currentMax = $this->db->query("SELECT COALESCE(MAX(id), 0) FROM {$table}")->fetchColumn();
@@ -1936,10 +2067,8 @@ class BackupService
             );
 
             $tables = $this->validateBackupDataDocument($rawDoc);
-            $validatedData = $this->validateCompleteBackupRestoreData(
-                $tables,
-                $config
-            );
+            $this->validateBackupSummary($tables, $manifestData);
+            $validatedData = $this->convertBackupRestoreData($tables, $manifestData['schema_version'], $config);
             $this->validateRestoreIdState();
             $imageResolution = $this->resolveImageReferences($validatedData, $config);
             $incomingImageBytes = 0;
@@ -2020,6 +2149,7 @@ class BackupService
                 'archive_summary' => $archiveSummary,
                 'capacity' => $capacity,
                 'image_resolution' => $imageResolution,
+                'rack_removal' => $this->rackRemovalPreview($validatedData),
             ];
 
             $previewJson = json_encode(
@@ -2052,10 +2182,16 @@ class BackupService
                         'canvas_notes' => count($validatedData['canvas_notes']),
                         'floor_plans' => count($validatedData['view_floor_plans']),
                         'device_images' => count($validatedData['device_images']),
+                        'rack_settings' => count($validatedData['rack_settings']),
+                        'rack_mounts' => count($validatedData['rack_mounts']),
+                        'rack_shelves' => count($validatedData['rack_shelves']),
+                        'rack_shelf_devices' => count($validatedData['rack_shelf_devices']),
+                        'floor_rack_placements' => count($validatedData['floor_rack_placements']),
                     ],
                 ],
                 'capacity' => $capacity,
                 'image_resolution' => $imageResolution,
+                'rack_removal' => $previewMeta['rack_removal'],
                 'can_restore' => true,
                 'message' => $capacityWarnings === []
                     ? '検証に成功しました。内容を確認して復元を実行してください。'
@@ -2065,6 +2201,38 @@ class BackupService
             $this->removeDirectoryTree($workDirectory);
             throw $e;
         }
+    }
+
+    public function rackRemovalPreview(array $incoming): array
+    {
+        $settings = array_fill_keys(array_column($incoming['rack_settings'], 'view_id'), true);
+        $mounts = array_column($incoming['rack_mounts'], null, 'device_id');
+        $removedSettings = [];
+        $removedMounts = [];
+        foreach ($this->db->query('SELECT view_id FROM rack_settings ORDER BY view_id') as $row) {
+            if (!isset($settings[$row['view_id']])) { $removedSettings[] = (int)$row['view_id']; }
+        }
+        foreach ($this->db->query('SELECT device_id, view_id FROM rack_mounts ORDER BY device_id') as $row) {
+            if (!isset($mounts[$row['device_id']]) || $mounts[$row['device_id']]['view_id'] !== (int)$row['view_id']) {
+                $removedMounts[] = ['device_id' => (int)$row['device_id'], 'view_id' => (int)$row['view_id']];
+            }
+        }
+        $incomingShelves = array_column($incoming['rack_shelves'] ?? [], null, 'id');
+        $incomingMembers = array_column($incoming['rack_shelf_devices'] ?? [], null, 'device_id');
+        $removedShelves = [];
+        $removedMembers = [];
+        foreach ($this->db->query('SELECT * FROM rack_shelves ORDER BY id') as $row) {
+            if (!isset($incomingShelves[$row['id']]) || (int)$incomingShelves[$row['id']]['view_id'] !== (int)$row['view_id']) {
+                $removedShelves[] = $row;
+            }
+        }
+        foreach ($this->db->query('SELECT * FROM rack_shelf_devices ORDER BY device_id') as $row) {
+            if (!isset($incomingMembers[$row['device_id']]) || (int)$incomingMembers[$row['device_id']]['shelf_id'] !== (int)$row['shelf_id']) {
+                $removedMembers[] = $row;
+            }
+        }
+        return ['rack_settings' => $removedSettings, 'rack_mounts' => $removedMounts,
+            'rack_shelves' => $removedShelves, 'rack_shelf_devices' => $removedMembers];
     }
 
     public function loadBackupRestorePreview(string $directory, string $token): array
@@ -2207,6 +2375,9 @@ class BackupService
         string $restoredAt
     ): void
     {
+        $this->db->exec('DELETE FROM rack_mounts');
+        $this->db->exec('DELETE FROM rack_shelves');
+        $this->db->exec('DELETE FROM rack_settings');
         $this->db->exec('DELETE FROM links');
         $this->db->exec('DELETE FROM link_systems');
         $this->db->exec('DELETE FROM device_placements');
@@ -2281,6 +2452,17 @@ class BackupService
                 ':install_date' => $dev['install_date'] ?? '',
                 ':maintenance_expiry' => $dev['maintenance_expiry'] ?? '',
             ]);
+        }
+        $rackSettingStmt = $this->db->prepare('INSERT INTO rack_settings (view_id, total_u, location) VALUES (:view_id, :total_u, :location)');
+        foreach ($backupData['rack_settings'] as $row) { $rackSettingStmt->execute($row); }
+        $rackMountStmt = $this->db->prepare('INSERT INTO rack_mounts (device_id, view_id, face, start_u, height_u, width_slot, depth) VALUES (:device_id, :view_id, :face, :start_u, :height_u, :width_slot, :depth)');
+        foreach ($backupData['rack_mounts'] as $row) { $rackMountStmt->execute($row); }
+        foreach (['rack_shelves', 'rack_shelf_devices', 'floor_rack_placements'] as $table) {
+            foreach ($backupData[$table] as $row) {
+                $fields = array_keys($row);
+                $this->db->prepare("INSERT INTO {$table} (" . implode(', ', $fields)
+                    . ') VALUES (:' . implode(', :', $fields) . ')')->execute($row);
+            }
         }
 
         $statusStmt = $this->db->prepare("
@@ -2483,9 +2665,9 @@ class BackupService
                 'data/netarium.json' => ['size' => strlen($json), 'sha256' => hash('sha256', $json)],
                 'manifest.json' => [],
             ], (string)$config['application_version']);
-            $data = $this->validateCompleteBackupRestoreData(
-                $this->validateBackupDataDocument(json_decode($json, true, 512, JSON_THROW_ON_ERROR)), $config
-            );
+            $tables = $this->validateBackupDataDocument(json_decode($json, true, 512, JSON_THROW_ON_ERROR));
+            $this->validateBackupSummary($tables, $manifest);
+            $data = $this->convertBackupRestoreData($tables, $manifest['schema_version'], $config);
         } finally {
             $zip->close();
         }

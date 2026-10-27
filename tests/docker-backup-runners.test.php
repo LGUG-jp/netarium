@@ -54,9 +54,7 @@ try {
 
     $dbFile = $storage . '/db/data.sqlite';
     $db = new PDO('sqlite:' . $dbFile, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    for ($version = 1; $version <= 11; $version++) {
-        ('migrateDatabaseToVersion' . $version)($db);
-    }
+    migrateDatabase($db);
 
     $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=');
     $sha256 = hash('sha256', $png);

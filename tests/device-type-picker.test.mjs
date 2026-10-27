@@ -144,6 +144,20 @@ test('初期種別と全アイコン候補を表示し、クリック確定前�
     assert.equal(optionFor('server').getAttribute('aria-selected'), 'true');
 });
 
+test('PCはプリンタとその他の間で選択でき、PCラベルとアイコンを反映する', async t => {
+    const { add } = await fixture(t);
+    const { control, changes } = add();
+    await control.dispatch('click');
+    assert.deepEqual(options().map(option => option.value),
+        ['switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'pc', 'other']);
+    await optionFor('pc').dispatch('click');
+    assert.equal(control.value, 'pc');
+    assert.equal(control.textContent, 'PC');
+    assert.equal(control.querySelector('img').src, 'assets/icons/devices/pc.svg');
+    assert.equal(changes[0].value, 'pc');
+    assertClosed(control);
+});
+
 test('矢印・Home・Endは未確定候補だけを移動し、EnterとSpaceで単一選択を確定する', async t => {
     const { add } = await fixture(t);
     const { control, changes } = add();

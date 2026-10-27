@@ -73,6 +73,8 @@
                             >
                                 未配置機器
                             </button>
+                            <button type="button" id="place-tab-btn-rack" class="palette-place-tab"
+                                role="tab" aria-selected="false" hidden>ラック</button>
                         </div>
 
                         <!-- 新規機器スタンプ配置コンテンツ -->
@@ -154,8 +156,19 @@
                                 </button>
                             </div>
                         </div>
+                        <div id="place-content-rack" class="palette-place-content" hidden>
+                            <div class="palette-place-guide">
+                                ラックを選び、キャンバスを1回クリックして配置します。Escapeでキャンセルできます。
+                            </div>
+                            <div id="placement-rack-list" class="placement-rack-list" aria-label="既存ラック"></div>
+                        </div>
                     </div>
                 </div>
+                <button id="palette-shelf-btn" type="button" class="palette-btn admin-only" hidden
+                    aria-pressed="false" title="棚板を追加（空きUまたは範囲を選択）">
+                    <img class="palette-icon" src="assets/icons/toolbar/shelf.svg" width="22" height="22" alt="" aria-hidden="true">
+                    <span class="palette-text">棚板</span>
+                </button>
 
                 <!-- 接続作成モード切替 (admin-only) -->
                 <div class="palette-popover-anchor admin-only">

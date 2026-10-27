@@ -3,6 +3,7 @@ import { switchView } from '../modals/view-manager-modal.js';
 import { focusDevicePlacement } from '../canvas/renderer.js';
 import { openLedgerDetail } from '../modals/ledger-modal.js';
 import { showToast } from '../ui/toast.js';
+import { getDeviceDestinations, getRackDeviceMounts } from './device-placement.js';
 
 // Only IDs from the authenticated load response are eligible destinations.
 export function parseDirectLink(search) {
@@ -28,18 +29,13 @@ export function findDirectLinkTarget(link, state) {
     const device = state.devices.find(row => Number(row.id) === link.device);
     if (!device) return null;
     const placements = state.placements.filter(row => Number(row.device_id) === link.device);
-    if (view) {
-        const placement = placements.find(row => Number(row.view_id) === Number(view.id));
-        return placement ? { kind: 'placement', view, device, placement } : null;
-    }
-    if (placements.length === 0) return { kind: 'ledger', device };
-    const views = state.views.filter(row => placements.some(placement => Number(placement.view_id) === Number(row.id)));
-    views.sort((a, b) => Number(a.sort_order) - Number(b.sort_order) || Number(a.id) - Number(b.id));
-    if (!views.length) return null;
-    return {
-        kind: 'placement', view: views[0], device,
-        placement: placements.find(row => Number(row.view_id) === Number(views[0].id))
-    };
+    const mounts = getRackDeviceMounts(state).filter(row => Number(row.device_id) === link.device);
+    const destinations = getDeviceDestinations(link.device, placements, mounts, state.views);
+    const target = view ? destinations.find(item => Number(item.view.id) === Number(view.id)) :
+        destinations.sort((a, b) => Number(a.view.sort_order) - Number(b.view.sort_order) || Number(a.view.id) - Number(b.view.id))[0];
+    if (!target) return view || placements.length || mounts.length ? null : { kind: 'ledger', device };
+    return target.kind === 'rack' ? { kind: 'rack', view: target.view, device, mount: target.mount } :
+        { kind: 'placement', view: target.view, device, placement: target.placement };
 }
 
 export async function openDirectLink(search) {
@@ -50,6 +46,10 @@ export async function openDirectLink(search) {
     }
     if (target.kind === 'none') return true;
     if (target.kind === 'ledger') return openLedgerDetail(target.device.id);
+    if (target.kind === 'rack') {
+        const { showRackDevice } = await import('../canvas/rack-view.js');
+        return showRackDevice({ viewId: target.view.id, deviceId: target.device.id });
+    }
     if (!await switchView(target.view.id)) return false;
     // A cancelled/asynchronous switch must never focus a different canvas.
     if (Number(appState.currentViewId) !== Number(target.view.id)) return false;

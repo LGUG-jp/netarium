@@ -2,13 +2,43 @@
  * Netarium - ツールバー表示制御
  */
 
-import { appState } from '../core/state.js';
+import { appState, getCurrentView } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
+import { isCurrentUserAdmin } from './access-control.js';
+import { hasResourceConflict, isSaveInFlight } from '../core/save-queue.js';
 import {
     exitPlacementMode,
     isPlacementModeActive,
     togglePlacementMode
 } from './placement-mode.js';
+
+export function syncViewCapabilities() {
+    const rack = getCurrentView()?.view_type === 'rack';
+    const shelf = document.getElementById('palette-shelf-btn');
+    if (shelf) {
+        shelf.hidden = !rack || !isCurrentUserAdmin();
+        shelf.disabled = !isCurrentUserAdmin() || appState.authExpired || appState.isPinging || isSaveInFlight() ||
+            appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', appState.currentViewId);
+    }
+    const floorPlan = document.getElementById('floor-plan-manage-btn');
+    if (floorPlan) floorPlan.hidden = rack || !isCurrentUserAdmin();
+    for (const id of ['palette-place-btn', 'linkBtn', 'palette-note-btn']) {
+        const control = document.getElementById(id);
+        if (!control) continue;
+        control.hidden = rack || !isCurrentUserAdmin();
+        control.disabled = rack || !isCurrentUserAdmin() || appState.authExpired || appState.isPinging ||
+            hasResourceConflict('views', appState.currentViewId);
+        control.setAttribute('aria-disabled', String(control.disabled));
+        if (rack) {
+            if (control.dataset.titleBeforeRack == null) control.dataset.titleBeforeRack = control.title || '';
+            control.title = id === 'linkBtn' ? 'ラックでは接続線を編集できません'
+                : id === 'palette-note-btn' ? 'ラックの右側のメモ欄で直接編集してください' : 'ラックでは空きUから搭載してください';
+        } else if (control.dataset.titleBeforeRack != null) {
+            control.title = control.dataset.titleBeforeRack;
+            delete control.dataset.titleBeforeRack;
+        }
+    }
+}
 
 export function syncLinkModeButton() {
     const linkBtn = document.getElementById('linkBtn');

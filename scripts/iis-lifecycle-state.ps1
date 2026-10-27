@@ -100,6 +100,69 @@ function Get-LifecycleInventory {
     return @($entries | Sort-Object RelativePath)
 }
 
+function Test-LifecycleSecurityState {
+    param([string]$Path, [object]$PriorState = $null)
+    try {
+        $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+        if ($file.Length -gt 4096) { return $false }
+        $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        $keys = @('authentication_required', 'password_change_required', 'insufficient_role', 'invalid_csrf', 'logout')
+        if (@($state.PSObject.Properties).Count -ne $keys.Count) { return $false }
+        $window = [math]::Floor(([DateTime]::UtcNow - [DateTime]'1970-01-01').TotalSeconds / 60)
+        foreach ($key in $keys) {
+            if ($state.PSObject.Properties.Name -cnotcontains $key) { return $false }
+            $value = $state.$key
+            if (@($value.PSObject.Properties).Count -ne 2 -or
+                $value.PSObject.Properties.Name -cnotcontains 'window' -or
+                $value.PSObject.Properties.Name -cnotcontains 'count' -or
+                ($value.window -isnot [long] -and $value.window -isnot [int]) -or
+                ($value.count -isnot [long] -and $value.count -isnot [int]) -or
+                $value.window -lt 0 -or $value.window -gt $window -or
+                $value.count -lt 0 -or $value.count -gt 11) { return $false }
+            if ($null -ne $PriorState) {
+                $prior = $PriorState.$key
+                if ($value.window -lt $prior.window -or
+                    ($value.window -eq $prior.window -and $value.count -lt $prior.count) -or
+                    ($value.window -gt $prior.window -and $value.count -lt 1)) { return $false }
+            }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-LifecycleLogEvidence {
+    param([string]$Root, [object[]]$PriorData, [object]$PriorSecurityState = $null)
+    foreach ($old in @($PriorData | Where-Object { -not $_.IsDirectory -and $_.RelativePath.Replace('\', '/') -like 'logs/*' })) {
+        $relative = $old.RelativePath.Replace('\', '/')
+        $path = Join-Path $Root $relative
+        $prefixHash = $null
+        $validState = $false
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            if ($relative -ceq 'logs/audit/.security-window') {
+                $validState = $null -ne $PriorSecurityState -and (Test-LifecycleSecurityState -Path $path -PriorState $PriorSecurityState)
+            } else {
+                $stream = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try {
+                    if ($stream.Length -ge [long]$old.Length) {
+                        $remaining = [long]$old.Length
+                        $buffer = New-Object byte[] 65536
+                        while ($remaining -gt 0) {
+                            $count = $stream.Read($buffer, 0, [int][math]::Min($buffer.Length, $remaining))
+                            if ($count -eq 0) { throw 'Unexpected end of log' }
+                            [void]$sha.TransformBlock($buffer, 0, $count, $buffer, 0)
+                            $remaining -= $count
+                        }
+                        [void]$sha.TransformFinalBlock($buffer, 0, 0)
+                        $prefixHash = [BitConverter]::ToString($sha.Hash).Replace('-', '').ToLowerInvariant()
+                    }
+                } finally { $sha.Dispose(); $stream.Dispose() }
+            }
+        }
+        [pscustomobject]@{ RelativePath = $relative; PriorLength = $old.Length; PrefixSha256 = $prefixHash; SecurityStateValid = $validState }
+    }
+}
+
 function Get-LifecycleAcl {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -262,7 +325,9 @@ function Get-LifecycleSnapshot {
         [Parameter(Mandatory = $true)][string]$PhpCgiPath,
         [Parameter(Mandatory = $true)][uri]$VerificationUrl,
         [Parameter(Mandatory = $true)][byte[]]$FingerprintKey,
-        [switch]$SkipHttp
+        [switch]$SkipHttp,
+        [object[]]$PriorData = @(),
+        [object]$PriorSecurityState = $null
     )
 
     Import-Module WebAdministration -ErrorAction Stop
@@ -432,6 +497,13 @@ function Get-LifecycleSnapshot {
             Db = @($dbItems)
             Rollback = @($rollbackItems)
             Unmanaged = @($unmanaged | Sort-Object RelativePath)
+            LogEvidence = @(Get-LifecycleLogEvidence -Root (Join-Path $root 'data') -PriorData $PriorData -PriorSecurityState $PriorSecurityState)
+            SecurityState = $(
+                $statePath = Join-Path $root 'data/logs/audit/.security-window'
+                if (Test-LifecycleSecurityState -Path $statePath) {
+                    Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+                } else { $null }
+            )
             Counts = [pscustomobject]@{ Program = $program.Count; Config = $config.Count; Data = $data.Count; Db = $dbItems.Count; Rollback = $rollbackItems.Count; Unmanaged = $unmanaged.Count }
         }
         Db = $database

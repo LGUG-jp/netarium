@@ -5,6 +5,7 @@ import { buildPrintModel, createPrintSettings, viewportToPrintBounds, calculateP
 import { resolveTopologyLinkRoutes } from '../public/js/canvas/link-route-resolver.js';
 import { createLinkDisplayMap } from '../public/js/canvas/link-crossings.js';
 import { LINK_SYSTEM_COLORS } from '../public/js/core/link-systems.js';
+import { RACK_NOTE_REGION_X } from '../public/js/core/canvas-note-data.js';
 
 function fixture() {
     return {
@@ -25,7 +26,7 @@ function fixture() {
     };
 }
 
-test('8種の個別filterは非表示端点の配線だけを除外し、別ビューを混入させない', () => {
+test('全種の個別filterは非表示端点の配線だけを除外し、別ビューを混入させない', () => {
     const input = fixture();
     input.placements.push({ id: 99, device_id: 1, view_id: 2, x: 9000, y: 9000 });
     input.links.push({ ...input.links[0], id: 99, view_id: 2 });
@@ -104,7 +105,7 @@ test('IP OFFと未設定IPはノードを詰めるが、機器中心・名称・
     assert.equal(on.nodes[0].y + on.nodes[0].height / 2, off.nodes[0].y + off.nodes[0].height / 2);
     assert.equal(on.nodes[1].height, off.nodes[1].height);
     assert.deepEqual(on.wires, off.wires);
-    assert.deepEqual(off.nodes.map(node => node.ip), Array(8).fill(''));
+    assert.deepEqual(off.nodes.map(node => node.ip), Array(input.devices.length).fill(''));
     assert.deepEqual(off.nodes.map(node => node.name), on.nodes.map(node => node.name));
 });
 
@@ -219,12 +220,123 @@ test('機器名・機器種別のOFFでノード表示項目を制御できる',
 
     options.deviceName = false;
     const noName = buildPrintModel(input, options);
-    assert.deepEqual(noName.nodes.map(n => n.name), Array(8).fill(''));
+    assert.deepEqual(noName.nodes.map(n => n.name), input.devices.map(() => ''));
     assert.equal(noName.nodes[0].showDeviceType, true);
 
     options.deviceName = true;
     options.deviceType = false;
     const noType = buildPrintModel(input, options);
     assert.equal(noType.nodes[0].name, '合成機器1');
-    assert.deepEqual(noType.nodes.map(n => n.showDeviceType), Array(8).fill(false));
+    assert.deepEqual(noType.nodes.map(n => n.showDeviceType), input.devices.map(() => false));
+});
+
+test('rack print has both physical faces, common descending U, mirrored halves, and one block per multi-U face', () => {
+    const input = fixture();
+    input.view.view_type = 'rack';
+    input.rackSettings = [{ view_id: 1, total_u: 8, location: '機械室' }];
+    input.rackMounts = [
+        { device_id: 1, view_id: 1, face: 'front', start_u: 1, height_u: 2, width_slot: 'left' },
+        { device_id: 2, view_id: 1, face: 'rear', start_u: 1, height_u: 1, width_slot: 'left' },
+        { device_id: 3, view_id: 1, face: 'both', start_u: 4, height_u: 3, width_slot: 'full' },
+        { device_id: 4, view_id: 2, face: 'front', start_u: 8, height_u: 1, width_slot: 'full' }
+    ];
+    const before = structuredClone(input);
+    const options = createPrintSettings();
+    options.range = 'viewport';
+    const model = buildPrintModel(input, options);
+    assert.equal(model.empty, false);
+    assert.deepEqual(model.rack.faces.map(face => face.face), ['front', 'rear']);
+    assert.deepEqual(model.rack.rows.map(row => row.u), [8, 7, 6, 5, 4, 3, 2, 1]);
+    const front = model.rack.blocks.find(block => block.deviceId === 1);
+    const rear = model.rack.blocks.find(block => block.deviceId === 2);
+    assert.equal(front.slot, 'left');
+    assert.equal(rear.slot, 'right');
+    assert.equal(front.height, model.rack.rowHeight * 2);
+    assert.equal(front.y + front.height, model.rack.faces[0].y + model.rack.faces[0].height);
+    assert.equal(rear.x, model.rack.faces[1].x + model.rack.faces[1].width / 2);
+    const both = model.rack.blocks.filter(block => block.deviceId === 3);
+    assert.equal(both.length, 2);
+    assert.equal(both[0].y, both[1].y);
+    assert.equal(both[0].height, 3 * model.rack.rowHeight);
+    assert.equal(model.rack.blocks.length, 4);
+    assert.deepEqual(model.wires, []);
+    assert.deepEqual(model.notes.map(note => [note.id, note.text]), input.notes
+        .filter(note => note.view_id === input.view.id).map(note => [note.id, note.text]));
+    assert.ok(model.notes.every(note => note.x >= model.rack.bounds.width));
+    assert.ok(model.notes.every(note => note.y + note.height <= model.bounds.y + model.bounds.height));
+    assert.equal(model.floorPlan, null);
+    assert.ok(model.title.location.includes('機械室'));
+    assert.notDeepEqual(model.bounds, input.viewport);
+    assert.deepEqual(input, before);
+});
+
+test('empty or type-filtered rack keeps its complete printable U geometry and honors content options', () => {
+    const input = fixture();
+    input.view.view_type = 'rack';
+    input.rackSettings = [{ view_id: 1, total_u: 60 }];
+    input.rackMounts = [{ device_id: 1, view_id: 1, face: 'both', start_u: 1, height_u: 1, width_slot: 'full' }];
+    const options = createPrintSettings();
+    options.deviceName = false; options.deviceType = false; options.ip = false;
+    const model = buildPrintModel(input, options);
+    assert.equal(model.rack.blocks[0].name, '');
+    assert.equal(model.rack.blocks[0].ip, '');
+    assert.equal(model.rack.blocks[0].showDeviceType, false);
+    options.deviceTypes.switch = false;
+    const filtered = buildPrintModel(input, options);
+    assert.equal(filtered.rack.blocks.length, 0);
+    assert.equal(filtered.empty, false);
+    assert.equal(filtered.rack.rows.length, 60);
+    assert.deepEqual(filtered.bounds, model.bounds);
+    input.rackMounts = [];
+    assert.deepEqual(buildPrintModel(input, options).bounds, model.bounds);
+});
+
+test('ラック注釈は別ビューを含めず本文・見た目を保ち、OFFでも搭載座標を変えない', () => {
+    const input = fixture();
+    input.view.view_type = 'rack';
+    input.notes.push({ ...input.notes[0], id: 99, view_id: 2, text: '別ラックの注釈', y: 9000 });
+    input.notes.push({ ...input.notes[0], id: 100, x: 0, y: 0, text: '別の注釈\n' + '長文'.repeat(100) });
+    input.rackSettings = [{ view_id: 1, total_u: 8 }];
+    input.rackMounts = [{ device_id: 1, view_id: 1, face: 'front', start_u: 2, height_u: 2, width_slot: 'full' }];
+    const options = createPrintSettings();
+    const annotated = buildPrintModel(input, options);
+    const original = input.notes.filter(note => note.view_id === 1);
+    const appearance = ({ id, text, background_color, background_opacity, text_color, font_size }) =>
+        ({ id, text, background_color, background_opacity, text_color, font_size });
+    assert.deepEqual(annotated.notes.map(appearance), original.map(appearance));
+    for (let index = 1; index < annotated.notes.length; index++) {
+        assert.ok(annotated.notes[index].y >= annotated.notes[index - 1].y + annotated.notes[index - 1].height,
+            '自由配置の保存座標が重なっていても印刷時の注釈は重ならない');
+    }
+    options.notes = false;
+    const plain = buildPrintModel(input, options);
+    assert.deepEqual(plain.notes, []);
+    assert.deepEqual(annotated.rack.blocks, plain.rack.blocks);
+    assert.deepEqual(plain.bounds, plain.rack.bounds);
+});
+
+test('ラックメモの印刷は上中下の領域順と見出しを保ち、全件を重ならず投影する', () => {
+    const input = fixture();
+    input.view.view_type = 'rack';
+    const base = input.notes[0];
+    input.notes = [
+        { ...base, id: 3, x: RACK_NOTE_REGION_X, y: 2, text: '下段' },
+        { ...base, id: 1, x: 2200, y: 1600, text: '既存上段' },
+        { ...base, id: 2, x: RACK_NOTE_REGION_X, y: 1, text: '中段\n' + '長文'.repeat(500) },
+        { ...base, id: 4, x: 1, y: 2, text: 'もう一つの既存上段' }
+    ];
+    const original = structuredClone(input);
+    for (const totalU of [1, 42, 60]) {
+        input.rackSettings = [{ view_id: 1, total_u: totalU }];
+        const model = buildPrintModel(input, createPrintSettings());
+        assert.deepEqual(model.notes.map(note => [note.id, note.regionLabel]),
+            [[1, '上段'], [4, '上段'], [2, '中段'], [3, '下段']]);
+        assert.deepEqual(model.notes.map(note => note.text), [input.notes[1].text, input.notes[3].text, input.notes[2].text, input.notes[0].text]);
+        for (let index = 1; index < model.notes.length; index++) {
+            assert.ok(model.notes[index].y >= model.notes[index - 1].y + model.notes[index - 1].height);
+        }
+        assert.ok(model.notes.every(note => note.x < 1000 && note.y + note.height <= model.bounds.y + model.bounds.height));
+        assert.deepEqual(input.notes, original.notes);
+        assert.equal(model.rack.rows.length, totalU);
+    }
 });

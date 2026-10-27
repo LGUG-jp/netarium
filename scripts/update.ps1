@@ -228,6 +228,7 @@ $stagingPath = $installRootPath + '.staging-' + [Guid]::NewGuid().ToString('N')
 $lock = $null
 $worker = $null
 $maintenance = $null
+$maintenancePayload = $null
 $snapshotPath = $null
 $checkStarted = $false
 $drainCompleted = $false
@@ -262,6 +263,7 @@ try {
 
     Copy-NetariumUpdateManifest -SourceRoot $release.Root -DestinationRoot $stagingPath
     $maintenance = Set-NetariumMaintenance -SiteName $SiteName -PublicRoot $publicPath -ApplicationPoolName $ApplicationPoolName -Lock $lock
+    $maintenancePayload = $maintenance
     $maintenanceUrls = if ($MaintenanceVerificationUrl.Count) { $MaintenanceVerificationUrl } else { @($VerificationUrl) }
     Wait-NetariumMaintenanceReady $maintenance $maintenanceUrls
     if ($maintenance.PoolState -eq 'Started') { Wait-NetariumRequestDrain -ApplicationPoolName $ApplicationPoolName -TimeoutSeconds $DrainTimeoutSeconds }
@@ -301,14 +303,15 @@ try {
             # Snapshot restoration may write IIS settings; remove our owned overrides first.
             if ($maintenance) { Remove-NetariumMaintenance $maintenance }
             Restore-NetariumSnapshot -SnapshotPath $snapshotPath -InstallRoot $installRootPath -StorageDir $storagePath -KeepIisStopped -KeepRequestFiltering -KeepDefaultDocument | Out-Null
+            # The snapshot includes the payload even after maintenance was completed.
+            if ($maintenancePayload -and (Test-Path -LiteralPath $maintenancePayload.File)) {
+                if ([IO.File]::ReadAllText($maintenancePayload.File) -cne $maintenancePayload.Body) { throw 'Restored maintenance payload ownership conflict.' }
+                Remove-Item -LiteralPath $maintenancePayload.File -Force
+            }
             Invoke-NetariumUpdateCheck -AppRoot $installRootPath -StorageDir $storagePath -PhpPath $phpPath | Out-Null
             Close-FullWorker $worker; $worker = $null
             if ($maintenance) {
                 $maintenance.Phase = 'checked'; Save-NetariumMaintenanceJournal $maintenance
-                if (Test-Path -LiteralPath $maintenance.File) {
-                    if ([IO.File]::ReadAllText($maintenance.File) -cne $maintenance.Body) { throw 'Restored maintenance payload ownership conflict.' }
-                    Remove-Item -LiteralPath $maintenance.File -Force
-                }
                 Resume-NetariumMaintenanceState $maintenance
                 Remove-Item -LiteralPath $maintenance.JournalPath -Force
                 Remove-Item -LiteralPath $maintenance.OwnerPath -Force
@@ -337,6 +340,8 @@ try {
 
     if ($rollbackFailure) {
         Write-Error "Update failed at stage with snapshot ${snapshotPath}; rollback failed: $($rollbackFailure.Exception.Message). PHP remains blocked and the snapshot must be restored manually."
+    } elseif ($restored) {
+        Write-Error "Update failed; rollback completed from snapshot ${snapshotPath}: $($failure.Exception.Message)"
     } elseif (-not $restored -and $maintenance) {
         Write-Error "Update failed with maintenance active. Snapshot: ${snapshotPath}. Stage: $($failure.Exception.Message)"
     } elseif (-not $restored) {

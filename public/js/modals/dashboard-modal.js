@@ -98,6 +98,11 @@ function createCurrentDashboardModel(qualityResult = appState.dataQualityResult)
     return buildDashboardModel({
         devices: appState.devices,
         placements: appState.placements,
+        views: appState.views,
+        rackSettings: appState.rackSettings,
+        rackMounts: appState.rackMounts,
+        rackShelves: appState.rackShelves,
+        rackShelfDevices: appState.rackShelfDevices,
         qualityResult,
         dataRevision: appState.dataRevision,
         dirty: appState.appStatus?.dirty
@@ -307,6 +312,8 @@ export function openDashboard() {
     dashboardBreakdownExpanded.floor = false;
     dashboardBreakdownExpanded.type = false;
     selectDashboardTab('operations');
+    setDashboardDetailsExpanded('dashboard-breakdown-toggle', false);
+    setDashboardDetailsExpanded('dashboard-racks-toggle', false);
 
     appState.isDashboardNavigating = false;
 
@@ -320,8 +327,6 @@ export function openDashboard() {
      * 品質結果を取得する前でも、
      * 基本集計を先に表示できる。
      */
-    dashboardModel =
-        createCurrentDashboardModel();
 
     renderDashboard();
     registerModalOpen('dashboard', overlay, '#dashboard-refresh-btn', { onClose: closeDashboard });
@@ -530,6 +535,15 @@ export function openDashboardDataQuality(
 }
 
 
+function setDashboardDetailsExpanded(toggleId, expanded) {
+    const toggle = document.getElementById(toggleId);
+    const details = document.getElementById(toggle?.getAttribute('aria-controls'));
+    if (!toggle || !details) return;
+    details.hidden = !expanded;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.textContent = expanded ? '閉じる ▲' : `${toggle.dataset.expandLabel} ▼`;
+}
+
 /**
  * ダッシュボードカードの操作を実行する。
  */
@@ -547,6 +561,14 @@ export function handleDashboardAction(
         String(action || '');
 
     switch (normalizedAction) {
+        case 'toggle-breakdown':
+        case 'toggle-racks': {
+            const toggleId = normalizedAction === 'toggle-racks' ? 'dashboard-racks-toggle' : 'dashboard-breakdown-toggle';
+            const toggle = document.getElementById(toggleId);
+            setDashboardDetailsExpanded(toggleId, toggle?.getAttribute('aria-expanded') !== 'true');
+            return;
+        }
+
         case 'ledger-all':
             openDashboardLedger();
             return;
@@ -671,8 +693,6 @@ export async function refreshDashboard() {
      * 品質APIを待っている間も、
      * 現在の画面データによる基本集計を表示する。
      */
-    dashboardModel =
-        createCurrentDashboardModel();
 
     renderDashboard();
 
@@ -680,10 +700,7 @@ export async function refreshDashboard() {
         appState.dataQualityResult =
             await fetchDataQuality();
 
-        dashboardModel =
-            createCurrentDashboardModel(
-                appState.dataQualityResult
-            );
+        renderDashboard();
 
         const validationErrors =
             validateDashboardModel(
@@ -705,7 +722,6 @@ export async function refreshDashboard() {
             return;
         }
 
-        renderDashboard();
         setDashboardStatusHidden();
     } catch (error) {
         console.error(error);
@@ -716,8 +732,6 @@ export async function refreshDashboard() {
          */
         appState.dataQualityResult = null;
 
-        dashboardModel =
-            createCurrentDashboardModel(null);
 
         renderDashboard();
 
@@ -1619,7 +1633,97 @@ export function renderDashboardNotices() {
 }
 
 
+async function openDashboardRack(viewId) {
+    if (appState.isDashboardNavigating) return;
+    appState.isDashboardNavigating = true;
+    try {
+        const { switchView } = await import('./view-manager-modal.js');
+        // 確認のキャンセルや切替失敗ではダッシュボードを閉じない。
+        if (!await switchView(viewId)) return;
+        hideDashboardForNavigation();
+        document.getElementById('view-search-input')?.focus();
+    } catch (error) {
+        console.error(error);
+        showToast('ラックビューへ移動できませんでした', 'error');
+    } finally {
+        appState.isDashboardNavigating = false;
+    }
+}
+
+function renderDashboardRacks() {
+    const racks = dashboardModel.racks;
+    setDashboardCount('dashboard-racks-count', racks.total);
+    setDashboardCount('dashboard-rack-devices-count', racks.mountedDevices);
+    const list = document.getElementById('dashboard-rack-list');
+    if (!list) return;
+    list.replaceChildren();
+    if (!racks.items.length) {
+        const empty = document.createElement('p');
+        empty.className = 'dashboard-breakdown-empty';
+        empty.textContent = '登録済みのラックはありません';
+        list.appendChild(empty);
+        return;
+    }
+    for (const rack of racks.items) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'dashboard-rack-row';
+        const info = document.createElement('span');
+        info.className = 'dashboard-rack-info';
+        const heading = document.createElement('span');
+        heading.className = 'dashboard-rack-heading';
+        const name = document.createElement('strong');
+        name.textContent = rack.name;
+        heading.appendChild(name);
+        const mounted = document.createElement('span');
+        mounted.className = 'dashboard-rack-count';
+        mounted.textContent = '搭載 ';
+        const count = document.createElement('span');
+        count.className = 'dashboard-rack-devices';
+        count.textContent = `${rack.deviceCount}台`;
+        mounted.appendChild(count);
+        heading.appendChild(mounted);
+        const arrow = document.createElement('span');
+        arrow.textContent = '›';
+        arrow.setAttribute('aria-hidden', 'true');
+        heading.appendChild(arrow);
+        info.appendChild(heading);
+        const faces = document.createElement('span');
+        faces.className = 'dashboard-rack-faces';
+        for (const [face, label] of [['front', '前面'], ['rear', '背面']]) {
+            const usage = rack.faces?.[face];
+            const column = document.createElement('span');
+            const free = document.createElement('span');
+            free.className = `dashboard-rack-${face}-free`;
+            free.textContent = `${label} 空き ${usage ? `${usage.empty}U` : '—'}`;
+            column.appendChild(free);
+            if (usage) {
+                const track = document.createElement('span');
+                track.className = 'dashboard-rack-occupancy-track';
+                track.setAttribute('aria-hidden', 'true');
+                const bar = document.createElement('span');
+                bar.className = 'dashboard-rack-occupancy-bar';
+                bar.style.width = `${usage.occupiedPercentage}%`;
+                track.appendChild(bar);
+                column.appendChild(track);
+            }
+            faces.appendChild(column);
+        }
+        info.appendChild(faces);
+        const location = [rack.facility, rack.floor, rack.location].filter(Boolean).join(' / ');
+        if (location) {
+            const detail = document.createElement('small');
+            detail.textContent = location;
+            info.appendChild(detail);
+        }
+        row.appendChild(info);
+        row.addEventListener('click', () => openDashboardRack(rack.id));
+        list.appendChild(row);
+    }
+}
+
 export function renderDashboard() {
+    dashboardModel = createCurrentDashboardModel();
     const content =
         document.getElementById(
             'dashboard-content'
@@ -1631,6 +1735,8 @@ export function renderDashboard() {
         );
 
     renderDashboardCounts();
+    setDashboardCount('dashboard-assets-devices-count', dashboardModel.totals.devices);
+    setDashboardCount('dashboard-assets-types-count', dashboardModel.groups.types.length);
     ['expired', 'within1Year', 'within2Years', 'beyond2Years', 'unset'].forEach(category => {
         setDashboardCount(
             `dashboard-maintenance-${category}-count`,
@@ -1638,6 +1744,7 @@ export function renderDashboard() {
         );
     });
     renderDashboardNotices();
+    renderDashboardRacks();
     renderDashboardBreakdowns();
 
     if (content) {

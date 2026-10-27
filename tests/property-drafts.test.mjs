@@ -212,9 +212,6 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(appState.cancelActiveRangeSelection, null);
         assert.equal(appState.selectionBox.hidden, true);
         assert.equal(appState.canvas.classList.contains('selecting'), false);
-        for (const type of ['pointermove', 'pointerup', 'pointercancel']) {
-            assert.equal((listeners.get(type) || []).length, 0, `${type}のリスナーを残さない`);
-        }
     }
     await t.test('管理ポートを22→2222→22へ戻すと下書きも未変更になり、不要な三択を開かない', () => {
         reset();

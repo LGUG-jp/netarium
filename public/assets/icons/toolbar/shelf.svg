@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Shelf</title>
+  <defs>
+    <linearGradient id="shelf-top" x1="0" y1="0" x2="0.65" y2="1">
+      <stop offset="0" stop-color="#f7fbff" />
+      <stop offset="1" stop-color="#cbd8e8" />
+    </linearGradient>
+    <linearGradient id="shelf-front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dbe7f3" />
+      <stop offset="1" stop-color="#93a9c0" />
+    </linearGradient>
+    <linearGradient id="shelf-rail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7996b3" />
+      <stop offset="1" stop-color="#405d7c" />
+    </linearGradient>
+  </defs>
+
+  <!-- Left mounting rail, behind the tray -->
+  <path d="M5.5 31.5 Q5.5 30 7 29 L22.5 16.3 Q24.6 14.6 26.5 16.2 Q27.5 17 27.5 18.8 V29.5 L10 44 V49.4 Q7.5 51.6 5.5 49 Z"
+        fill="url(#shelf-rail)" stroke="#1d3956" stroke-width="3" stroke-linejoin="round" />
+  <path d="M9.3 32.7 23.6 20.7 V28.5 L9.3 40.6 Z"
+        fill="#385675" stroke="#274463" stroke-width="1.1" stroke-linejoin="round" />
+  <path d="M7.7 31.5 23.2 18.4" fill="none" stroke="#afc5dc" stroke-width="1.7" stroke-linecap="round" />
+  <g fill="#e8f3ff">
+    <path d="M11.5 33.3 13.6 31.6 V35.7 L11.5 37.4 Z" />
+    <path d="M16.1 29.6 18.1 28 V32.1 L16.1 33.7 Z" />
+    <path d="M20.6 26 22.5 24.5 V28.5 L20.6 30.1 Z" />
+  </g>
+
+  <!-- Tray, with a gently beveled front edge -->
+  <path d="M9.8 45.4 40.4 51.2 49.4 31.7 26.3 27.1 Z"
+        fill="url(#shelf-top)" stroke="#1d3956" stroke-width="2.8" stroke-linejoin="round" />
+  <path d="M9.8 45.4 40.4 51.2 V55.6 L9.8 49.5 Z"
+        fill="url(#shelf-front)" stroke="#1d3956" stroke-width="2.5" stroke-linejoin="round" />
+  <path d="M12.2 45.9 38 50.7" fill="none" stroke="#ffffff" stroke-opacity="0.8" stroke-width="1.5" stroke-linecap="round" />
+
+  <!-- Six ventilation slots follow the tray perspective -->
+  <g fill="#7c93ac">
+    <path d="M28.3 31.5 34.1 32.5 Q35.5 32.7 35.1 33.7 Q34.9 34.4 33.7 34.2 L27.8 33.2 Q26.8 33 27.2 32.1 Q27.4 31.4 28.3 31.5 Z" />
+    <path d="M39.2 33.7 44.5 34.6 43.4 36.4 38.7 35.5 Q37.5 35.2 37.9 34.3 Q38.2 33.5 39.2 33.7 Z" />
+    <path d="M24.2 36.9 31.5 38.3 Q32.8 38.6 32.4 39.5 Q32.1 40.3 30.9 40 L23.7 38.5 Q22.6 38.3 23 37.5 Q23.3 36.7 24.2 36.9 Z" />
+    <path d="M36.5 39.3 41.6 40.3 40.5 42.3 36 41.4 Q34.9 41.1 35.3 40.2 Q35.5 39.1 36.5 39.3 Z" />
+    <path d="M19.1 42.5 27.2 44 Q28.5 44.2 28.1 45.3 Q27.8 46 26.7 45.8 L18.6 44.2 Q17.4 43.9 17.8 43 Q18 42.4 19.1 42.5 Z" />
+    <path d="M32.4 45.2 39.1 46.5 38.2 48.3 31.9 47.1 Q30.8 46.8 31.1 45.9 Q31.4 45 32.4 45.2 Z" />
+  </g>
+
+  <!-- Right mounting rail, in front of the tray -->
+  <path d="M40.8 39.4 54.9 20 Q56.4 18 58.4 19 Q59.5 19.5 59.5 21.5 V39.5 Q59.5 41.7 57.7 43.1 L45.1 56.9 Q43.4 58.8 41.5 57.9 Q40.4 57.3 40.4 55.4 V41.4 Q40.4 40.2 40.8 39.4 Z"
+        fill="url(#shelf-rail)" stroke="#1d3956" stroke-width="3" stroke-linejoin="round" />
+  <path d="M44.4 41.5 55.4 25.5 V39.4 L44.4 52 Z"
+        fill="#385675" stroke="#274463" stroke-width="1.1" stroke-linejoin="round" />
+  <path d="M42.7 39.4 56.4 21.3" fill="none" stroke="#afc5dc" stroke-width="1.7" stroke-linecap="round" />
+  <g fill="#e8f3ff">
+    <path d="M46.2 44.6 48.1 42.3 V46.5 L46.2 48.7 Z" />
+    <path d="M50 39.2 51.8 36.8 V41 L50 43.4 Z" />
+    <path d="M53.4 34.2 55.2 31.8 V36 L53.4 38.3 Z" />
+  </g>
+  <path d="M43 54 V55.6" stroke="#afc5dc" stroke-width="1.6" stroke-linecap="round" />
+</svg>

@@ -117,7 +117,7 @@ function Test-LifecycleAcl {
     $write = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
-    foreach ($name in @('', 'public', 'src', 'templates', 'scripts', 'config', 'data')) {
+    foreach ($name in @('', 'public', 'src', 'templates', 'resources', 'scripts', 'config', 'data')) {
         $path = if ($name) { Join-Path $InstallRoot $name } else { $InstallRoot }
         $items = @($Snapshot.Acl | Where-Object { $_.Path -ieq $path })
         if ($items.Count -ne 1 -or -not $items[0].Exists) { return $false }
@@ -175,7 +175,7 @@ function Compare-LifecycleSnapshots {
         Add-LifecycleCheck 'PHP handler and FastCGI' ($phpHandlers.Count -eq 1 -and
             @($After.Iis.FastCgi | Where-Object { $_.FullPath -ieq $Cgi -and -not $_.HasArguments }).Count -eq 1) 'One matched PHP handler and FastCGI application' 'See after IIS handlers and FastCGI'
         Add-LifecycleCheck 'target location present' (@($After.Iis.Locations | Where-Object { $_.Path -ieq $Name }).Count -eq 1) 'One site-specific location' 'See after IIS locations'
-        $required = @('public', 'src', 'templates', 'scripts', 'config', 'config/app.php', 'data', 'data/db', 'data/uploads', 'data/backups', 'data/temp', 'data/logs')
+        $required = @('public', 'src', 'templates', 'resources', 'scripts', 'config', 'config/app.php', 'data', 'data/db', 'data/uploads', 'data/backups', 'data/temp', 'data/logs')
         $missing = @($required | Where-Object {
             $expectedPath = Join-Path $InstallRoot $_
             @($After.Files.Paths | Where-Object { $_.Path -ieq $expectedPath -and $_.Exists }).Count -ne 1
@@ -231,12 +231,16 @@ function Compare-LifecycleSnapshots {
                 $a = if ($part -eq 'Config') {
                     @($Before.Files.Config | Where-Object { $_.RelativePath -ne 'app.example.php' })
                 } else {
-                    @($Before.Files.Data | Where-Object { $_.RelativePath -notmatch '\A(?:db|logs|temp)(?:/|$)' })
+                    @($Before.Files.Data | Where-Object { $_.RelativePath -notmatch '\A(?:db|logs|temp)(?:[\\/]|$)' })
                 }
                 $b = if ($part -eq 'Config') {
                     @($After.Files.Config | Where-Object { $_.RelativePath -ne 'app.example.php' })
                 } else {
-                    @($After.Files.Data | Where-Object { $_.RelativePath -notmatch '\A(?:db|logs|temp)(?:/|$)' })
+                    @($After.Files.Data | Where-Object {
+                        $_.RelativePath -notmatch '\A(?:db|logs|temp)(?:[\\/]|$)' -and
+                        ($_.RelativePath -notmatch '\Asessions[\\/]sess_[A-Za-z0-9,-]+\z' -or
+                            $Before.Files.Data.RelativePath -ccontains $_.RelativePath)
+                    })
                 }
                 Add-LifecycleCheck "$part retained" (Compare-LifecycleValue $a $b) 'Identical runtime inventory' 'See before/after snapshots'
             } else {
@@ -261,14 +265,24 @@ function Compare-LifecycleSnapshots {
             } elseif ($schemaOk) {
                 Add-LifecycleSkip 'database migration' 'Before DB already used the current schema; supply an older test fixture to exercise migration.'
             }
-            $priorLogs = @($Before.Files.Data | Where-Object { $_.RelativePath -like 'logs/*' -and -not $_.IsDirectory })
+            $priorLogs = @($Before.Files.Data | Where-Object { $_.RelativePath.Replace('\', '/') -like 'logs/*' -and -not $_.IsDirectory })
             $logsPreserved = $true
             foreach ($old in $priorLogs) {
-                if (@($After.Files.Data | Where-Object {
-                    $_.RelativePath -ceq $old.RelativePath -and $_.Sha256 -ceq $old.Sha256
-                }).Count -ne 1) { $logsPreserved = $false }
+                $current = @($After.Files.Data | Where-Object { $_.RelativePath -ceq $old.RelativePath -and -not $_.IsDirectory })
+                if ($current.Count -ne 1) { $logsPreserved = $false; continue }
+                if ($current[0].Sha256 -ceq $old.Sha256) { continue }
+                $evidence = @()
+                if ($After.Files.PSObject.Properties.Name -contains 'LogEvidence') {
+                    $evidence = @($After.Files.LogEvidence | Where-Object {
+                        $_.RelativePath -ceq $old.RelativePath.Replace('\', '/') -and $_.PriorLength -eq $old.Length
+                    })
+                }
+                if ($evidence.Count -ne 1) { $logsPreserved = $false; continue }
+                if ($old.RelativePath.Replace('\', '/') -ceq 'logs/audit/.security-window') {
+                    if (-not $evidence[0].SecurityStateValid) { $logsPreserved = $false }
+                } elseif ($evidence[0].PrefixSha256 -cne $old.Sha256) { $logsPreserved = $false }
             }
-            Add-LifecycleCheck 'prior logs preserved' $logsPreserved 'Existing logs unchanged; new audit entries permitted' 'See before/after log inventories'
+            Add-LifecycleCheck 'prior logs preserved' $logsPreserved 'Every old log retained byte-for-byte as prefix; security-window must remain valid' 'See before/after log inventories and prefix evidence'
         }
         Add-LifecycleCheck 'program present' (@($After.Files.Program).Count -gt 0) 'Managed program installed' "Count=$(@($After.Files.Program).Count)"
         Add-LifecycleCheck 'database readable' ([bool]$After.Db.Exists -and $null -ne $After.Db.Version -and -not $After.Db.Error) 'Read-only schema available' 'See after snapshot'
@@ -299,7 +313,7 @@ function Compare-LifecycleSnapshots {
 function Get-LifecycleReleaseInventory {
     param([string]$Root)
     $items = @()
-    foreach ($directory in @('public', 'src', 'templates', 'scripts')) {
+    foreach ($directory in @('public', 'src', 'templates', 'resources', 'scripts')) {
         foreach ($entry in @(Get-LifecycleInventory -Root (Join-Path $Root $directory) | Where-Object { -not $_.IsDirectory })) {
             $items += [pscustomobject]@{ RelativePath = "$directory/$($entry.RelativePath)"; Sha256 = $entry.Sha256 }
         }
@@ -403,7 +417,7 @@ function New-LifecycleFixture {
     param([string]$ReleaseRoot, [string]$FixturePath)
     $fixture = $FixturePath
     New-Item -Path $fixture -ItemType Directory -ErrorAction Stop | Out-Null
-    foreach ($dir in @('public', 'src', 'templates', 'scripts')) {
+    foreach ($dir in @('public', 'src', 'templates', 'resources', 'scripts')) {
         Copy-Item -LiteralPath (Join-Path $ReleaseRoot $dir) -Destination (Join-Path $fixture $dir) -Recurse -ErrorAction Stop
     }
     foreach ($name in @('bootstrap.php', 'version.php', 'config/app.example.php')) {
@@ -522,6 +536,10 @@ try {
             }
         }
         if ($Scenario -in @('Fresh', 'Repeat', 'Update', 'UpdateRollback')) { $snapshotArguments.Remove('SkipHttp') }
+        if ($Scenario -eq 'Update') {
+            $snapshotArguments.PriorData = @($before.Files.Data)
+            $snapshotArguments.PriorSecurityState = $before.Files.SecurityState
+        }
         $script:phase = 'after snapshot'
         $after = Get-LifecycleSnapshot @snapshotArguments
         Assert-LifecycleSnapshotShape -Snapshot $after

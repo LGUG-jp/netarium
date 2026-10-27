@@ -20,6 +20,19 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 一時的な隔離ディレクトリおよび一時 SQLite DB を自動生成し、バックエンド API（Phase 0 基準）の振る舞いを検証します。
 
+`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、隔離候補 `1.3.0`（スキーマ 16）への順方向復元と、現行スキーマ 16 の主要保存項目の往復、ポリシー拒否判定を検証します。
+環境変数 `NETARIUM_BACKUP_V120_ROOT` で展開ルートを指定するか、対応する `v1.2.0` タグを取得してください。
+Web 復元テストでは旧版（`v1.0.0`〜`v1.1.0`）のタグや環境変数は不要です。
+未指定時はローカルのタグから `git archive` で隔離コピーを作り、タグ不足では明示的に失敗します。ネットワーク取得や現行コードの版番号偽装はテスト内で行いません。
+停止型完全バックアップテスト（`full-backup.test.php`）では、既存 fixture 用の `NETARIUM_BACKUP_V100_ROOT`・`V101_ROOT`・`V103_ROOT`・`V110_ROOT` に加え、公式公開版 `v1.2.0`（スキーマ 11）資材を指定する `NETARIUM_BACKUP_V120_ROOT` を利用できます。未指定時は現行コードによるスキーマ 11 fixture として動作します。
+Public `v1.2.0` タグは次のように取得できます。
+
+```powershell
+git fetch https://github.com/LGUG-jp/netarium.git refs/tags/v1.2.0:refs/backup-compat/public-v1.2.0
+```
+
+（取得 ref の peeled SHA は `対象変更` です）
+
 <a id="ログインの直接fastcgi並行回帰204"></a>
 
 ### ログインの直接FastCGI並行回帰
@@ -44,6 +57,9 @@ php tests/full-backup.test.php
 ```
 
 一時的な隔離ディレクトリで完全バックアップヘルパープロセスのRPC動作を直接検証します。WALスナップショット採取、users/パスワードハッシュ・権限の復元、未参照を含む画像実体の保持、ロック競合排他、およびZIP改ざん・欠損・余分パス・zip-slip・スキーマ/アプリ不一致・破損・展開上限・カウント不一致・整合性異常時の前段拒否と本番DB不変を検証します。
+
+ラック・PC・奥行き・棚板・フロア配置参照対応では、前後面・物理左右・複数 U・`half` / `full`・PC・棚板と複数の子機器・物理配置図からのラック参照を含むスキーマ 16 同士の往復、スキーマ 11〜15 の元データ検証後の隔離 DB 移行、旧契約への未知データ混入拒否、移行失敗時のライブ DB 不変も検証します。
+旧完全 ZIP の移行については、32,768 件のメモを含む DB を PHP メモリ上限 24 MiB で復元できること、追加列を保持比較の対象から除外すること、移行中の旧列の値・型の変更や行削除を検出し、ライブ DB を変更せず拒否することも検証します。
 
 <a id="docker停止型完全バックアップ復元ランナーテスト259"></a>
 
@@ -153,8 +169,8 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `AuthenticationLimitsTest.php` | ログイン失敗と照合枠予約（5枠/300秒・中断消費・成功／期限解除）、長大・不適合ユーザー名の非保存と隔離HTTP／DB容量・応答／監査の非漏えい、再認証制限、パスワードスプレー検知・監査警告 |
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
-| `ResourceSaveTest.php` | リソース単位（機器/ビュー/系統/メモ）の保存、リソースリビジョン競合、内部仮名衝突回避、バッチ rollback、隔離PHPでmbstring関数不在時のUnicode保存・ロード・ZIP復元（iconv／PCRE経路） |
-| `BackupTest.php` | `netarium-config`形式1／スキーマ11のJSON専用ZIP、`BackupCompatibilityPolicy`による既存許可と`v1.0.0`〜`v1.0.3`・`v1.1.0 → v1.2.0`・`v1.2.0`同士の復元、逆方向／未検証版／旧形式2〜7／未知フィールド拒否、構成・手動経路・系統・メモ復元、画像同一性と影響プレビュー・実体非破壊、利用者・セッション・bootstrap保全 |
+| `ResourceSaveTest.php` | リソース単位（機器／ビュー／系統／メモ／ラック／棚板／フロア配置参照）の保存、スキーマ 11〜16 移行、面×U×横幅衝突、両側 revision による移設、全体保存時の搭載・棚板保持、バッチ rollback、隔離 PHP での Unicode 保存・ロード・ZIP 復元 |
+| `BackupTest.php` | `netarium-config` 形式 1 のスキーマ 11〜15 元契約検証・16 への構成変換、ラック・棚板・奥行き・配置参照の往復、同一 MAJOR 内正規 SemVer（source <= target）とスキーマ 11〜16 復元判定、消失プレビュー・事前退避、逆方向や未知形式の拒否、画像同一性・実体非破壊、利用者・セッション・bootstrap 保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
@@ -174,32 +190,22 @@ HTTPS分岐のHTTP試験は専用prependでサーバー変数を合成します�
 
 ### 公開タグ実プログラムのバックアップ互換性smoke
 
-通常の互換性回帰は現コードの版定数を切り替えた隔離 fixture を使います。
-実タグ smoke では、Public の直前版 `v1.1.0`、既存の代表版 `v1.0.3`・`v1.0.1` と最古の対応版 `v1.0.0` を読取専用で取得し、次の環境変数で実プログラムのコピー元を指定します。
+Web 互換性回帰は、指定した元版の展開ルート、またはローカルの正式タグから作る隔離コピーを使います。
+Public の実タグと Private のローカルタグを区別して受入を行う場合は、環境変数 `NETARIUM_BACKUP_V120_ROOT` で Public 実プログラムのコピー元を指定します。
 既存の `tmp/`、配備先、本番 storage は使いません。
 下記は候補リポジトリのルートから実行する PowerShell の例です。
 公開先への書込み・タグ作成・IIS 設定変更は行いません。
 
-v1.2.0 候補では、`NETARIUM_BACKUP_V110_ROOT` に直前公開版 `v1.1.0`、`NETARIUM_BACKUP_V103_ROOT` に `v1.0.3` の展開ルートを指定します。
-Web ZIP と完全 ZIP の既存テストは、指定された公開版実プログラムで生成した ZIP の `1.1.0 → 1.2.0` を含む順方向復元と候補同士の復元、候補から全旧版への逆方向・未知版・破損 ZIP・スキーマ／形式不一致の拒否を確認します。
-この結果は IIS 実機採取 ZIP の Docker 復元とは区別します。
+Web 復元テストは単一の正式な `v1.2.0` 代表試験に整理されており、旧版の複数タグ指定（`V100`〜`V110`）は Web テストでは不要です。
+完全 ZIP テストでも未変更の公式公開版 `v1.2.0`（スキーマ 11）実プログラムを指定して検証できます。
 
 ```powershell
 $smokeRoot = Join-Path $env:TEMP ('netarium-backup-smoke-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
-git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.0.0:refs/backup-compat/public-v1.0.0 refs/tags/v1.0.1:refs/backup-compat/public-v1.0.1 refs/tags/v1.0.3:refs/backup-compat/public-v1.0.3 refs/tags/v1.1.0:refs/backup-compat/public-v1.1.0
-git archive --format=zip --output="$smokeRoot/v100.zip" refs/backup-compat/public-v1.0.0
-git archive --format=zip --output="$smokeRoot/v101.zip" refs/backup-compat/public-v1.0.1
-git archive --format=zip --output="$smokeRoot/v103.zip" refs/backup-compat/public-v1.0.3
-git archive --format=zip --output="$smokeRoot/v110.zip" refs/backup-compat/public-v1.1.0
-Expand-Archive -LiteralPath "$smokeRoot/v100.zip" -DestinationPath "$smokeRoot/v100"
-Expand-Archive -LiteralPath "$smokeRoot/v101.zip" -DestinationPath "$smokeRoot/v101"
-Expand-Archive -LiteralPath "$smokeRoot/v103.zip" -DestinationPath "$smokeRoot/v103"
-Expand-Archive -LiteralPath "$smokeRoot/v110.zip" -DestinationPath "$smokeRoot/v110"
-$env:NETARIUM_BACKUP_V100_ROOT = "$smokeRoot/v100"
-$env:NETARIUM_BACKUP_V101_ROOT = "$smokeRoot/v101"
-$env:NETARIUM_BACKUP_V103_ROOT = "$smokeRoot/v103"
-$env:NETARIUM_BACKUP_V110_ROOT = "$smokeRoot/v110"
+git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.2.0:refs/backup-compat/public-v1.2.0
+git archive --format=zip --output="$smokeRoot/v120.zip" refs/backup-compat/public-v1.2.0
+Expand-Archive -LiteralPath "$smokeRoot/v120.zip" -DestinationPath "$smokeRoot/v120"
+$env:NETARIUM_BACKUP_V120_ROOT = "$smokeRoot/v120"
 try {
     @'
 <?php
@@ -215,23 +221,21 @@ echo "PASS actual-tag Web ZIP smoke\n";
     php tests/full-backup.test.php
     if ($LASTEXITCODE -ne 0) { throw 'Actual-tag full ZIP smoke failed' }
     powershell -NoProfile -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
-    if ($LASTEXITCODE -ne 0) { throw 'Actual-tag full CLI smoke failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'Isolated PowerShell full CLI regression failed' }
 } finally {
-    Remove-Item Env:NETARIUM_BACKUP_V100_ROOT, Env:NETARIUM_BACKUP_V101_ROOT, Env:NETARIUM_BACKUP_V103_ROOT, Env:NETARIUM_BACKUP_V110_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:NETARIUM_BACKUP_V120_ROOT -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $smokeRoot -Recurse -Force
 }
 ```
 
-取得 ref の SHA は `v1.0.0 = 対象変更`、`v1.0.1 = 対象変更` と照合します。
-`v1.0.3` は `対象変更` と照合し、`v1.1.0` も取得した Public ref の SHA を実行記録に残します。
-Web smoke は実タグの HTTP 出力で ZIP を生成し、候補の preview／commit を実行します。
-元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認します。
-完全 ZIP smoke は実タグの helper で生成した ZIP を候補で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否を確認します。
-PowerShell テストは実タグ `v1.0.1` の `backup-full.ps1` で ZIP を作り、候補の `restore-full.ps1` による DB・画像・利用者復元、セッション失効、逆方向の IIS 停止前拒否を確認します（IIS 操作は既存モック）。
+取得 ref の peeled SHA は `対象変更` と照合します。
+Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、候補（スキーマ 16）の preview／commit を実行します。
+元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認し、現行スキーマ 16 同士の主要保存項目の往復も検証します。
+完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を候補（明示的な隔離候補 `1.3.0` / スキーマ 16）で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
+PowerShell テストは現行の `backup-full.ps1`／`restore-full.ps1` による DB・画像・利用者復元、セッション失効、配置失敗時の切戻し、旧版との互換拒否を検証します（IIS 操作は既存モック）。この試験は公開 `v1.2.0` 実 ZIP 受入とは区別します。
 候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
 これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
-実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たし、候補の `version.php` を `1.2.0` にした状態で結果を記録してください。
-
+実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たした状態で結果を記録してください。
 
 ---
 
@@ -256,6 +260,8 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `canvas-view.test.mjs`: Canvas のパン・ズーム、倍率クランプ、中央寄せ、全体 Fit 計算
 - `canvas-context-toolbar.test.mjs`: コンテキストツールバーの表示・切り替え、排他制御
 - `view-combobox.test.mjs`: ビュー検索コンボボックス（検索、IME 確定、キーボード移動）
+- `rack-layout.test.mjs`: ラックの U 衝突判定、前後面・全幅・左右ハーフ幅の幾何計算、稼働状況集計
+- `rack-ui.test.mjs`: ラックビューの描画、前後面表示、ドラッグ（左右またぎ全幅・中央コンテキストツールバー連動）・タップ・キーボードによる範囲選択、搭載機器の垂直・左右・斜めドラッグプレビューと衝突拒否、ダブルクリックでの変更モーダル起動、コンボボックスフォーカス時の新規登録 1 回切替、搭載機器選択時の Delete キー取り外し（台帳・配置保持）、搭載・移設ダイアログ、詳細パネルの搭載位置カード開閉と 1 行表示
 
 ### モーダル & UI ナビゲーション
 - `modal-stack.test.mjs`: モーダル多重起動時のスタック管理、フォーカストラップ
@@ -264,7 +270,7 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `connection-mode.test.mjs`: 接続作成モード（接続元固定、連続作成、キャンセル）
 - `placement-mode.test.mjs`: 機器配置モード（新規スタンプ配置、未配置キュー、ゴースト表示）
 - `management-modal.test.mjs`: 管理接続先モーダル、SSH ヘルプダイアログ
-- `workspace-navigation.test.mjs`: 左パレット・タブ切り替え、フォーカス移動
+- `workspace-navigation.test.mjs`: 左パレット・タブ切り替え、フォーカス移動、ラック搭載機器の重複なし一覧表示・実 ID 移動・選択機器 Ping 連携
 
 ### 機器・台帳・編集
 - `device-validation.test.mjs`: 機器入力バリデーション（Unicode 文字数、IP、日付）
@@ -278,7 +284,7 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 
 ### メモ（付箋）
 - `canvas-note-data.test.mjs`: 付箋メモの正規化、データモデル、文字数制限
-- `canvas-notes.test.mjs`: Canvas 上の付箋作成、テキスト編集、ドラッグ移動、リサイズ、色変更
+- `canvas-notes.test.mjs`: Canvas 上の付箋作成、テキスト編集、ドラッグ移動、リサイズ、色変更、ラック注釈領域での直接 textarea 編集・パレットメモ抑止・属性保持・自動採番
 
 ### フロア図面
 - `floor-plan-editor.test.mjs`: Canvas 上での直接調整（四隅ハンドルドラッグ、アスペクト比固定、キーボード微調整）
@@ -304,7 +310,7 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `dashboard.test.mjs`: ダッシュボード集計モデル、グラフ・リスト表示
 
 ### 印刷
-- `print-model.test.mjs`: 印刷用スケール計算、用紙境界判定、スタイルスナップショット
+- `print-model.test.mjs`: 印刷用スケール計算、用紙境界判定、スタイルスナップショット、ラック印刷時の注釈右側フロー配置・外見属性保持
 - `print-ui.test.mjs`: 印刷モーダル UI、設定変更とプレビュー即時反映、印刷実行
 
 ### その他

@@ -1,6 +1,6 @@
 ## 関連Issue
 
-<!-- Issueの参照方法は docs/repository-rules.md の「Pull Requestとレビュー」に従います。 -->
+<!-- 関連するIssueがある場合は、継続中は Refs #番号、完了するものは Closes #番号 で記載します。詳細は CONTRIBUTING.md を参照してください。 -->
 
 Refs #
 

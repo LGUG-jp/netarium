@@ -123,6 +123,11 @@ class TopologyService
             'link_systems' => (new LinkSystemService($this->db))->list()['link_systems'],
             'canvas_notes' => $canvasNotes,
             'floor_plans' => $floorPlans,
+            'rack_settings' => $this->db->query('SELECT * FROM rack_settings ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC),
+            'rack_mounts' => $this->db->query('SELECT * FROM rack_mounts ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
+            'rack_shelves' => $this->db->query('SELECT * FROM rack_shelves ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            'rack_shelf_devices' => $this->db->query('SELECT * FROM rack_shelf_devices ORDER BY shelf_id, sort_order, device_id')->fetchAll(PDO::FETCH_ASSOC),
+            'floor_rack_placements' => $this->db->query('SELECT * FROM floor_rack_placements ORDER BY rack_view_id')->fetchAll(PDO::FETCH_ASSOC),
             'device_images' => $deviceImages,
         ];
     }
@@ -143,7 +148,7 @@ class TopologyService
             throw new ApiException('他の利用者または別画面でデータが更新されています。再読み込みしてください', 409);
         }
 
-        [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes] =
+        [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks] =
             $this->normalizeTopology($input, $config);
         $newRevision = $requestedRevision + 1;
         $savedAt = null;
@@ -178,6 +183,28 @@ class TopologyService
                     409
                 );
             }
+            $existingViews = $this->viewRepo->getAll();
+            $existingMounts = $this->db->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC);
+            $existingShelves = $this->db->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC);
+            if (!array_key_exists('floor_rack_placements', $input)
+                && $this->db->query('SELECT 1 FROM floor_rack_placements LIMIT 1')->fetchColumn() !== false) {
+                throw new ApiException('ラック配置情報が欠落しています。画面を再読み込みしてください', 400);
+            }
+            if ((!array_key_exists('rack_shelves', $input) || !array_key_exists('rack_shelf_devices', $input)) && $existingShelves !== []) {
+                throw new ApiException('棚板情報が欠落しています。画面を再読み込みしてください', 400);
+            }
+            $nextShelfIds = array_fill_keys(array_column($normalizedShelves, 'id'), true);
+            foreach ($this->db->query('SELECT shelf_id FROM rack_shelf_devices') as $membership) {
+                if (!isset($nextShelfIds[$membership['shelf_id']])) {
+                    throw new ApiException('機器が残る棚板は削除できません。先に機器を取り外してください', 400);
+                }
+            }
+            if (!array_key_exists('rack_settings', $input) || !array_key_exists('rack_mounts', $input)) {
+                if (in_array('rack', array_column($existingViews, 'view_type'), true)) {
+                    throw new ApiException('ラック情報が欠落しています。画面を再読み込みしてください', 400);
+                }
+            }
+            RackLayout::assertViewChanges($existingViews, $normalizedViews, array_merge($existingMounts, $existingShelves));
             // マスタ削除との競合もwriter取得後に検査し、未知参照を400として返す。
             $systems = array_fill_keys($this->db->query('SELECT id FROM link_systems')->fetchAll(PDO::FETCH_COLUMN), true);
             foreach ($normalizedLinks as $link) {
@@ -218,6 +245,23 @@ class TopologyService
                 $noteIdMap[$localId] = $note['id'];
             }
             unset($note);
+            $shelfIdMap = [];
+            $existingShelfIds = array_column($existingShelves, 'view_id', 'id');
+            foreach ($normalizedShelves as &$shelf) {
+                $localId = $shelf['id'];
+                if ($localId > 0 && !isset($existingShelfIds[$localId])) {
+                    throw new ApiException('未知の棚板IDです。画面を再読み込みしてください', 400);
+                }
+                if (!isset($existingShelfIds[$localId])) {
+                    $shelf['id'] = ResourceId::allocate($this->db, 'rack_shelves');
+                }
+                $shelfIdMap[$localId] = $shelf['id'];
+            }
+            unset($shelf);
+            foreach ($normalizedShelfDevices as &$membership) {
+                $membership['shelf_id'] = $shelfIdMap[$membership['shelf_id']];
+            }
+            unset($membership);
             /*
              * 今回の保存データに含まれる機器IDを
              * 一時テーブルへ格納する。
@@ -561,6 +605,15 @@ class TopologyService
             foreach ($normalizedNotes as $note) {
                 $noteStmt->execute($note);
             }
+            foreach (['rack_settings' => $normalizedSettings, 'rack_mounts' => $normalizedMounts,
+                'rack_shelves' => $normalizedShelves, 'rack_shelf_devices' => $normalizedShelfDevices,
+                'floor_rack_placements' => $normalizedFloorRacks] as $table => $rows) {
+                foreach ($rows as $row) {
+                    $fields = array_keys($row);
+                    $this->db->prepare("INSERT INTO {$table} (" . implode(', ', $fields)
+                        . ') VALUES (:' . implode(', :', $fields) . ')')->execute($row);
+                }
+            }
 
             $savedAt = date(DATE_ATOM);
             $this->appMetaRepo->set('last_saved_at', $savedAt);
@@ -595,7 +648,7 @@ class TopologyService
 
         return array_merge($snapshot, [
             'message' => '保存しました',
-            'id_maps' => ['canvas_notes' => (object)$noteIdMap],
+            'id_maps' => ['canvas_notes' => (object)$noteIdMap, 'rack_shelves' => (object)$shelfIdMap],
             'audit_counts' => [
                 'deleted_device_count' => $deletedDeviceCount,
                 'deleted_view_count' => $deletedViewCount,
@@ -638,9 +691,9 @@ class TopologyService
             throw new ApiException("ビューは最大{$maxViews}件まで登録できます", 400);
         }
 
-        $allowedViewTypes = ['topology', 'floor'];
+        $allowedViewTypes = ['topology', 'floor', 'rack'];
         $allowedDeviceTypes = [
-            'switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'other',
+            'switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'pc', 'other',
         ];
 
         /*
@@ -889,6 +942,25 @@ class TopologyService
             ];
         }
         $normalizedNotes = CanvasNote::normalizeRows($input['canvas_notes'] ?? null, $viewIds);
-        return [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes];
+        $settings = $input['rack_settings'] ?? [];
+        $mounts = $input['rack_mounts'] ?? [];
+        $shelves = array_key_exists('rack_shelves', $input) ? $input['rack_shelves'] : [];
+        $shelfDevices = array_key_exists('rack_shelf_devices', $input) ? $input['rack_shelf_devices'] : [];
+        if (!is_array($shelves) || !is_array($shelfDevices)) {
+            throw new ApiException('棚板情報は配列で指定してください', 400);
+        }
+        if (!is_array($settings) || !is_array($mounts)) {
+            throw new ApiException('ラック情報は配列で指定してください', 400);
+        }
+        [$normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices] =
+            RackLayout::validate($settings, $mounts, $normalizedViews, $normalizedDevices, $shelves, $shelfDevices, true);
+        $rackIds = array_fill_keys(array_column($normalizedSettings, 'view_id'), true);
+        foreach (array_merge($normalizedPlacements, $normalizedLinks, $input['floor_plans'] ?? []) as $row) {
+            if (isset($rackIds[$row['view_id']])) {
+                throw new ApiException('ラックにはXY配置・接続・図面を保存できません', 400);
+            }
+        }
+        $normalizedFloorRacks = FloorRackPlacement::normalizeRows($input['floor_rack_placements'] ?? [], $normalizedViews);
+        return [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks];
     }
 }

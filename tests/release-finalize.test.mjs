@@ -7,7 +7,8 @@ const prefix = `/repos/${REPO}`;
 const sha = digit => digit.repeat(40);
 const mergedSha = sha('a'), headSha = sha('b'), treeSha = sha('c'), tagSha = sha('d');
 const date = '2026-10-20T00:00:00Z';
-const identity = { name: 'Netarium Release', email: 'release@users.noreply.github.com', date };
+const identity = { name: 'netarium-release-publisher-lgug[bot]', email: '344701945+netarium-release-publisher-lgug[bot]@users.noreply.github.com', date };
+const legacyIdentity = { name: 'Netarium Release', email: 'release@users.noreply.github.com', date };
 const env = { GITHUB_REPOSITORY: REPO, GITHUB_EVENT_NAME: 'push', GITHUB_SHA: mergedSha, GITHUB_REF: 'refs/heads/main' };
 const releaseBody = `Release v1.0.2.\n\n[CHANGELOG](https://github.com/${REPO}/blob/v1.0.2/CHANGELOG.md)\n\n[Security policy](https://github.com/${REPO}/security/policy)`;
 function fixture() {
@@ -258,5 +259,31 @@ test('version file cannot masquerade as a declaration inside executable PHP or a
     const state = fixture();
     state.version = `<?php $value = "const NETARIUM_VERSION = '1.0.2';";`;
     await assert.rejects(state.run(), /version.php/);
+    assert.equal(state.writes.length, 0);
+});
+
+test('legacy Netarium Release head commit is accepted for backward-compatible finalization', async () => {
+    const state = fixture();
+    state.head.author = { ...legacyIdentity };
+    state.head.committer = { ...legacyIdentity };
+    assert.equal((await state.run()).state, 'complete');
+    // Newly generated tag uses the Bot identity even if the PR head was created by legacy identity.
+    assert.deepEqual(state.annotated.tagger, identity);
+});
+
+test('legacy annotated tag identity is accepted during rerun validation', async () => {
+    const state = fixture();
+    await state.run();
+    state.annotated.tagger = { ...legacyIdentity };
+    const writes = state.writes.length;
+    await state.run();
+    assert.equal(state.writes.length, writes);
+});
+
+test('mismatched author and committer identities are rejected', async () => {
+    const state = fixture();
+    state.head.author = { ...identity };
+    state.head.committer = { ...legacyIdentity };
+    await assert.rejects(state.run(), /release head commitの内容・署名者が一致しません/);
     assert.equal(state.writes.length, 0);
 });

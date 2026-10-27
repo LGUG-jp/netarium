@@ -17,7 +17,7 @@ import {
     normalizeDashboardGroupValue,
     validateDashboardModel
 } from '../public/js/core/dashboard-model.js';
-import { getUnplacedDeviceIds } from '../public/js/core/device-placement.js';
+import { getUnplacedDeviceIds, getPlacedDeviceIds, getDeviceDestinations } from '../public/js/core/device-placement.js';
 import {
     DASHBOARD_QUALITY_CODES,
     DASHBOARD_UNSET_LABEL,
@@ -276,4 +276,65 @@ test('buildDashboardModel: 指定基準日で保守期限を集計し、既存�
     assert.equal(model.totals.unknown, 1);
     assert.deepEqual(validateDashboardModel(model), []);
     assert.deepEqual(devices, originalDevices);
+});
+
+test('rack-only devices are placed, destinations coexist with XY, and ledger location is untouched', () => {
+    const devices = [
+        { id: 1, type: 'switch', facility: '台帳施設', floor: '旧階', location: '台帳場所' },
+        { id: 2, type: 'server' }, { id: 3, type: 'other' }
+    ];
+    const placements = [{ device_id: 1, view_id: 10 }];
+    const mounts = [{ device_id: 1, view_id: 20, face: 'both', start_u: 2, height_u: 2, width_slot: 'full' },
+        { device_id: 2, view_id: 20, face: 'rear', start_u: 1, height_u: 1, width_slot: 'left' }];
+    const views = [{ id: 10, view_type: 'topology' }, { id: 20, view_type: 'rack', facility: 'ラック施設' }];
+    const before = structuredClone(devices);
+    assert.deepEqual([...getPlacedDeviceIds(placements, mounts)], [1, 2]);
+    assert.deepEqual(getUnplacedDeviceIds(devices, placements, mounts), [3]);
+    assert.deepEqual(getDeviceDestinations(1, placements, mounts, views).map(item => [item.kind, item.view.id]),
+        [['xy', 10], ['rack', 20]]);
+    const rackOnly = getDeviceDestinations(2, placements, mounts, views);
+    assert.equal(rackOnly[0].mount, mounts[1]);
+    assert.equal(rackOnly[0].placement, undefined);
+    const model = buildDashboardModel({ devices, placements, rackMounts: mounts });
+    assert.equal(model.totals.unplacedDevices, 1);
+    assert.deepEqual(devices, before);
+});
+
+test('ラック集計は面・幅・表示の重複を機器IDで除き、通常配置や台帳の集計を変えない', () => {
+    const input = {
+        views: [
+            { id: 1, view_type: 'topology', name: '通常構成' },
+            { id: 2, view_type: 'rack', name: 'ラックA', facility: '合成施設', floor: '1F' },
+            { id: -3, view_type: 'rack', name: '追加ラック' },
+            { id: 4, view_type: 'floor', name: 'フロア' }
+        ],
+        devices: [1, 2, 3, 4, 5].map(id => ({ id, type: 'server', facility: '台帳施設' })),
+        placements: [{ device_id: 1, view_id: 1 }],
+        rackMounts: [
+            { view_id: 2, device_id: 1, face: 'both', width_slot: 'full', start_u: 1, height_u: 2 },
+            { view_id: 2, device_id: '1', face: 'rear', width_slot: 'full', start_u: 1, height_u: 2 },
+            { view_id: '2', device_id: 2, face: 'front', width_slot: 'left', start_u: 3, height_u: 1 },
+            { view_id: 2, device_id: 3, face: 'rear', width_slot: 'right', start_u: 4, height_u: 2 },
+            { view_id: -3, device_id: 4, face: 'front', width_slot: 'full', start_u: 1, height_u: 1 },
+            { view_id: -3, device_id: 1, face: 'front', width_slot: 'full', start_u: 2, height_u: 1 }
+        ],
+        rackSettings: [{ view_id: '2', total_u: 6, location: ' 東側 ' }, { view_id: -3, total_u: 6 }]
+    };
+    const before = structuredClone(input);
+    const model = buildDashboardModel(input);
+    assert.deepEqual(model.racks, {
+        total: 2,
+        mountedDevices: 4,
+        items: [
+            { id: 2, name: 'ラックA', facility: '合成施設', floor: '1F', location: '東側', deviceCount: 3,
+                faces: { front: { empty: 3, occupiedPercentage: 5 / 12 * 100 }, rear: { empty: 2, occupiedPercentage: 50 } } },
+            { id: -3, name: '追加ラック', facility: '', floor: '', location: '', deviceCount: 2,
+                faces: { front: { empty: 4, occupiedPercentage: 4 / 12 * 100 }, rear: { empty: 6, occupiedPercentage: 0 } } }
+        ]
+    });
+    assert.equal(model.totals.devices, 5);
+    assert.equal(model.totals.unplacedDevices, 1);
+    assert.deepEqual(model.groups.facilities, [{ key: '台帳施設', label: '台帳施設', count: 5, percentage: 100 }]);
+    assert.deepEqual(input, before);
+    assert.deepEqual(buildDashboardModel().racks, { total: 0, mountedDevices: 0, items: [] });
 });

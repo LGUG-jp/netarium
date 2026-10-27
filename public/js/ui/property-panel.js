@@ -2,6 +2,7 @@
  * Netarium - ui/property-panel.js
  */
 
+import { getSelectedFloorRackPlacement, removeSelectedFloorRack } from '../canvas/floor-racks.js';
 import {
     DEVICE_TYPES
 } from '../core/constants.js';
@@ -575,6 +576,7 @@ function populatePanelForm(device, panel) {
     setDevicePanelReadOnly(
         !isCurrentUserAdmin()
     );
+    eventBus.emit('device-panel:opened', device);
     return true;
 }
 
@@ -1240,6 +1242,7 @@ export async function deleteSelected() {
         showToast('競合しているビューの配置は外せません。対象を再読込してください', 'warning');
         return;
     }
+    if (getSelectedFloorRackPlacement()) return removeSelectedFloorRack();
 
     if (
         appState.selectedPlacementIds.size === 0

@@ -224,7 +224,25 @@ class TestServer
         }
 
         $pdo = new PDO('sqlite:' . $dbFile);
-        \Netarium\Core\Database::initialize($pdo);
+        if (realpath($this->projectRoot) === realpath(dirname(__DIR__))) {
+            \Netarium\Core\Database::initialize($pdo);
+        } else {
+            // Initialize the source release with its own classes, not the current test process.
+            $code = 'require $argv[1] . "/bootstrap.php"; $db = new PDO("sqlite:" . $argv[2]); \\Netarium\\Core\\Database::initialize($db);';
+            $process = proc_open([PHP_BINARY, '-r', $code, $this->projectRoot, $dbFile],
+                [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            if (!is_resource($process)) {
+                throw new RuntimeException('旧版テストDBの初期化を開始できません');
+            }
+            fclose($pipes[0]);
+            $output = stream_get_contents($pipes[1]);
+            $errors = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            if (proc_close($process) !== 0) {
+                throw new RuntimeException('旧版テストDBの初期化に失敗しました: ' . $output . $errors);
+            }
+        }
 
         $now = date('Y-m-d H:i:s');
 

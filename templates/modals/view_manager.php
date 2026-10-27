@@ -16,7 +16,7 @@
                     </h2>
 
                     <p>
-                        論理構成図やフロア配置図を管理します。
+                        論理構成図・フロア配置図・ラック搭載図を管理します。
                     </p>
                 </div>
 
@@ -31,13 +31,26 @@
             </header>
 
             <div class="view-manager-toolbar">
-                <button
-                    id="view-add-btn"
-                    type="button"
-                    class="btn btn-primary btn-sm"
-                >
-                    ビューを登録
-                </button>
+                <div class="view-create-buttons" role="group" aria-label="ビューを新規登録">
+                    <button id="view-add-topology-btn" type="button" class="btn btn-primary btn-sm">＋ 論理構成図</button>
+                    <button id="view-add-floor-btn" type="button" class="btn btn-primary btn-sm">＋ フロア図</button>
+                    <button id="view-add-rack-btn" type="button" class="btn btn-primary btn-sm">＋ ラック図</button>
+                </div>
+                <div class="view-create-compact">
+                    <label for="vm-new-type">登録する種別</label>
+                    <select id="vm-new-type">
+                        <option value="topology">論理・全体構成図</option>
+                        <option value="floor">物理・フロア配置図</option>
+                        <option value="rack">ラック搭載図</option>
+                    </select>
+                    <button
+                        id="view-add-btn"
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                    >
+                        ビューを登録
+                    </button>
+                </div>
 
                 <button
                     id="view-duplicate-btn"
@@ -135,7 +148,21 @@
                         <option value="floor">
                             物理・フロア配置図
                         </option>
+                        <option value="rack">ラック搭載図</option>
                     </select>
+                    <p id="vm-type-error" class="form-error" aria-live="polite" hidden></p>
+                    <p class="form-support">既存ビューとラックの種別は相互に変更できません。</p>
+
+                    <fieldset id="vm-rack-fields" hidden>
+                        <legend>ラック設定</legend>
+                        <label for="vm-total-u">総U数</label>
+                        <input id="vm-total-u" type="number" min="1" max="60" step="1">
+                        <p id="vm-total-u-error" class="form-error" aria-live="polite" hidden></p>
+                        <label for="vm-location">設置場所（任意）</label>
+                        <input id="vm-location" type="text" data-max-length="150">
+                        <p id="vm-location-error" class="form-error" aria-live="polite" hidden></p>
+                        <p>総U数は1〜60Uです。搭載機器の範囲を切り捨てる縮小はできません。</p>
+                    </fieldset>
 
                     <div class="view-manager-floor-plan-actions">
                         <button
