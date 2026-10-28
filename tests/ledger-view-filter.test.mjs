@@ -152,6 +152,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
             { id: 4, view_id: 8, device_id: 40, x: 3, y: 3 },
             { id: 5, view_id: 8, device_id: 30, x: 4, y: 4 }
         ];
+        appState.rackMounts = []; appState.rackSettings = [];
         appState.currentViewId = 7;
         appState.links = []; appState.deviceImages = [];
         appState.resourceConflicts = { devices: new Map(), views: new Map() };
@@ -183,6 +184,32 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         await checkbox.dispatch('change');
     };
     cleanup = () => { drafts.discardDeviceDrafts(); queue.clearPendingSave(); };
+    await t.test('PC種別の台帳検索・種別フィルタはIP空欄の機器も対象にする', () => {
+        seed();
+        appState.devices[1].type = 'pc';
+        ledger.openLedger();
+        get('ledger-search').value = 'PC';
+        ledger.renderLedgerTable();
+        assert.deepEqual(visibleIds(), [10]);
+        assert.match(row(10).textContent, /PC/);
+        ledger.resetLedgerFilters();
+        chooseValues('ledger-type-filter', ['pc']);
+        ledger.renderLedgerTable();
+        assert.deepEqual(visibleIds(), [10]);
+    });
+    await t.test('種別候補は機器の登録順に依存せず定義順に並び、選択中の種別が消えても順番を保つ', () => {
+        seed();
+        const types = ['other', 'pc', 'router', 'printer', 'server', 'ap', 'firewall', 'l3_switch', 'switch'];
+        appState.devices = types.map((type, index) => normalizeDevice({ id: index + 1, name: type, type }));
+        ledger.openLedgerWithFilters({ type: ['pc', 'switch'] });
+        const candidates = () => get('ledger-type-filter').options.map(option => option.value);
+        const expected = ['switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'pc', 'other'];
+        assert.deepEqual(candidates(), expected);
+        appState.devices = appState.devices.filter(device => device.type !== 'switch');
+        ledger.updateLedgerFilters();
+        assert.deepEqual(candidates(), expected);
+        assert.deepEqual(ledger.getLedgerFilterValues().type, ['switch', 'pc']);
+    });
     await t.test('7項目は各項目内ORで機器順を保ち、ビュー和集合も重複しない', () => {
         seed();
         appState.devices[0].status = 'green'; appState.devices[1].status = 'red';
@@ -713,6 +740,33 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         await ledger.openLedgerBulkEdit();
         assert.equal(get('ledger-bulk-edit-overlay').hidden, true);
         assert.equal(drafts.hasDeviceDraftChanges('ledger', 30), false);
+        await ledger.closeLedgerDetailPane();
+    });
+    await t.test('ラック単独搭載は未配置から除外し、ラック指定台帳と検索の配置先に含める', async () => {
+        seed();
+        appState.views.push({ id: 11, name: 'ラックA', view_type: 'rack', facility: '別施設', floor: '別階' });
+        appState.rackSettings = [{ view_id: 11, total_u: 8, location: 'ラック場所' }];
+        appState.rackMounts = [{ device_id: 50, view_id: 11, face: 'rear', start_u: 2, height_u: 2, width_slot: 'right' }];
+        const originalDevice = structuredClone(appState.devices.find(device => device.id === 50));
+        ledger.openLedgerWithFilters({ placement: 'unplaced' });
+        assert.deepEqual(visibleIds(), []);
+        ledger.openLedgerWithFilters({ viewId: 11 });
+        assert.deepEqual(visibleIds(), [50]);
+        await ledger.openLedgerDetail(50);
+        const pill = get('ledger-sheet-body').querySelector('.ledger-sheet-view-pill');
+        assert.equal(pill.tagName, 'BUTTON');
+        assert.ok(pill.textContent.includes('2〜3U'));
+        assert.ok(pill.title.includes('ラック場所'));
+        const search = await import('../public/js/modals/device-search-modal.js');
+        const found = [];
+        const stop = eventBus.on('rack:show-device', destination => found.push(destination));
+        try {
+            search.selectDeviceSearchResult(50);
+            assert.deepEqual(found, [{ deviceId: 50, viewId: 11 }]);
+            const result = search.createDeviceSearchResult(appState.devices.find(device => device.id === 50), 0);
+            assert.ok(result.querySelector('.device-search-result-detail').textContent.includes('1ビューに配置'));
+        } finally { stop(); }
+        assert.deepEqual(appState.devices.find(device => device.id === 50), originalDevice);
         await ledger.closeLedgerDetailPane();
     });
 });

@@ -13,6 +13,8 @@ import {
 import { normalizeLinkRouteData } from './link-route-data.js';
 import { validateCanvasNote } from './canvas-note-data.js';
 export { normalizeCanvasNote, toSaveCanvasNote } from './canvas-note-data.js';
+import { validateRackLayout } from './rack-layout.js';
+import { validateFloorRackPlacements } from './floor-rack-data.js';
 
 export const appState = {
     views: [],
@@ -21,6 +23,11 @@ export const appState = {
     links: [],
     linkSystems: [],
     canvasNotes: [],
+    rackSettings: [],
+    rackMounts: [],
+    rackShelves: [],
+    rackShelfDevices: [],
+    floorRackPlacements: [],
     floorPlans: [],
     deviceImages: [],
     currentViewId: null,
@@ -100,10 +107,7 @@ export function toSaveView(view) {
             normalizeText(view.facility).trim(),
         floor:
             normalizeText(view.floor).trim(),
-        view_type:
-            view.view_type === 'floor'
-                ? 'floor'
-                : 'topology',
+        view_type: ['topology', 'floor', 'rack'].includes(view.view_type) ? view.view_type : 'topology',
         sort_order:
             Number(view.sort_order) || 0,
         memo:
@@ -253,6 +257,9 @@ const KIND_TO_PROP = {
  * 安全な仮ID払い出し
  */
 export function allocateLocalId(kind) {
+    if (kind === 'rackShelves') {
+        return Math.min(0, ...appState.rackShelves.map(row => Number(row.id))) - 1;
+    }
     const prop = KIND_TO_PROP[kind];
     const items = appState[kind] || [];
     let current = Number(appState[prop]);
@@ -530,6 +537,8 @@ export function validateAllDataBeforeSave(data = appState) {
     validatePlacementsForSave(data);
     validateLinksForSave(data);
     validateCanvasNotesForSave(data);
+    validateRackLayout(data);
+    validateFloorRackPlacements(data);
 }
 
 
@@ -881,10 +890,7 @@ export function normalizeView(view) {
         name: normalizeText(view.name),
         facility: normalizeText(view.facility),
         floor: normalizeText(view.floor),
-        view_type:
-            view.view_type === 'floor'
-                ? 'floor'
-                : 'topology',
+        view_type: ['topology', 'floor', 'rack'].includes(view.view_type) ? view.view_type : 'topology',
         sort_order:
             Number(view.sort_order) || 0,
         memo: normalizeText(view.memo)
@@ -1040,6 +1046,14 @@ export function getPlacedViewsForDevice(deviceId) {
                 Number(placement.view_id)
             )
     );
+    for (const mount of appState.rackMounts) {
+        if (Number(mount.device_id) === Number(deviceId)) placedViewIds.add(Number(mount.view_id));
+    }
+    const shelfIds = new Set(appState.rackShelfDevices.filter(row => Number(row.device_id) === Number(deviceId))
+        .map(row => Number(row.shelf_id)));
+    for (const shelf of appState.rackShelves) {
+        if (shelfIds.has(Number(shelf.id))) placedViewIds.add(Number(shelf.view_id));
+    }
 
     return appState.views
         .filter(view =>
@@ -1079,6 +1093,8 @@ export function removeDevicesFromState(deviceIds) {
 
     appState.devices = appState.devices.filter(d => !targetIds.has(Number(d.id)));
     appState.placements = appState.placements.filter(p => !targetIds.has(Number(p.device_id)));
+    appState.rackMounts = appState.rackMounts.filter(row => !targetIds.has(Number(row.device_id)));
+    appState.rackShelfDevices = appState.rackShelfDevices.filter(row => !targetIds.has(Number(row.device_id)));
     appState.links = appState.links.filter(link => {
         return (
             !targetIds.has(Number(link.from_id)) &&

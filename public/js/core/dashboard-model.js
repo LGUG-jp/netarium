@@ -16,6 +16,7 @@ import { normalizeStatus } from './state.js';
 import { getUnplacedDeviceIds } from './device-placement.js';
 import { normalizeDataQualityIds } from '../modals/data-quality-modal.js';
 import { aggregateMaintenanceExpiry } from './maintenance-expiry.js';
+import { rackUsage } from './rack-layout.js';
 
 /**
  * ダッシュボードの分類値を整える。
@@ -335,12 +336,74 @@ export function aggregateDashboardQuality(qualityResult = null) {
 }
 
 /**
+ * ラックごと・全体の搭載機器をIDで一意に集計する。
+ */
+function aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices) {
+    const racks = (Array.isArray(views) ? views : []).filter(view => view.view_type === 'rack');
+    const mountedByRack = new Map(racks.map(view => [Number(view.id), { deviceIds: new Set(), mounts: [] }]));
+    const mountedDevices = new Set();
+    for (const mount of Array.isArray(rackMounts) ? rackMounts : []) {
+        const rack = mountedByRack.get(Number(mount.view_id));
+        if (!rack) continue;
+        const deviceId = Number(mount.device_id);
+        rack.deviceIds.add(deviceId);
+        rack.mounts.push(mount);
+        mountedDevices.add(deviceId);
+    }
+    const shelves = new Map(rackShelves.map(row => [Number(row.id), row]));
+    for (const member of rackShelfDevices) {
+        const shelf = shelves.get(Number(member.shelf_id));
+        const rack = shelf && mountedByRack.get(Number(shelf.view_id));
+        if (!rack) continue;
+        rack.deviceIds.add(Number(member.device_id));
+        mountedDevices.add(Number(member.device_id));
+    }
+    const settingsByRack = new Map(
+        (Array.isArray(rackSettings) ? rackSettings : []).map(row => [Number(row.view_id), row])
+    );
+    return {
+        total: racks.length,
+        mountedDevices: mountedDevices.size,
+        items: racks.map(view => {
+            const rack = mountedByRack.get(Number(view.id));
+            const settings = settingsByRack.get(Number(view.id));
+            const totalU = Number(settings?.total_u);
+            const faces = totalU > 0 ? {} : null;
+            if (faces) {
+                for (const face of ['front', 'rear']) {
+                    const usage = rackUsage(totalU, rack.mounts, face,
+                        rackShelves.filter(row => Number(row.view_id) === Number(view.id)), rackShelfDevices);
+                    faces[face] = {
+                        empty: usage.empty,
+                        occupiedPercentage: Math.max(0, Math.min(100, (usage.used * 2 + usage.half) / (totalU * 2) * 100))
+                    };
+                }
+            }
+            return {
+                id: Number(view.id),
+                name: String(view.name || '').trim() || `ビューID ${view.id}`,
+                facility: String(view.facility || '').trim(),
+                floor: String(view.floor || '').trim(),
+                location: String(settings?.location || '').trim(),
+                deviceCount: rack.deviceIds.size,
+                faces
+            };
+        })
+    };
+}
+
+/**
  * ダッシュボード表示用の純粋集計モデルを生成する。
  * 外部状態 (appState や DOM) を直接読まず、渡された引数のみから構築する。
  */
 export function buildDashboardModel({
     devices = [],
     placements = [],
+    rackMounts = [],
+    views = [],
+    rackSettings = [],
+    rackShelves = [],
+    rackShelfDevices = [],
     qualityResult = null,
     dataRevision = 0,
     dirty = false,
@@ -353,7 +416,8 @@ export function buildDashboardModel({
     const quality = aggregateDashboardQuality(qualityResult);
     const stateUnplacedDeviceIds = getUnplacedDeviceIds(
         sourceDevices,
-        sourcePlacements
+        sourcePlacements,
+        [...rackMounts, ...rackShelfDevices]
     );
     const qualityUnplacedDeviceIds = getDashboardUnplacedDeviceIds(qualityResult);
     const incompleteDeviceIds = getDashboardIncompleteDeviceIds(qualityResult);
@@ -369,6 +433,7 @@ export function buildDashboardModel({
                 : null,
         hasUnsavedChanges: Boolean(dirty),
         maintenance: aggregateMaintenanceExpiry(sourceDevices, referenceDate),
+        racks: aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices),
         totals: {
             devices: sourceDevices.length,
             green: monitoring.green,

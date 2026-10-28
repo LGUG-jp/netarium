@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- PC: 正面向きノートPC。サーバとは異なる青紫の筐体と水色の画面。 -->
+  <g stroke="#3d459b" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="14" y="10" width="36" height="33" rx="4" fill="#798bf0" />
+    <rect x="18" y="14" width="28" height="25" rx="2" fill="#91d4f5" stroke-width="2" />
+    <path d="M14 42 H50 L58 53 Q60 57 55 57 H9 Q4 57 6 53 Z" fill="#bbc3ff" />
+  </g>
+  <path d="M19 16 H30 L20 27 H19 Z" fill="#ffffff" opacity="0.18" />
+  <g stroke="#4e56ab" stroke-width="2.1" stroke-linecap="round">
+    <path d="M18 46 H21 M25 46 H28 M32 46 H35 M39 46 H42 M46 46 H47" />
+    <path d="M16 49.5 H19 M23 49.5 H26 M30 49.5 H33 M37 49.5 H40 M44 49.5 H48" />
+  </g>
+  <path d="M27 52 H37 L39 55 H25 Z" fill="#e8ecff" stroke="#6574ce" stroke-width="1.5" stroke-linejoin="round" />
+</svg>

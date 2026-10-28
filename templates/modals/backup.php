@@ -60,7 +60,7 @@
                     <p id="backup-restore-file-error" class="form-error" aria-live="polite" hidden></p>
 
                     <p id="backup-restore-file-help">
-                        netarium-config形式1（DBスキーマ11）の構成情報ZIPを選択してください。v1.1.0では、明示的に互換検証されたv1.0.0〜v1.0.3／v1.1.0のZIPを受け付けます。新版から旧版への逆方向復元、未知版、旧画像同梱ZIP（形式2〜7）やv0.3.0以前のZIPは非対応です。
+                        netarium-config形式1（対応元DBスキーマ11〜16）の構成情報ZIPを選択してください。同一メジャー内の同一版・旧版から、保存契約の検証と対応済みの移行を経て復元します。新版から旧版への逆方向復元（同一スキーマを含む）、異なるメジャー、不正な版表記、未対応スキーマや旧画像同梱形式2〜7は非対応です。
                         最大<?= (int)($storageCapacity['backup']['max_zip_bytes'] / (1024 * 1024)) ?>MiB、
                         展開後最大<?= (int)(($storageCapacity['backup']['max_uncompressed_bytes'] ?? (64 * 1024 * 1024)) / (1024 * 1024)) ?>MiB。JSON 2ファイルのみを受け付けます。
                     </p>
@@ -144,9 +144,12 @@
                             機器画像
                             <strong id="backup-restore-device-images">0</strong>
                         </span>
+                        <span>ラック <strong id="backup-restore-racks">0</strong></span>
+                        <span>ラック搭載 <strong id="backup-restore-mounts">0</strong></span>
                     </div>
                     <p id="backup-restore-images" aria-live="polite"></p>
                     <ul id="backup-restore-image-issues"></ul>
+                    <p id="backup-restore-rack-removal" class="backup-restore-capacity-warning" role="alert"></p>
 
                     <label
                         class="backup-restore-confirmation"

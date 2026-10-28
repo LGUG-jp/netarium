@@ -1,7 +1,7 @@
 # Docker / Linux Compose 配備・運用ガイド
 
 Netarium は、Windows Server + IIS 版に加え、Docker / Docker Compose による Linux コンテナ配備を公式にサポートします。
-PHP アプリケーション本体、SQLite DB スキーマ（スキーマ 11）、認証仕様、および停止型完全バックアップ（`netarium-full` 形式 1）のデータ形式は IIS 版と共通です。
+PHP アプリケーション本体、SQLite DB スキーマ（スキーマ 16）、認証仕様、および停止型完全バックアップ（`netarium-full` 形式 1）のデータ形式は IIS 版と共通です。
 
 ---
 
@@ -19,6 +19,7 @@ PHP アプリケーション本体、SQLite DB スキーマ（スキーマ 11）
 
 ### 前提条件
 - Linuxコンテナを実行可能な Docker Engine 24.0+ および Docker Compose v2（WSL2 / Linuxネイティブ / VM環境）。
+- AWS 環境で運用する場合の参考構成と留意点は [AWS の ALB + EC2 構成で Docker 版を運用する場合の留意点](deployment-aws-alb.md) を参照。
 - ホスト側の公開ポート: デフォルトは `127.0.0.1:8080`（直接のインターネット公開は禁止。リバースプロキシ配下での運用を基本とします）。
 - 管理用 checkout とバックアップ出力先には、所有者限定の POSIX 権限を実効的に適用できる Linux ファイルシステムを使用します。WSL2 では原則として `/home/...` 配下へ配置してください。`/mnt/c/...` 等の DrvFS で権限が固定される構成はバックアップ出力先に使用できません。空ファイルによる権限検査に失敗した場合は、ZIP 作成前に拒否します。
 
@@ -31,6 +32,8 @@ Netarium Docker版には、ソースからビルドする方式（A）と、GitH
 ### 方式A: ソースビルド（開発・通常リポジトリ配備）
 
 リポジトリルートで `compose.yaml` を使用します。
+公式配布イメージに合わせ、ビルド・実行プラットフォームを `linux/amd64` に固定しています。
+ARM64 ホストでは amd64 エミュレーションを利用できる Docker 環境が必要です。これは ARM64 ネイティブ対応ではなく、エミュレーションによる性能低下が生じる場合があります。
 
 ~~~sh
 # 1. イメージのビルドと設定検証
@@ -45,9 +48,9 @@ docker compose run --rm --no-deps web php scripts/check-install.php \
 ### 方式B: GHCR事前ビルド済みイメージ（推奨本番配備）
 
 ビルド環境を必要とせず、固定バージョンタグの公式イメージを利用します。`compose.image.yaml` を使用します。
-公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.2.0` です。
+公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.3.0` です。候補版の検証や独自ビルドには方式 A のローカルビルドを利用します。
 
-公式イメージは GitHub Packages 上で Public として公開され、認証なし（匿名 pull）で取得できます。利用環境からイメージを取得できることを確認してください。
+公式イメージが GitHub Packages 上で Public として公開された後は、認証なし（匿名 pull）で取得できます。GitHub Releases と GitHub Packages で公開状況を確認し、利用環境からイメージを取得できることを確認してください。
 
 ~~~sh
 # 1. 設定検証とイメージ取得
@@ -191,7 +194,7 @@ bash scripts/docker-update.sh -f compose.image.yaml
 ~~~
 
 #### 事前ビルド済みイメージ（GHCR固定タグ）利用時の更新手順
-GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.2.0`）で運用している環境を新しい版へ更新する際は、以下の流れで実施します。
+GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.3.0`）で運用している環境を新しい版へ更新する際は、以下の流れで実施します。
 1. **イメージ参照の切り替え**: 稼働中の `compose.image.yaml` 内の `image:` を、新しい正式固定版タグ（例: `ghcr.io/lgug-jp/netarium:<新バージョン>`）へ書き換えます。架空のタグや digest（`@sha256:...`）ではなく、公式リリースで提供される固定タグを指定してください。
 2. **更新スクリプトの実行**: `bash scripts/docker-update.sh -f compose.image.yaml` を実行します。
 3. **事前バックアップと自動保護**: スクリプトが稼働中の現行バージョン（更新前）コンテナで自動的に事前バックアップ（`backups/pre-update-YYYYMMDD-HHMMSS-<token>.zip`）を生成し、新イメージの取得（pull）・DBマイグレーション検査・新コンテナ起動・ヘルスチェックを順次実施します。
@@ -215,7 +218,7 @@ GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.2.0`）で運用している
 
 ## 8. 停止型完全バックアップ・復元・全損復旧
 
-完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の明示許可も必要です。`1.2.0` への復元元は `1.0.0`〜`1.0.3`、`1.1.0`、および `1.2.0` です。
+完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の検証が必要です。復元先 `1.3.0`（現行スキーマ 16）では、同一 MAJOR 内の順方向（source <= target）の正規 SemVer、および移行経路が存在するスキーマ 11〜16（11..16）のバックアップを受け付けます。
 
 ### 完全バックアップの採取
 
@@ -268,7 +271,7 @@ bash scripts/docker-restore.sh [-f compose.yaml|compose.image.yaml] <バック�
 ## 9. IIS版との互換性と未検証事項
 
 ### 形式互換性
-- Docker版とIIS版の完全バックアップ形式（`netarium-full` 形式 1）は、同一のPHPバックアップエンジン（`scripts/full-backup-helper.php`）を基盤とし、manifest構造・SHA-256検証・DBスキーマ11を共有します。形式が同じでも未許可のアプリ版は拒否します。互換性の範囲は [更新ガイド](update.md#バックアップ互換性と切戻し手順) を参照してください。
+- Docker版とIIS版の完全バックアップ形式（`netarium-full` 形式 1）は、同一のPHPバックアップエンジン（`scripts/full-backup-helper.php`）を基盤とし、manifest構造・SHA-256検証・DBスキーマ（スキーマ 11〜16）を共有します。形式が同じでも未許可のアプリ版や未対応スキーマは拒否します。互換性の範囲は [更新ガイド](update.md#バックアップ互換性と切戻し手順) を参照してください。
 
 ### 実機 ZIP の確認範囲
 

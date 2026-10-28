@@ -29,6 +29,10 @@ export function applyViewTransform() {
     appState.world.style.transform =
         `translate(${appState.viewState.panX}px, ${appState.viewState.panY}px) ` +
         `scale(${appState.viewState.scale})`;
+    const rackContent = document.getElementById('rack-content');
+    if (getCurrentView()?.view_type === 'rack' && rackContent) {
+        rackContent.style.zoom = String(appState.viewState.scale / DEFAULT_VIEW_SCALE);
+    }
 
     const zoomLabel =
         document.getElementById('zoom-label');
@@ -71,6 +75,20 @@ export function setScaleAtClientPoint(
         Math.abs(newScale - appState.viewState.scale) <
         0.0001
     ) {
+        return;
+    }
+    if (getCurrentView()?.view_type === 'rack') {
+        const content = document.getElementById('rack-content');
+        const before = content?.getBoundingClientRect();
+        const previousRatio = appState.viewState.scale / DEFAULT_VIEW_SCALE;
+        appState.viewState.scale = newScale;
+        applyViewTransform();
+        if (before && content) {
+            const after = content.getBoundingClientRect();
+            const ratio = newScale / DEFAULT_VIEW_SCALE;
+            appState.canvas.scrollLeft += after.left + (clientX - before.left) / previousRatio * ratio - clientX;
+            appState.canvas.scrollTop += after.top + (clientY - before.top) / previousRatio * ratio - clientY;
+        }
         return;
     }
 
@@ -222,6 +240,10 @@ export function resetView() {
     appState.viewState.panX = DEFAULT_VIEW_PAN_X;
     appState.viewState.panY = DEFAULT_VIEW_PAN_Y;
 
+    if (getCurrentView()?.view_type === 'rack' && appState.canvas) {
+        appState.canvas.scrollLeft = 0;
+        appState.canvas.scrollTop = 0;
+    }
     applyViewTransform();
 }
 
@@ -247,6 +269,7 @@ export function restoreCurrentViewState() {
     if (!saved) {
         const currentView = getCurrentView();
         const currentFloorPlan = getCurrentFloorPlan();
+        if (currentView?.view_type === 'rack') { resetView(); return; }
 
         if (
             currentView?.view_type === 'floor' &&

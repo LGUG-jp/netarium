@@ -99,6 +99,7 @@
 .print-note { position: relative; width: 100%; height: 100%; overflow: hidden; }
 .print-note-background { position: absolute; inset: 0; }
 .print-note-text { position: relative; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.print-note-heading { position: relative; margin: 0; padding: 8px 10px 0; font-size: 12px; line-height: 18px; color: #333333; }
 
 @media print {
     body.print-preview-active {

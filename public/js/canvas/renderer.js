@@ -73,6 +73,8 @@ import {
     isPlacementModeActive
 } from '../ui/placement-mode.js';
 import { renderCanvasNotes, createCanvasNote, finishCanvasNotes } from './canvas-notes.js';
+import { renderRackView } from './rack-view.js';
+import { renderFloorRacks, getCurrentFloorRackPlacements, clearFloorRackSelection } from './floor-racks.js';
 
 // 現在ビューの有効な端点だけを使い、無向の1ホップを描画ごとに求める。
 function getConnectionHighlight() {
@@ -119,10 +121,22 @@ export function syncConnectionHighlight(highlight = getConnectionHighlight()) {
             Boolean(highlight && !highlight.linkIds.has(Number(element.dataset.id))));
     });
 }
+
+eventBus.on('rack:reload', async viewId => {
+    const { reloadConflictedResource } = await import('../core/save-queue.js');
+    await reloadConflictedResource('views', viewId);
+    render();
+});
 /**
  * 描画
  */
 export function render({ revealLinkId = null } = {}) {
+    if (renderRackView()) {
+        renderCanvasNotes();
+        applyViewTransform();
+        eventBus.emit('canvas:render-complete');
+        return;
+    }
     if (
         !appState.currentSvg ||
         !appState.deviceLayer ||
@@ -132,6 +146,7 @@ export function render({ revealLinkId = null } = {}) {
     }
     const focusedPlacementId = appState.linkMode && appState.deviceLayer.contains(document.activeElement)
         ? document.activeElement.dataset.placementId : null;
+    if (appState.world) appState.world.hidden = false;
 
     appState.currentSvg.replaceChildren();
     appState.deviceLayer.replaceChildren();
@@ -162,6 +177,7 @@ export function render({ revealLinkId = null } = {}) {
             appState.deviceLayer.appendChild(element);
         }
     );
+    renderFloorRacks();
     if (focusedPlacementId) {
         appState.deviceLayer.querySelector(`[data-placement-id="${focusedPlacementId}"]`)?.focus();
     }
@@ -519,6 +535,7 @@ export function createDeviceElement(
                 return;
             }
 
+            clearFloorRackSelection();
             appState.selectedPlacementIds.clear();
             appState.selectedPlacementIds.add(
                 Number(placement.id)
@@ -565,6 +582,7 @@ export async function onPlacementClick(
     if (!await openPanel(device)) {
         return;
     }
+    clearFloorRackSelection();
 
     const placementId =
         Number(placement.id);
@@ -739,6 +757,7 @@ export async function onCanvasClick(event) {
     if (
         event?.target instanceof Element &&
         event.target.closest(
+            '.floor-rack, ' +
             '.device, ' +
             '.link-group, ' +
             '.link-route-editor, ' +
@@ -772,6 +791,7 @@ export async function onCanvasClick(event) {
         return;
     }
     appState.selectedPlacementIds.clear();
+    clearFloorRackSelection();
 
     render();
 }
@@ -791,6 +811,20 @@ export function fitViewToDevices() {
 
     const currentView =
         getCurrentView();
+    if (currentView?.view_type === 'rack') {
+        const content = document.getElementById('rack-content');
+        if (!content) { resetView(); return; }
+        const viewport = appState.canvas.getBoundingClientRect();
+        const bounds = content.getBoundingClientRect();
+        const ratio = appState.viewState.scale / DEFAULT_VIEW_SCALE;
+        appState.viewState.scale = clampNumber(Math.min(
+            (viewport.width - 24) / Math.max(1, bounds.width / ratio),
+            (viewport.height - 24) / Math.max(1, bounds.height / ratio)
+        ) * DEFAULT_VIEW_SCALE, appState.viewState.minScale, appState.viewState.maxScale);
+        appState.canvas.scrollLeft = 0; appState.canvas.scrollTop = 0;
+        applyViewTransform();
+        return;
+    }
 
     const currentFloorPlan =
         getCurrentFloorPlan();
@@ -812,15 +846,16 @@ export function fitViewToDevices() {
     const currentPlacements =
         getCurrentPlacements();
     const currentNotes = getCurrentCanvasNotes();
+    const floorRacks = getCurrentFloorRackPlacements();
 
-    if (currentPlacements.length === 0 && currentNotes.length === 0) {
+    if (currentPlacements.length === 0 && currentNotes.length === 0 && floorRacks.length === 0) {
         resetView();
         return;
     }
 
     let maxX = 0;
     let maxY = 0;
-    for (const placement of currentPlacements) {
+    for (const placement of [...currentPlacements, ...floorRacks]) {
         maxX = Math.max(maxX, (Number(placement.x) || 0) + DEFAULT_DEVICE_WIDTH);
         maxY = Math.max(maxY, (Number(placement.y) || 0) + DEFAULT_DEVICE_HEIGHT);
     }
@@ -947,6 +982,7 @@ export function focusDevicePlacement(
 }
 
 function finishFocusDevicePlacement(placement) {
+    clearFloorRackSelection();
     appState.selectedPlacementIds.clear();
     appState.selectedPlacementIds.add(
         Number(placement.id)

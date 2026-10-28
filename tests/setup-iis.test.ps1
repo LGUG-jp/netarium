@@ -560,6 +560,16 @@ function Reset-TestSite {
     $script:bindingMutations = 0
     $script:certificateAssignments = 0
 }
+$script:configurationWrites = @()
+$script:fastCgiApps = @()
+function Set-WebConfigurationProperty {
+    param([string]$PSPath, [string]$Location, [string]$Filter, [string]$Name, $Value, [string]$ErrorAction)
+    $script:configurationWrites += [pscustomobject]@{ Command = 'Set'; PSPath = $PSPath; Location = $Location; Filter = $Filter; Name = $Name; Value = $Value }
+    if ($Filter -like 'system.webServer/fastCgi/application*' -and $script:fastCgiApps.Count -gt 0) {
+        if ($Name -eq 'activityTimeout') { $script:fastCgiApps[0].activityTimeout = [int]$Value }
+        if ($Name -eq 'requestTimeout') { $script:fastCgiApps[0].requestTimeout = [int]$Value }
+    }
+}
 function Get-Website {
     param([string]$Name, [string]$ErrorAction)
     if ($script:mockSite -and (!$Name -or $Name -eq $script:mockSite.Name)) { return $script:mockSite }
@@ -773,10 +783,8 @@ Assert-Test -Name 'Existing mode rejects an IIS site without usable bindings' -C
 }
 
 $script:configurationReads = @()
-$script:configurationWrites = @()
 $script:preflightFailureFilter = $null
 $script:phpHandlerCollection = @()
-$script:fastCgiApps = @()
 $script:silentFastCgiAdd = $false
 $script:silentHandlerAdd = $false
 function Get-WebConfiguration {
@@ -809,14 +817,6 @@ function Add-WebConfigurationProperty {
     }
     if ($Filter -eq 'system.webServer/handlers' -and -not $script:silentHandlerAdd) {
         $script:phpHandlerCollection += [pscustomobject]@{ path = [string]$Value.path; scriptProcessor = [string]$Value.scriptProcessor }
-    }
-}
-function Set-WebConfigurationProperty {
-    param([string]$PSPath, [string]$Location, [string]$Filter, [string]$Name, $Value, [string]$ErrorAction)
-    $script:configurationWrites += [pscustomobject]@{ Command = 'Set'; PSPath = $PSPath; Location = $Location; Filter = $Filter; Name = $Name; Value = $Value }
-    if ($Filter -like 'system.webServer/fastCgi/application*' -and $script:fastCgiApps.Count -gt 0) {
-        if ($Name -eq 'activityTimeout') { $script:fastCgiApps[0].activityTimeout = [int]$Value }
-        if ($Name -eq 'requestTimeout') { $script:fastCgiApps[0].requestTimeout = [int]$Value }
     }
 }
 $script:mockAppPools = @{}

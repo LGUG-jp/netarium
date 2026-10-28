@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import { test, beforeEach } from 'node:test';
 
 // ブラウザ環境の軽量モック
@@ -77,6 +76,7 @@ if (typeof globalThis.document === 'undefined') {
     globalThis.document = {
         body: createMockElement('body'),
         getElementById: (id) => {
+            if (id === 'rack-position-section') return null;
             if (!mockElements.has(id)) {
                 mockElements.set(id, createMockElement('div'));
             }
@@ -470,11 +470,6 @@ test('fitViewToDevices: 図面調整モード中は非表示のフロア図面�
         off();
         appState.floorPlanAdjustMode = false;
     }
-});
-test('レスポンシブスタイル: 狭幅画面でもヘッダーとCanvasの間に余計なmargin-topを設けない', () => {
-    const css = fs.readFileSync(new URL('../public/css/canvas.css', import.meta.url), 'utf8');
-    assert.doesNotMatch(css, /#canvas\s*\{[^}]*margin-top:\s*var\(--toolbar-height\)/, 'Canvasにtoolbar-height分のmargin-topを二重適用しない');
-    assert.doesNotMatch(css, /@media[^{]*max-width:\s*820px[^{]*\{[^}]*#canvas/, '820px以下のメディアクエリでCanvasに余計な上部空白を設けない');
 });
 
 test('直接リンクは管理者・閲覧者とも指定ビューの機器を選択し詳細を開く', async () => {

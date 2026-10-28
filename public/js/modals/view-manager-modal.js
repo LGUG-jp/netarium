@@ -28,10 +28,14 @@ import {
     toSaveView
 } from '../core/state.js';
 import { toSaveCanvasNote } from '../core/canvas-note-data.js';
+import { MAX_RACK_U, toSaveRackSettings, toSaveRackMount } from '../core/rack-layout.js';
+import { toSaveFloorRackPlacement } from '../core/floor-rack-data.js';
+import { clearFloorRackSelection } from '../canvas/floor-racks.js';
 import {
     restoreCurrentViewState,
     saveCurrentViewState
 } from '../canvas/pan-zoom.js';
+import { commitCanvasNoteText } from '../canvas/canvas-notes.js';
 import {
     normalizeText,
     setInputValue
@@ -71,7 +75,41 @@ let viewManagerSelectedId = null;
 let viewManagerSnapshot = null;
 let viewManagerFormGeneration = 0;
 let viewManagerApplyGeneration = 0;
-const viewFormIds = ['vm-name', 'vm-facility', 'vm-floor', 'vm-type', 'vm-sort-order', 'vm-memo'];
+const viewFormIds = ['vm-name', 'vm-facility', 'vm-floor', 'vm-type', 'vm-sort-order', 'vm-memo', 'vm-total-u', 'vm-location'];
+let floorRackReturn = null;
+
+export function openFloorRackView(rackViewId) {
+    if (getCurrentView()?.view_type !== 'floor' ||
+        !(appState.floorRackPlacements || []).some(row => Number(row.floor_view_id) === Number(appState.currentViewId) &&
+            Number(row.rack_view_id) === Number(rackViewId)) ||
+        !appState.views.some(view => Number(view.id) === Number(rackViewId) && view.view_type === 'rack')) return false;
+    return switchView(rackViewId, { fromFloor: true });
+}
+
+export function renderFloorRackReturn() {
+    document.getElementById('floor-rack-return')?.remove?.();
+    if (!floorRackReturn) return;
+    const origin = appState.views.find(view => Number(view.id) === Number(floorRackReturn.floorId) && view.view_type === 'floor');
+    if (!origin || Number(appState.currentViewId) !== Number(floorRackReturn.rackId)) {
+        floorRackReturn = null; return;
+    }
+    const header = document.getElementById('rack-header');
+    if (!header) return;
+    const button = document.createElement('button');
+    button.id = 'floor-rack-return'; button.type = 'button'; button.className = 'btn btn-secondary btn-sm';
+    button.textContent = '← 元の物理配置図へ戻る';
+    button.title = origin.name;
+    button.addEventListener('click', async () => {
+        const target = floorRackReturn;
+        if (target && await switchView(target.floorId)) {
+            if (appState.canvas) {
+                appState.canvas.scrollLeft = target.scrollLeft;
+                appState.canvas.scrollTop = target.scrollTop;
+            }
+        }
+    });
+    header.prepend(button);
+}
 
 function readViewForm() {
     return viewFormIds.map(id => String(document.getElementById(id)?.value ?? ''));
@@ -80,8 +118,9 @@ function readViewForm() {
 function hasUnappliedViewForm() {
     const view = getViewManagerSelectedView();
     if (!view) return false;
-    const values = [view.name, view.facility, view.floor, view.view_type, view.sort_order, view.memo]
-        .map(value => String(value ?? ''));
+    const settings = appState.rackSettings.find(row => Number(row.view_id) === Number(view.id));
+    const values = [view.name, view.facility, view.floor, view.view_type, view.sort_order, view.memo,
+        settings?.total_u ?? '', settings?.location ?? ''].map(value => String(value ?? ''));
     return readViewForm().some((value, index) => value !== values[index]);
 }
 
@@ -121,7 +160,28 @@ eventBus.on('resources:ids-remapped', maps => {
             note.id = mappedResourceId(maps.canvas_notes, note.id);
             note.view_id = mappedResourceId(maps.views, note.view_id);
         });
+        viewManagerSnapshot.rackSettings.forEach(row => { row.view_id = mappedResourceId(maps.views, row.view_id); });
+        viewManagerSnapshot.floorRackPlacements.forEach(row => {
+            row.floor_view_id = mappedResourceId(maps.views, row.floor_view_id);
+            row.rack_view_id = mappedResourceId(maps.views, row.rack_view_id);
+        });
+        viewManagerSnapshot.rackMounts.forEach(row => {
+            row.view_id = mappedResourceId(maps.views, row.view_id);
+            row.device_id = mappedResourceId(maps.devices, row.device_id);
+        });
+        viewManagerSnapshot.rackShelves.forEach(row => {
+            row.id = mappedResourceId(maps.rack_shelves, row.id);
+            row.view_id = mappedResourceId(maps.views, row.view_id);
+        });
+        viewManagerSnapshot.rackShelfDevices.forEach(row => {
+            row.shelf_id = mappedResourceId(maps.rack_shelves, row.shelf_id);
+            row.device_id = mappedResourceId(maps.devices, row.device_id);
+        });
         viewManagerSnapshot.currentViewId = mappedResourceId(maps.views, viewManagerSnapshot.currentViewId);
+    }
+    if (floorRackReturn) {
+        floorRackReturn.floorId = mappedResourceId(maps.views, floorRackReturn.floorId);
+        floorRackReturn.rackId = mappedResourceId(maps.views, floorRackReturn.rackId);
     }
     renderViewManagerList();
 });
@@ -133,6 +193,7 @@ eventBus.on('resources:saved', () => {
 eventBus.on('save-state:changed', updateViewManagerButtons);
 
 eventBus.on('resources:reloaded', () => {
+    floorRackReturn = null;
     // 全再読込は既に確認済み。古いDOMを新モデルと比較して再確認しない。
     viewManagerFormGeneration++;
     viewManagerApplyGeneration++;
@@ -206,7 +267,7 @@ export { buildViewOptionLabel };
 
 
 
-export function switchView(nextViewId) {
+export function switchView(nextViewId, { fromFloor = false } = {}) {
     if (!requireNotPinging()) {
         renderViewSelector();
         return false;
@@ -229,10 +290,16 @@ export function switchView(nextViewId) {
         return false;
     }
 
+    const returnTarget = fromFloor && getCurrentView()?.view_type === 'floor' ? {
+        floorId: Number(appState.currentViewId), rackId: normalizedId,
+        scrollLeft: appState.canvas?.scrollLeft || 0, scrollTop: appState.canvas?.scrollTop || 0
+    } : null;
     if (
         Number(appState.currentViewId) ===
         normalizedId
     ) {
+        floorRackReturn = null;
+        renderFloorRackReturn();
         return true;
     }
 
@@ -246,18 +313,20 @@ export function switchView(nextViewId) {
                 renderViewSelector();
                 return false;
             }
-            finishSwitchView(normalizedId);
-            return true;
+            return finishSwitchView(normalizedId, returnTarget);
         })();
     }
 
     closePanel();
     closeLinkPanel();
-    finishSwitchView(normalizedId);
-    return true;
+    return finishSwitchView(normalizedId, returnTarget);
 }
 
-function finishSwitchView(normalizedId) {
+function finishSwitchView(normalizedId, returnTarget) {
+    if (getCurrentView()?.view_type === 'rack' && !commitCanvasNoteText()) {
+        renderViewSelector();
+        return false;
+    }
     eventBus.emit('canvas-note:finish');
     eventBus.emit('floor-plan:finish');
     flushSaveQueue({ silent: true });
@@ -268,8 +337,11 @@ function finishSwitchView(normalizedId) {
         appState.cancelActiveRangeSelection?.();
     }
     saveCurrentViewState();
+    floorRackReturn = returnTarget;
+    clearFloorRackSelection();
 
     appState.currentViewId = normalizedId;
+    eventBus.emit('placement-mode:view-changed');
 
     appState.selectedPlacementIds.clear();
     appState.selectedCanvasNoteId = null;
@@ -281,6 +353,7 @@ function finishSwitchView(normalizedId) {
     restoreCurrentViewState();
     renderViewSelector();
     render();
+    return true;
 
 }
 
@@ -301,6 +374,11 @@ export function createViewManagerSnapshot() {
         })),
 
         canvasNotes: appState.canvasNotes.map(note => ({ ...note })),
+        rackSettings: appState.rackSettings.map(row => ({ ...row })),
+        rackMounts: appState.rackMounts.map(row => ({ ...row })),
+        rackShelves: appState.rackShelves.map(row => ({ ...row })),
+        rackShelfDevices: appState.rackShelfDevices.map(row => ({ ...row })),
+        floorRackPlacements: (appState.floorRackPlacements || []).map(row => ({ ...row })),
 
         currentViewId:
             appState.currentViewId,
@@ -358,7 +436,12 @@ export function hasViewManagerChanges() {
         placements:
             appState.placements.map(toSavePlacement),
         links: appState.links.map(toSaveLink),
-        canvas_notes: appState.canvasNotes.map(toSaveCanvasNote)
+        canvas_notes: appState.canvasNotes.map(toSaveCanvasNote),
+        rack_settings: appState.rackSettings.map(toSaveRackSettings),
+        rack_mounts: appState.rackMounts.map(toSaveRackMount),
+        rack_shelves: appState.rackShelves,
+        rack_shelf_devices: appState.rackShelfDevices,
+        floor_rack_placements: (appState.floorRackPlacements || []).map(toSaveFloorRackPlacement)
     });
 
     const snapshot = JSON.stringify({
@@ -374,7 +457,12 @@ export function hasViewManagerChanges() {
         links:
             viewManagerSnapshot.links
                 .map(toSaveLink),
-        canvas_notes: viewManagerSnapshot.canvasNotes.map(toSaveCanvasNote)
+        canvas_notes: viewManagerSnapshot.canvasNotes.map(toSaveCanvasNote),
+        rack_settings: viewManagerSnapshot.rackSettings.map(toSaveRackSettings),
+        rack_mounts: viewManagerSnapshot.rackMounts.map(toSaveRackMount),
+        rack_shelves: viewManagerSnapshot.rackShelves,
+        rack_shelf_devices: viewManagerSnapshot.rackShelfDevices,
+        floor_rack_placements: viewManagerSnapshot.floorRackPlacements.map(toSaveFloorRackPlacement)
     });
 
     return current !== snapshot;
@@ -462,10 +550,8 @@ export function renderViewManagerList() {
             selected ? 'true' : 'false'
         );
 
-        const typeLabel =
-            view.view_type === 'floor'
-                ? '物理'
-                : '論理';
+        const typeLabel = view.view_type === 'rack' ? 'ラック' :
+            view.view_type === 'floor' ? '物理' : '論理';
 
         const subText = [
             view.facility,
@@ -553,7 +639,7 @@ export function loadSelectedViewIntoForm() {
     }
 
     viewManagerFormGeneration++;
-    for (const id of ['vm-name', 'vm-facility', 'vm-floor', 'vm-sort-order', 'vm-memo']) {
+    for (const id of viewFormIds) {
         setInputError(document.getElementById(id), document.getElementById(`${id}-error`), '');
     }
     const disabled = !view;
@@ -574,6 +660,10 @@ export function loadSelectedViewIntoForm() {
         setInputValue('vm-type', 'topology');
         setInputValue('vm-sort-order', '0');
         setInputValue('vm-memo', '');
+        setInputValue('vm-total-u', '');
+        setInputValue('vm-location', '');
+        const rackFields = document.getElementById('vm-rack-fields');
+        if (rackFields) rackFields.hidden = true;
         
         appState.viewManagerFormDirty = false;
         return;
@@ -595,6 +685,16 @@ export function loadSelectedViewIntoForm() {
         view.sort_order
     );
     setInputValue('vm-memo', view.memo);
+    const settings = appState.rackSettings.find(row => Number(row.view_id) === Number(view.id));
+    setInputValue('vm-total-u', settings?.total_u ?? '');
+    setInputValue('vm-location', settings?.location ?? '');
+    const rackFields = document.getElementById('vm-rack-fields');
+    if (rackFields) rackFields.hidden = view.view_type !== 'rack';
+    const typeSelect = document.getElementById('vm-type');
+    if (typeSelect) {
+        typeSelect.disabled = view.view_type === 'rack';
+        for (const option of typeSelect.options) option.disabled = option.value === 'rack' && view.view_type !== 'rack';
+    }
     updateFormLengthFeedback(form);
 
     appState.viewManagerFormDirty = false;
@@ -624,16 +724,16 @@ export async function applyViewForm() {
     }
     const generation = viewManagerFormGeneration;
     const submittedInputs = readViewForm();
-    const [rawName, rawFacility, rawFloor, rawType, rawOrder, rawMemo] = submittedInputs;
+    const [rawName, rawFacility, rawFloor, rawType, rawOrder, rawMemo, rawTotalU, rawLocation] = submittedInputs;
     const values = {
         name: rawName.trim(),
         facility: rawFacility.trim(),
         floor: rawFloor.trim(),
-        view_type: rawType === 'floor' ? 'floor' : 'topology',
+        view_type: ['floor', 'rack'].includes(rawType) ? rawType : 'topology',
         sort_order: Number(rawOrder),
         memo: rawMemo.trim()
     };
-    for (const id of ['vm-name', 'vm-facility', 'vm-floor', 'vm-sort-order', 'vm-memo']) {
+    for (const id of viewFormIds) {
         setInputError(document.getElementById(id), document.getElementById(`${id}-error`), '');
     }
     const limits = [['name', 100, 'ビュー名', 'vm-name'], ['facility', 100, '施設名', 'vm-facility'],
@@ -661,11 +761,51 @@ export async function applyViewForm() {
         document.getElementById('vm-name')?.focus();
         return false;
     }
+    if ((view.view_type === 'rack') !== (values.view_type === 'rack')) {
+        setInputError(document.getElementById('vm-type'), document.getElementById('vm-type-error'),
+            '既存ビューとラックの種別は相互に変更できません。新しいビューを登録してください');
+        return false;
+    }
+    let rackSettings = null;
+    if (view.view_type === 'rack') {
+        rackSettings = { view_id: Number(view.id), total_u: Number(rawTotalU), location: rawLocation.trim() };
+        let error = '';
+        if (!Number.isInteger(rackSettings.total_u) || rackSettings.total_u < 1 || rackSettings.total_u > MAX_RACK_U) {
+            error = `総U数は1〜${MAX_RACK_U}の整数で入力してください`;
+        } else if ([...appState.rackMounts, ...appState.rackShelves].some(row => Number(row.view_id) === Number(view.id) &&
+            Number(row.start_u) + Number(row.height_u) - 1 > rackSettings.total_u)) {
+            error = '搭載機器の範囲を切り捨てる総U数には変更できません';
+        }
+        if (error) {
+            setInputError(document.getElementById('vm-total-u'), document.getElementById('vm-total-u-error'), error);
+            document.getElementById('vm-total-u')?.focus();
+            return false;
+        }
+        if (Array.from(rackSettings.location).length > 150) {
+            setInputError(document.getElementById('vm-location'), document.getElementById('vm-location-error'),
+                '設置場所は150文字以内で入力してください');
+            document.getElementById('vm-location')?.focus();
+            return false;
+        }
+    }
 
-    const changed = JSON.stringify(toSaveView(view)) !== JSON.stringify(toSaveView({ ...view, ...values }));
+    const previousSettings = appState.rackSettings.find(row => Number(row.view_id) === Number(view.id));
+    const changed = JSON.stringify(toSaveView(view)) !== JSON.stringify(toSaveView({ ...view, ...values })) ||
+        (rackSettings && JSON.stringify(previousSettings && toSaveRackSettings(previousSettings)) !== JSON.stringify(rackSettings));
+    if (rackSettings) {
+        if (previousSettings) Object.assign(previousSettings, rackSettings);
+        else appState.rackSettings.push(rackSettings);
+    }
     Object.assign(view, values);
+    if (view.view_type !== 'floor') {
+        appState.floorRackPlacements = (appState.floorRackPlacements || []).filter(row => Number(row.floor_view_id) !== Number(view.id));
+    }
     // 確定済みモデルと未適用DOM入力を分ける。通信中の入力は以後触らない。
     Object.values(values).forEach((value, index) => setInputValue(viewFormIds[index], value));
+    if (rackSettings) {
+        setInputValue('vm-total-u', rackSettings.total_u);
+        setInputValue('vm-location', rackSettings.location);
+    }
     const committedInputs = readViewForm();
     const applyGeneration = ++viewManagerApplyGeneration;
     appState.viewManagerFormDirty = false;
@@ -681,13 +821,14 @@ export async function applyViewForm() {
 
     renderViewManagerList();
     renderViewSelector();
+    if (Number(appState.currentViewId) === Number(view.id)) render();
 
 
     return true;
 }
 
 
-export async function addView() {
+export async function addView(requestedType = null) {
     if (!requireAdminUiAction()) {
         return;
     }
@@ -699,9 +840,12 @@ export async function addView() {
         return;
     }
     const generation = viewManagerFormGeneration;
-    if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
+    if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration ||
+        !isCurrentUserAdmin() || appState.authExpired || appState.views.length >= MAX_VIEWS) return;
 
     const id = allocateLocalId('views');
+    const selectedType = requestedType ?? document.getElementById('vm-new-type')?.value;
+    const viewType = ['floor', 'rack'].includes(selectedType) ? selectedType : 'topology';
 
     const sortOrder = appState.views.reduce(
         (max, view) =>
@@ -715,16 +859,17 @@ export async function addView() {
     const view = {
         id,
         name: createUniqueViewName(
-            '新しいビュー'
+            viewType === 'rack' ? '新しいラック' : '新しいビュー'
         ),
         facility: '',
         floor: '',
-        view_type: 'topology',
+        view_type: viewType,
         sort_order: sortOrder,
         memo: ''
     };
 
     appState.views.push(view);
+    if (viewType === 'rack') appState.rackSettings.push({ view_id: id, total_u: 42, location: '' });
 
     markDirty();
     scheduleSave({ immediate: true, silent: true });
@@ -777,6 +922,11 @@ export async function duplicateSelectedView() {
         return;
     }
 
+    const sourceSettings = appState.rackSettings.find(row => Number(row.view_id) === Number(source.id));
+    if (source.view_type === 'rack' && !sourceSettings) {
+        showToast('ラック設定がありません。最新データを再読込してください', 'error');
+        return;
+    }
     const newViewId = allocateLocalId('views');
 
     const duplicatedView = {
@@ -788,6 +938,9 @@ export async function duplicateSelectedView() {
     };
 
     appState.views.push(duplicatedView);
+    if (source.view_type === 'rack') {
+        appState.rackSettings.push({ ...toSaveRackSettings(sourceSettings), view_id: newViewId });
+    } else {
 
     appState.placements
         .filter(placement =>
@@ -816,7 +969,7 @@ export async function duplicateSelectedView() {
                 view_id: newViewId
             }));
         });
-
+    }
     appState.canvasNotes.filter(note => Number(note.view_id) === Number(source.id)).forEach(note => {
         appState.canvasNotes.push({
             ...toSaveCanvasNote(note),
@@ -841,8 +994,6 @@ export async function deleteSelectedView() {
     if (!requireAdminUiAction()) {
         return;
     }
-    const generation = viewManagerFormGeneration;
-    if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
     const view =
         getViewManagerSelectedView();
 
@@ -853,6 +1004,12 @@ export async function deleteSelectedView() {
         );
         return;
     }
+    if (view.view_type === 'rack' && [...appState.rackMounts, ...appState.rackShelves].some(row => Number(row.view_id) === Number(view.id))) {
+        showToast('搭載機器が残るラックは削除できません。先にすべての機器を取り外してください', 'warning');
+        return;
+    }
+    const generation = viewManagerFormGeneration;
+    if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
 
     if (appState.views.length <= 1) {
         showToast(
@@ -901,6 +1058,10 @@ export async function deleteSelectedView() {
             deletedViewId
     );
 
+    appState.rackSettings = appState.rackSettings.filter(row => Number(row.view_id) !== deletedViewId);
+    appState.floorRackPlacements = (appState.floorRackPlacements || []).filter(row =>
+        Number(row.floor_view_id) !== deletedViewId && Number(row.rack_view_id) !== deletedViewId);
+    if (floorRackReturn && [floorRackReturn.floorId, floorRackReturn.rackId].includes(deletedViewId)) floorRackReturn = null;
     appState.placements = appState.placements.filter(
         placement =>
             Number(placement.view_id) !==
@@ -996,12 +1157,17 @@ export function updateViewManagerButtons() {
         addButton.disabled =
             appState.views.length >= MAX_VIEWS;
     }
+    for (const type of ['topology', 'floor', 'rack']) {
+        const button = document.getElementById(`view-add-${type}-btn`);
+        if (button) button.disabled = !isCurrentUserAdmin() || appState.authExpired || appState.views.length >= MAX_VIEWS;
+    }
 
     if (duplicateButton) {
         duplicateButton.disabled =
             !selected ||
             appState.views.length >= MAX_VIEWS;
     }
+    if (duplicateButton) duplicateButton.textContent = '複製';
 
     if (deleteButton) {
         deleteButton.disabled =

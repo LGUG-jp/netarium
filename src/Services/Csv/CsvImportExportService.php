@@ -322,6 +322,7 @@ class CsvImportExportService
             'ap',
             'server',
             'printer',
+            'pc',
             'other',
         ];
     }

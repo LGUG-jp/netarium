@@ -305,6 +305,7 @@ class QualityDiagnosticService
             'ap',
             'server',
             'printer',
+            'pc',
             'other',
         ];
 
@@ -465,6 +466,11 @@ class QualityDiagnosticService
             'placements' => $placements,
             'links' => $links,
             'floor_plans' => $floorPlans,
+            'rack_mounts' => $this->db->query("SELECT m.device_id, m.view_id FROM rack_mounts m
+                JOIN views v ON v.id = m.view_id WHERE v.view_type = 'rack'
+                UNION ALL SELECT d.device_id, s.view_id FROM rack_shelf_devices d
+                JOIN rack_shelves s ON s.id = d.shelf_id
+                JOIN views v ON v.id = s.view_id WHERE v.view_type = 'rack'")->fetchAll(PDO::FETCH_ASSOC),
         ];
     }
 
@@ -540,6 +546,7 @@ class QualityDiagnosticService
         $placements = $source['placements'];
         $links = $source['links'];
         $floorPlans = $source['floor_plans'];
+        $rackMountedDeviceIds = array_fill_keys(array_column($source['rack_mounts'], 'device_id'), true);
 
         $issues = [];
 
@@ -972,7 +979,7 @@ class QualityDiagnosticService
                 }
             }
 
-            if (!isset($placementsByDeviceId[$deviceId])) {
+            if (!isset($placementsByDeviceId[$deviceId]) && !isset($rackMountedDeviceIds[$deviceId])) {
                 $issues[] = $this->createDataQualityIssue(
                     'unplaced_device',
                     'warning',

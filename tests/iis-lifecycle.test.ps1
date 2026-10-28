@@ -240,6 +240,101 @@ $db = new SQLite3($argv[1]); $db->exec('CREATE TABLE users (id INTEGER PRIMARY K
     $aclEntries[1].Rules += [pscustomobject]@{ Identity = 'Everyone'; Sid = 'S-1-1-0'; Type = 'Allow'; Rights = 'Write' }
     if (Test-LifecycleAcl -Snapshot $aclSnapshot) { throw 'Broad write permission on public code was accepted.' }
     Write-Host 'PASS ACL least-privilege and broad-write rejection'
+    foreach ($name in @('Add-LifecycleCheck', 'Add-LifecycleSkip', 'Compare-LifecycleValue', 'Get-LifecycleForeign', 'Compare-LifecycleSnapshots')) {
+        $definition = @($ast.FindAll({
+            $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $name
+        }, $true))
+        Invoke-Expression $definition[0].Extent.Text
+    }
+    $script:scenarioName = 'Update'
+    $HostName = ''
+    function Assert-UpdateRow($name, $before, $after, $check, $expected) {
+        $rows = New-Object System.Collections.ArrayList
+        Compare-LifecycleSnapshots $before $after 'Update' $SiteName $ApplicationPoolName $PhpCgiPath
+        $row = @($rows | Where-Object { $_.Check -eq $check })
+        if ($row.Count -ne 1 -or $row[0].Result -cne $expected) { throw "$name did not produce $expected" }
+        Write-Host "PASS $name"
+    }
+    $updateBefore = ($base | ConvertTo-Json -Depth 30) | ConvertFrom-Json
+    $updateBefore.Db | Add-Member ExpectedSchemaVersion 16
+    $updateBefore.Db | Add-Member Error $null
+    $updateBefore.Db.Version = 16
+    $updateBefore.Http | Add-Member Error $null
+    $updateBefore.Http | Add-Member RedirectsToSetup $false
+    $updateBefore.Iis.Site.Exists = $true
+    $updateBefore.Iis.Site.State = 'Started'
+    $updateBefore.Iis.Site.ApplicationPool = $ApplicationPoolName
+    $updateBefore.Iis.Site.PhysicalPath = Join-Path $InstallRoot 'public'
+    $updateBefore.Iis.Pool.State = 'Started'
+    $logRoot = Join-Path $sandbox 'log-evidence'
+    [void][IO.Directory]::CreateDirectory((Join-Path $logRoot 'logs/audit'))
+    $logFile = Join-Path $logRoot 'logs/audit/audit-fixture.log'
+    [IO.File]::WriteAllText($logFile, "old log`n", $utf8)
+    $oldLog = @(Get-LifecycleInventory $logRoot | Where-Object { -not $_.IsDirectory })[0]
+    $oldSession = [pscustomobject]@{ RelativePath = 'sessions/sess_old'; IsDirectory = $false; Length = 3; Sha256 = 'old-session' }
+    $updateBefore.Files.Data = @($oldLog, $oldSession)
+    $updateAfter = ($updateBefore | ConvertTo-Json -Depth 30) | ConvertFrom-Json
+    $updateAfter.Files.Data += [pscustomobject]@{ RelativePath = 'sessions/sess_new'; IsDirectory = $false; Length = 3; Sha256 = 'new-session' }
+    Assert-UpdateRow 'new session permitted without excluding old sessions' $updateBefore $updateAfter 'Data retained' 'PASS'
+    $updateAfter.Files.Data[1].Sha256 = 'tampered'
+    Assert-UpdateRow 'old session mutation rejected' $updateBefore $updateAfter 'Data retained' 'FAIL'
+    $updateAfter.Files.Data = @($oldLog)
+    Assert-UpdateRow 'old session removal rejected' $updateBefore $updateAfter 'Data retained' 'FAIL'
+    [IO.File]::AppendAllText($logFile, "new log`n", $utf8)
+    $updateAfter.Files.Data = @(Get-LifecycleInventory $logRoot | Where-Object { -not $_.IsDirectory })
+    $updateAfter.Files | Add-Member LogEvidence @(Get-LifecycleLogEvidence $logRoot @($oldLog))
+    Assert-UpdateRow 'log append preserves old byte prefix' $updateBefore $updateAfter 'prior logs preserved' 'PASS'
+    $updateAfter.Files.LogEvidence = @()
+    Assert-UpdateRow 'changed log without prefix evidence rejected' $updateBefore $updateAfter 'prior logs preserved' 'FAIL'
+    [IO.File]::WriteAllText($logFile, "bad log`nnew log`n", $utf8)
+    $updateAfter.Files.LogEvidence = @(Get-LifecycleLogEvidence $logRoot @($oldLog))
+    Assert-UpdateRow 'same-length old prefix tampering rejected' $updateBefore $updateAfter 'prior logs preserved' 'FAIL'
+    [IO.File]::WriteAllText($logFile, 'short', $utf8)
+    $updateAfter.Files.LogEvidence = @(Get-LifecycleLogEvidence $logRoot @($oldLog))
+    Assert-UpdateRow 'log truncation rejected' $updateBefore $updateAfter 'prior logs preserved' 'FAIL'
+    $updateAfter.Files.Data = @()
+    Assert-UpdateRow 'log disappearance rejected' $updateBefore $updateAfter 'prior logs preserved' 'FAIL'
+    $stateFile = Join-Path $logRoot 'logs/audit/.security-window'
+    $window = [long][math]::Floor(([DateTime]::UtcNow - [DateTime]'1970-01-01').TotalSeconds / 60) - 1
+    $security = [ordered]@{}
+    foreach ($key in @('authentication_required', 'password_change_required', 'insufficient_role', 'invalid_csrf', 'logout')) {
+        $security[$key] = @{ window = $window; count = 2 }
+    }
+    Save-Fixture $stateFile $security
+    $priorState = Get-Content $stateFile -Raw | ConvertFrom-Json
+    if (-not (Test-LifecycleSecurityState $stateFile $priorState)) { throw 'Valid unchanged security state rejected' }
+    $validJson = Get-Content $stateFile -Raw
+    foreach ($key in @('authentication_required', 'window', 'count')) {
+        [IO.File]::WriteAllText($stateFile, $validJson.Replace('"' + $key + '"', '"' + $key.ToUpperInvariant() + '"'), $utf8)
+        if (Test-LifecycleSecurityState $stateFile $priorState) { throw "Case-changed security key accepted: $key" }
+    }
+    $invalidState = $validJson | ConvertFrom-Json
+    $invalidState.authentication_required | Add-Member unexpected 0
+    Save-Fixture $stateFile $invalidState
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Unknown security state field accepted' }
+    $invalidState = $validJson | ConvertFrom-Json
+    $invalidState.authentication_required.count = '2'
+    Save-Fixture $stateFile $invalidState
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'String security counter accepted' }
+    $security.authentication_required.count = 1
+    Save-Fixture $stateFile $security
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Security counter regression accepted' }
+    $security.authentication_required.window = $window + 1
+    Save-Fixture $stateFile $security
+    if (-not (Test-LifecycleSecurityState $stateFile $priorState)) { throw 'Valid new-window counter reset rejected' }
+    $security.authentication_required.count = 0
+    Save-Fixture $stateFile $security
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'New-window counter erased without an event' }
+    $security.authentication_required.window = $window + 100
+    Save-Fixture $stateFile $security
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Future security window accepted' }
+    $security.authentication_required.window = $window
+    $security.authentication_required.count = 12
+    Save-Fixture $stateFile $security
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Out-of-range security count accepted' }
+    [IO.File]::WriteAllText($stateFile, '{}', $utf8)
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Invalid security state schema accepted' }
+    Write-Host 'PASS security state schema, time, counter preservation and valid window reset'
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force
 }

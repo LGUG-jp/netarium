@@ -46,3 +46,15 @@ test('複数配置はsort_order、同順ならID順で決定し、未配置は�
     assert.deepEqual(state, before, '解決は配置やデータを変更しない');
     assert.equal(findDirectLinkTarget({ device: 305 }, { ...state, views: [] }), null, '孤立した配置を新規配置扱いしない');
 });
+
+test('ラック機器の共有リンクはその搭載先だけを解決しXY配置と共存する', () => {
+    const rack = { id: 20, sort_order: 1, view_type: 'rack' };
+    const mount = { device_id: 305, view_id: 20, face: 'rear', start_u: 1, height_u: 2, width_slot: 'left' };
+    const data = { ...state, views: [...state.views, rack], rackMounts: [mount] };
+    assert.deepEqual(findDirectLinkTarget({ view: 20, device: 305 }, data), {
+        kind: 'rack', view: rack, device: state.devices[0], mount
+    });
+    assert.equal(findDirectLinkTarget({ device: 305 }, data).kind, 'rack');
+    assert.equal(findDirectLinkTarget({ view: 12, device: 305 }, data).kind, 'placement');
+    assert.equal(findDirectLinkTarget({ view: 20, device: 306 }, data), null);
+});

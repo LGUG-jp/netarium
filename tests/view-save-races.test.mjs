@@ -18,6 +18,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         constructor(id = '') {
             this.id = id; this.value = ''; this.hidden = true; this.disabled = false;
             this.children = []; this.dataset = {}; this.style = {}; this.attributes = new Map();
+            this.style.setProperty = (name, value) => { this.style[name] = String(value); };
             this.options = [];
             this.listeners = new Map(); this.classes = new Set(); this.captures = new Set();
             this.classList = {
@@ -41,6 +42,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         }
         appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
         append(...children) { children.forEach(child => this.appendChild(child)); }
+        prepend(child) { child.parentElement = this; this.children.unshift(child); }
         remove() {
             if (this.parentElement) {
                 this.parentElement.children = this.parentElement.children.filter(child => child !== this);
@@ -140,7 +142,9 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         return {
             ok: true, revision: appState.dataRevision + 1, saved_at: '2026-10-03T01:00:00Z',
             id_maps: maps,
-            devices: [],
+            devices: payload.devices.filter(row => row.operation !== 'delete').map(row => ({
+                ...row.device, id: map('devices', row.id), resource_revision: (row.expected_revision || 0) + 1
+            })),
             views: payload.views.filter(row => row.operation !== 'delete').map(row => ({
                 ...row.view, id: map('views', row.id), resource_revision: (row.expected_revision || 0) + 1
             })),
@@ -153,6 +157,12 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
             }))),
             canvas_notes: payload.views.flatMap(row => (row.canvas_notes || []).map(note => ({
                 ...note, id: map('canvas_notes', note.id), view_id: map('views', note.view_id)
+            }))),
+            rack_settings: payload.views.flatMap(row => row.rack_settings ? [{
+                ...row.rack_settings, view_id: map('views', row.id)
+            }] : []),
+            rack_mounts: payload.views.flatMap(row => (row.rack_mounts || []).map(mount => ({
+                ...mount, view_id: map('views', mount.view_id), device_id: map('devices', mount.device_id)
             }))),
             deleted_device_ids: [], deleted_view_ids: payload.views.filter(row => row.operation === 'delete').map(row => row.id),
             affected_view_ids: payload.views.map(row => map('views', row.id))
@@ -190,6 +200,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         appState.placements = [{ id: 100, device_id: 10, view_id: 1, x: 100, y: 100 }];
         appState.links = []; appState.floorPlans = []; appState.deviceImages = [];
         appState.canvasNotes = []; appState.selectedCanvasNoteId = null; appState.nextCanvasNoteId = 1; appState.noteMode = false;
+        appState.rackSettings = []; appState.rackMounts = [];
         appState.currentViewId = 1; appState.nextViewId = 3; appState.nextPlacementId = 101; appState.nextLinkId = 1;
         appState.viewStates = new Map(); appState.selectedPlacementIds = new Set();
         appState.resourceConflicts = { devices: new Map(), views: new Map() };
@@ -757,5 +768,211 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(appState.selectedCanvasNoteId, null);
         assert.equal(appState.devices[0].id, 10);
         assert.ok(confirmations.some(message => message.includes('メモ: 1件')));
+    });
+
+    const rackFixture = async ({ occupied = true } = {}) => {
+        await reset();
+        appState.views[0].view_type = 'rack';
+        appState.placements[0].view_id = 2;
+        appState.rackSettings = [{ view_id: 1, total_u: 42, location: '東側' }];
+        appState.rackMounts = occupied ? [{ device_id: 10, view_id: 1, face: 'both', start_u: 40, height_u: 3, width_slot: 'full' }] : [];
+        appState.currentViewId = 2;
+        resource.resetResourceBaseline(appState);
+        manager.openViewManager();
+        await select(1);
+    };
+    await t.test('登録種別からラックと設定を単一createへ保存し再採番後も編集できる', async () => {
+        await reset();
+        el('vm-new-type').value = 'rack';
+        viewIds = { 3: 30 };
+        await manager.addView();
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(calls[0].views[0].operation, 'create');
+        assert.equal(calls[0].views[0].view.view_type, 'rack');
+        assert.deepEqual(calls[0].views[0].rack_settings, { view_id: 3, total_u: 42, location: '' });
+        assert.deepEqual(calls[0].views[0].rack_mounts, []);
+        assert.equal(manager.getViewManagerSelectedView().id, 30);
+        assert.deepEqual(appState.rackSettings, [{ view_id: 30, total_u: 42, location: '' }]);
+        enter('vm-name', 'ラックA'); enter('vm-total-u', '60'); enter('vm-location', '  西側  ');
+        assert.equal(await manager.applyViewForm(), true);
+        assert.equal(calls[1].views[0].expected_revision, 1);
+        assert.deepEqual(calls[1].views[0].rack_settings, { view_id: 30, total_u: 60, location: '西側' });
+        assert.equal(appState.viewManagerFormDirty, false);
+    });
+    await t.test('直接登録した種別をプルダウン値より優先し同じ採番・保存経路を使う', async () => {
+        for (const type of ['topology', 'floor', 'rack']) {
+            await reset(); el('vm-new-type').value = 'rack';
+            await manager.addView(type);
+            await queue.flushSaveQueue({ silent: true });
+            assert.equal(calls[0].views[0].view.view_type, type);
+            assert.equal(appState.views.at(-1).view_type, type);
+        }
+    });
+    await t.test('ラックから新規機器と搭載を同じ保存へ送り採番後も一致する', async () => {
+        await rackFixture({ occupied: false });
+        await manager.closeViewManager();
+        appState.currentViewId = 1; appState.nextDeviceId = 11;
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        const mount = { view_id: 1, face: 'both', start_u: 40, height_u: 3, width_slot: 'full' };
+        const placements = structuredClone(appState.placements);
+        assert.ok(await addDevice('server', { rackMount: mount }));
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(calls.length, 1);
+        const request = calls[0];
+        assert.equal(request.devices[0].operation, 'create');
+        assert.equal(request.devices[0].device.type, 'server');
+        const device = appState.devices.find(row => row.type === 'server');
+        assert.equal(appState.rackMounts[0].device_id, device.id);
+        assert.deepEqual(appState.placements, placements);
+    });
+    await t.test('新規登録はフォームで選んだ別ラックへ搭載し表示中ラックを変更しない', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager();
+        appState.currentViewId = 1;
+        appState.views.push({ ...appState.views[0], id: 3, name: '別の搭載先' });
+        appState.rackSettings.push({ view_id: 3, total_u: 8, location: '別室' });
+        resource.resetResourceBaseline(appState);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        const mount = { view_id: 3, face: 'rear', start_u: 2, height_u: 2, width_slot: 'right' };
+        assert.ok(await addDevice('router', { rackMount: mount }));
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.currentViewId, 1);
+        assert.equal(calls[0].views[0].id, 3);
+        assert.equal(appState.rackMounts[0].view_id, 3);
+        assert.equal(appState.rackMounts[0].start_u, 2);
+        assert.equal(appState.rackMounts[0].height_u, 2);
+    });
+    await t.test('新規搭載はキャンセル・衝突を追加前に拒否し競合時も機器と搭載を残して二重登録しない', async () => {
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        const mount = { view_id: 1, face: 'front', start_u: 40, height_u: 1, width_slot: 'left' };
+        await rackFixture(); await manager.closeViewManager(); appState.currentViewId = 1;
+        assert.equal(await addDevice('server', { rackMount: mount }), false);
+        assert.equal(appState.devices.length, 1); assert.equal(calls.length, 0);
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        assert.equal(await addDevice('server', { rackMount: mount, isCurrent: () => false }), false);
+        assert.equal(appState.devices.length, 1);
+        let checks = 0;
+        assert.equal(await addDevice('server', { rackMount: mount, isCurrent: () => ++checks === 1 }), false);
+        assert.equal(appState.devices.length, 1); assert.equal(calls.length, 0);
+        failStatus = 409;
+        assert.ok(await addDevice('server', { rackMount: mount }));
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(queue.hasResourceConflict('views', 1), true);
+        const failedDeviceId = calls[0].devices[0].id;
+        assert.equal(appState.rackMounts[0].device_id, failedDeviceId);
+        assert.equal(await addDevice('server', { rackMount: mount }), false);
+        assert.equal(appState.devices.length, 2); assert.equal(calls.length, 1);
+    });
+    await t.test('ラック編集のU境界・文字数・搭載範囲を保存前に検証する', async () => {
+        await rackFixture();
+        for (const value of ['0', '61', '1.5', '', '41']) {
+            enter('vm-total-u', value);
+            assert.equal(await manager.applyViewForm(), false);
+            assert.equal(calls.length, 0);
+            assert.equal(appState.rackSettings[0].total_u, 42);
+        }
+        enter('vm-total-u', '60'); enter('vm-location', 'あ'.repeat(151));
+        assert.equal(await manager.applyViewForm(), false);
+        enter('vm-location', 'あ'.repeat(150));
+        assert.equal(await manager.applyViewForm(), true);
+        assert.equal(appState.views[0].resource_revision, 2);
+        await rackFixture({ occupied: false });
+        enter('vm-total-u', '1');
+        assert.equal(await manager.applyViewForm(), true);
+        assert.equal(appState.rackSettings[0].total_u, 1);
+    });
+    await t.test('既存通常とラックの相互変換は拒否し論理とフロアの変換を維持する', async () => {
+        await reset(); enter('vm-type', 'rack');
+        assert.equal(await manager.applyViewForm(), false);
+        assert.equal(appState.views[0].view_type, 'topology');
+        enter('vm-type', 'floor');
+        assert.equal(await manager.applyViewForm(), true);
+        enter('vm-type', 'topology');
+        assert.equal(await manager.applyViewForm(), true);
+        await rackFixture();
+        for (const type of ['floor', 'topology']) {
+            enter('vm-type', type);
+            assert.equal(await manager.applyViewForm(), false);
+            assert.equal(calls.length, 0);
+            assert.equal(appState.views[0].view_type, 'rack');
+            assert.equal(appState.rackMounts.length, 1);
+        }
+    });
+    await t.test('ラック複製は空の設定だけを保存し元ラックの搭載とrevisionを変更しない', async () => {
+        await rackFixture();
+        const mounts = structuredClone(appState.rackMounts);
+        const source = structuredClone(appState.views[0]);
+        appState.canvasNotes = [normalizeCanvasNote({ id: 70, view_id: 1, text: 'ラック固有の注釈', x: 20, y: 30 })];
+        resource.resetResourceBaseline(appState);
+        await manager.duplicateSelectedView();
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].views.length, 1);
+        const created = calls[0].views[0];
+        assert.equal(created.operation, 'create');
+        assert.equal(created.view.view_type, 'rack');
+        assert.equal(created.view.facility, source.facility);
+        assert.equal(created.view.floor, source.floor);
+        assert.deepEqual(created.rack_settings, { view_id: created.id, total_u: 42, location: '東側' });
+        assert.deepEqual(created.rack_mounts, []);
+        assert.equal(created.canvas_notes.length, 1);
+        assert.equal(created.canvas_notes[0].text, 'ラック固有の注釈');
+        assert.notEqual(created.canvas_notes[0].id, 70);
+        assert.equal(created.canvas_notes[0].view_id, created.id);
+        assert.equal(appState.canvasNotes.find(note => note.id === 70).view_id, 1);
+        assert.deepEqual(appState.rackMounts, mounts);
+        assert.deepEqual(appState.views.find(view => view.id === 1), source);
+        assert.equal(appState.placements[0].view_id, 2);
+    });
+    await t.test('搭載ラックは確認前に削除拒否し空ラック削除は設定だけを除去する', async () => {
+        await rackFixture();
+        enter('vm-memo', '削除前の未適用入力');
+        await manager.deleteSelectedView();
+        assert.equal(confirmations.length, 0);
+        assert.equal(calls.length, 0);
+        assert.equal(appState.views.length, 2);
+        await rackFixture({ occupied: false });
+        const devices = structuredClone(appState.devices);
+        const placements = structuredClone(appState.placements);
+        await manager.deleteSelectedView();
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(confirmations.length, 1);
+        assert.equal(calls[0].views[0].operation, 'delete');
+        assert.deepEqual(appState.rackSettings, []);
+        assert.deepEqual(appState.devices, devices);
+        assert.deepEqual(appState.placements, placements);
+    });
+    await t.test('ラックへの切替は搭載と設定とrevisionを変更せず通常ビューへ戻れる', async () => {
+        await rackFixture();
+        const settings = structuredClone(appState.rackSettings);
+        const mounts = structuredClone(appState.rackMounts);
+        assert.equal(await manager.switchView(1), true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.currentViewId, 1);
+        assert.equal(await manager.switchView(2), true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.currentViewId, 2);
+        assert.deepEqual(appState.rackSettings, settings);
+        assert.deepEqual(appState.rackMounts, mounts);
+        assert.equal(appState.views[0].resource_revision, 1);
+        assert.equal(calls.length, 0);
+    });
+    await t.test('ラック設定のみの確定と通信中の次入力を分離しsnapshotへ追跡する', async () => {
+        await rackFixture();
+        enter('vm-location', '確定する場所'); holdNext = true;
+        const saving = manager.applyViewForm();
+        await setImmediate();
+        try {
+            assert.equal(manager.hasViewManagerChanges(), true);
+            enter('vm-total-u', '55');
+            assert.equal(appState.viewManagerFormDirty, true);
+        } finally { await release(); }
+        assert.equal(await saving, true);
+        assert.equal(appState.rackSettings[0].location, '確定する場所');
+        assert.equal(appState.rackSettings[0].total_u, 42);
+        assert.equal(el('vm-total-u').value, '55');
+        assert.equal(appState.viewManagerFormDirty, true);
+        assert.equal(manager.hasViewManagerChanges(), false);
+        assert.deepEqual(calls[0].views[0].rack_mounts, appState.rackMounts);
+        await choose(manager.closeViewManager(), 'discard');
     });
 });

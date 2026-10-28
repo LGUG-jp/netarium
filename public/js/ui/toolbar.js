@@ -29,6 +29,7 @@ import { eventBus } from '../core/event-bus.js';
 import { hasAnyDeviceDraftChanges } from '../core/device-drafts.js';
 import {
     getCurrentPlacements,
+    getCurrentView,
     getDeviceForPlacement,
     isValidLinkObject,
     normalizeDevice,
@@ -46,6 +47,9 @@ import {
     toSaveView
 } from '../core/state.js';
 import { normalizeCanvasNote, toSaveCanvasNote } from '../core/canvas-note-data.js';
+import { getRackDeviceMounts } from '../core/device-placement.js';
+import { toSaveRackSettings, toSaveRackMount, toSaveRackShelf, toSaveRackShelfDevice, validateRackLayout } from '../core/rack-layout.js';
+import { toSaveFloorRackPlacement } from '../core/floor-rack-data.js';
 import {
     restoreCurrentViewState,
     screenToWorld
@@ -78,7 +82,8 @@ import {
 } from './status-bar.js';
 import {
     closeToolbarMenu,
-    syncLinkModeButton
+    syncLinkModeButton,
+    syncViewCapabilities
 } from './toolbar-controls.js';
 import { endLinkMode, resetLinkCreationState } from '../core/link-mode.js';
 import { closeWorkspaceNavigation } from './workspace-navigation.js';
@@ -102,6 +107,7 @@ export function applyRoleBasedUi() {
         });
 
     updateSaveButtonState();
+    syncViewCapabilities();
     eventBus.emit('ledger:selection-changed');
 
     eventBus.emit(
@@ -173,6 +179,11 @@ export async function loadData() {
         appState.canvasNotes = Array.isArray(data.canvas_notes)
             ? data.canvas_notes.map(normalizeCanvasNote)
             : [];
+        appState.rackSettings = (data.rack_settings || []).map(toSaveRackSettings);
+        appState.rackMounts = (data.rack_mounts || []).map(toSaveRackMount);
+        appState.rackShelves = (data.rack_shelves || []).map(toSaveRackShelf);
+        appState.rackShelfDevices = (data.rack_shelf_devices || []).map(toSaveRackShelfDevice);
+        appState.floorRackPlacements = (data.floor_rack_placements || []).map(toSaveFloorRackPlacement);
 
         appState.floorPlans =
             Array.isArray(data.floor_plans)
@@ -520,20 +531,15 @@ export async function pingSelected() {
         return;
     }
 
-    const selectedDeviceIdsForPing =
-        new Set(
-            getCurrentPlacements()
-                .filter(placement =>
-                    appState.selectedPlacementIds.has(
-                        Number(placement.id)
-                    )
-                )
-                .map(placement =>
-                    Number(
-                        placement.device_id
-                    )
-                )
-        );
+    const selectedDeviceIdsForPing = getCurrentView()?.view_type === 'rack'
+        ? new Set(getRackDeviceMounts(appState)
+            .filter(mount => Number(mount.view_id) === Number(appState.currentViewId) &&
+                appState.editingDeviceId != null &&
+                Number(mount.device_id) === Number(appState.editingDeviceId))
+            .map(mount => Number(mount.device_id)))
+        : new Set(getCurrentPlacements()
+            .filter(placement => appState.selectedPlacementIds.has(Number(placement.id)))
+            .map(placement => Number(placement.device_id)));
 
     const targets = appState.devices
         .filter(device =>
@@ -825,8 +831,23 @@ export function getDefaultDeviceName(type) {
 /**
  * 機器追加
  */
-export async function addDevice(type = 'switch') {
+export async function addDevice(type = 'switch', { rackMount = null, rackShelfId = null, isCurrent = () => true, openDevicePanel = true, shelfDeviceValues = null } = {}) {
     if (!requireAdminUiAction()) {
+        return;
+    }
+    const rackViewId = Number(appState.currentViewId);
+    const shelf = () => (appState.rackShelves || []).find(row => Number(row.id) === Number(rackShelfId));
+    const destinationId = () => rackMount?.view_id ?? shelf()?.view_id;
+    const inRack = rackMount != null || rackShelfId != null;
+    const canRegisterInRack = () => isCurrent() && isCurrentUserAdmin() && !appState.authExpired &&
+        !appState.isPinging && !isSaveInFlight() && appState.appStatus.state !== 'unconfirmed' &&
+        getCurrentView()?.view_type === 'rack' && Number(appState.currentViewId) === rackViewId &&
+        appState.views.some(view => Number(view.id) === Number(destinationId()) && view.view_type === 'rack') &&
+        !hasResourceConflict('views', rackViewId) && !hasResourceConflict('views', Number(destinationId())) &&
+        (rackShelfId == null || !!shelf());
+    if (inRack && !canRegisterInRack()) return false;
+    if (getCurrentView()?.view_type === 'rack' && !inRack) {
+        showToast('ラックの空きUを選択して、新しい機器を登録・搭載してください', 'warning');
         return;
     }
     if (appState.currentViewId === null) {
@@ -844,41 +865,43 @@ export async function addDevice(type = 'switch') {
     if (!await closePanel() || !await closeLinkPanel()) {
         return;
     }
+    if (inRack && !canRegisterInRack()) return false;
 
-    const rect =
-        appState.canvas.getBoundingClientRect();
+    let position;
+    if (!inRack) {
+        const rect =
+            appState.canvas.getBoundingClientRect();
 
-    const center = screenToWorld(
-        rect.left + rect.width / 2,
-        rect.top + rect.height / 2
-    );
+        const center = screenToWorld(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2
+        );
 
-    const currentTypeCount =
-        getCurrentPlacements().filter(
-            placement => {
-                const device =
-                    getDeviceForPlacement(
-                        placement
-                    );
+        const currentTypeCount =
+            getCurrentPlacements().filter(
+                placement => {
+                    const device =
+                        getDeviceForPlacement(
+                            placement
+                        );
 
-                return device?.type === type;
-            }
-        ).length;
+                    return device?.type === type;
+                }
+            ).length;
 
-    const offset =
-        currentTypeCount * 12;
+        const offset =
+            currentTypeCount * 12;
 
-    const position = clampPosition(
-        center.x -
-            DEFAULT_DEVICE_WIDTH / 2 +
-            offset,
-        center.y -
-            DEFAULT_DEVICE_HEIGHT / 2 +
-            offset
-    );
-
+        position = clampPosition(
+            center.x -
+                DEFAULT_DEVICE_WIDTH / 2 +
+                offset,
+            center.y -
+                DEFAULT_DEVICE_HEIGHT / 2 +
+                offset
+        );
+    }
     const deviceId = allocateLocalId('devices');
-    const placementId = allocateLocalId('placements');
 
     const device = {
         id: deviceId,
@@ -913,6 +936,45 @@ export async function addDevice(type = 'switch') {
         maintenance_expiry: ''
     };
 
+    if (rackShelfId != null) {
+        if (!canRegisterInRack()) return false;
+        if (shelfDeviceValues) {
+            device.name = shelfDeviceValues.name || device.name;
+            device.ip = shelfDeviceValues.ip || '';
+        }
+        const assignment = { device_id: deviceId, shelf_id: Number(rackShelfId),
+            sort_order: Math.max(-1, ...(appState.rackShelfDevices || []).filter(row => Number(row.shelf_id) === Number(rackShelfId)).map(row => row.sort_order)) + 1 };
+        try {
+            validateRackLayout({ ...appState, devices: [...appState.devices, device],
+                rackShelfDevices: [...(appState.rackShelfDevices || []), assignment] });
+        } catch (error) { showToast(error.message, 'warning'); return false; }
+        if (!canRegisterInRack()) return false;
+        appState.devices.push(device); appState.rackShelfDevices.push(assignment);
+        appState.selectedPlacementIds.clear(); markDirty(); scheduleSave({ immediate: true, silent: true });
+        render();
+        if (openDevicePanel) await openPanel(device);
+        return device;
+    }
+    if (rackMount) {
+        const mount = { ...rackMount, device_id: deviceId };
+        try {
+            validateRackLayout({ ...appState, devices: [...appState.devices, device],
+                rackMounts: [...appState.rackMounts, mount] });
+        } catch (error) { showToast(error.message, 'warning'); return false; }
+        if (!canRegisterInRack()) return false;
+        // Register both resources before starting the queue: no device-only intermediate save.
+        appState.devices.push(device);
+        appState.rackMounts.push(mount);
+        appState.selectedPlacementIds.clear();
+        markDirty();
+        scheduleSave({ immediate: true, silent: true });
+        render();
+        await openPanel(device);
+        return device;
+    }
+
+    const placementId = allocateLocalId('placements');
+
     const placement = {
         id: placementId,
         device_id: deviceId,
@@ -934,6 +996,7 @@ export async function addDevice(type = 'switch') {
 
     render();
     await openPanel(device);
+    return device;
 }
 
 /**
@@ -960,6 +1023,10 @@ export function addSelectedDeviceType() {
  * リンク作成モード切替
  */
 export function toggleLinkMode() {
+    if (!appState.linkMode && getCurrentView()?.view_type === 'rack') {
+        showToast('ラック内の接続線編集は対象外です。構成図で編集してください', 'warning');
+        return;
+    }
     if (!appState.linkMode && (!requireAdminUiAction() || appState.authExpired ||
         hasResourceConflict('views', appState.currentViewId))) {
         return;
@@ -1042,6 +1109,9 @@ export function setBusy(
         'btn-load',
         'loadBtn',
         'view-add-btn',
+        'view-add-topology-btn',
+        'view-add-floor-btn',
+        'view-add-rack-btn',
         'view-duplicate-btn',
         'view-delete-btn',
         'view-apply-btn',
@@ -1175,7 +1245,12 @@ export function getCurrentData() {
         placements:
             appState.placements.map(toSavePlacement),
         links: appState.links.map(toSaveLink),
-        canvas_notes: appState.canvasNotes.map(toSaveCanvasNote)
+        canvas_notes: appState.canvasNotes.map(toSaveCanvasNote),
+        rack_settings: appState.rackSettings.map(toSaveRackSettings),
+        rack_mounts: appState.rackMounts.map(toSaveRackMount),
+        rack_shelves: appState.rackShelves.map(toSaveRackShelf),
+        rack_shelf_devices: appState.rackShelfDevices.map(toSaveRackShelfDevice),
+        floor_rack_placements: appState.floorRackPlacements.map(toSaveFloorRackPlacement)
     };
 }
 
@@ -1199,5 +1274,6 @@ export async function reloadDataWithConfirmation() {
 if (typeof eventBus !== 'undefined' && eventBus.on) {
     eventBus.on('save-state:changed', () => {
         updateSaveButtonState();
+        syncViewCapabilities();
     });
 }

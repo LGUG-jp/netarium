@@ -342,7 +342,7 @@
                     </div>
 
                     <div id="dashboard-panel-assets" class="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab-assets" hidden>
-                    <section class="dashboard-section dashboard-breakdown-section dashboard-maintenance-section" aria-labelledby="dashboard-maintenance-title">
+                    <section class="dashboard-section dashboard-asset-card dashboard-maintenance-section" aria-labelledby="dashboard-maintenance-title">
                         <div class="dashboard-section-header">
                             <div>
                                 <h3 id="dashboard-maintenance-title">保守期限の見通し</h3>
@@ -369,7 +369,7 @@
                         </p>
                     </section>
                     <section
-                        class="dashboard-section dashboard-breakdown-section"
+                        class="dashboard-section dashboard-asset-card dashboard-assets-breakdown"
                         aria-labelledby="dashboard-breakdown-title"
                     >
                         <div class="dashboard-section-header">
@@ -379,9 +379,20 @@
                                 </h3>
 
                             </div>
+                            <button id="dashboard-breakdown-toggle" class="dashboard-details-toggle" type="button" data-expand-label="内訳を見る" aria-expanded="false" aria-controls="dashboard-breakdown-details">内訳を見る ▼</button>
                         </div>
 
-                        <div class="dashboard-breakdown-grid">
+                        <div class="dashboard-asset-summary">
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">登録機器</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-assets-devices-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
+                            </div>
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">機器種別</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-assets-types-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">分類</small></span>
+                            </div>
+                        </div>
+                        <div id="dashboard-breakdown-details" class="dashboard-breakdown-grid dashboard-asset-details" hidden>
                             <section
                                 class="dashboard-breakdown-panel"
                                 aria-labelledby="dashboard-facility-title"
@@ -469,6 +480,23 @@
                                 ></div>
                             </section>
                         </div>
+                    </section>
+                    <section class="dashboard-section dashboard-asset-card dashboard-assets-racks" aria-labelledby="dashboard-racks-title">
+                        <div class="dashboard-section-header">
+                            <h3 id="dashboard-racks-title">ラック管理</h3>
+                            <button id="dashboard-racks-toggle" class="dashboard-details-toggle" type="button" data-expand-label="ラック一覧を見る" aria-expanded="false" aria-controls="dashboard-rack-list">ラック一覧を見る ▼</button>
+                        </div>
+                        <div class="dashboard-asset-summary">
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">登録ラック</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-racks-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">ラック</small></span>
+                            </div>
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">搭載機器</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-rack-devices-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
+                            </div>
+                        </div>
+                        <div id="dashboard-rack-list" class="dashboard-rack-list dashboard-asset-details" hidden></div>
                     </section>
                     </div>
                 </div>

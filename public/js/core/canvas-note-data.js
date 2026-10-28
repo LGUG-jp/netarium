@@ -24,6 +24,21 @@ export const CANVAS_NOTE_LIMITS = Object.freeze({
     maxTextLength: 1000
 });
 
+// ラックはXY座標を編集しないため、UIから到達しない予約座標の完全一致だけで
+// 新しい中・下段を識別する。旧メモの自由座標やU数から所属を推測・移行しない。
+// 13桁の整数を使い、PDOの浮動小数点→文字列変換でも丸められないようにする。
+export const RACK_NOTE_REGION_X = 2 ** 40;
+export const RACK_NOTE_REGIONS = Object.freeze([
+    Object.freeze({ key: 'upper', label: '上段', y: 0 }),
+    Object.freeze({ key: 'middle', label: '中段', y: 1 }),
+    Object.freeze({ key: 'lower', label: '下段', y: 2 })
+]);
+export function getRackNoteRegion(note) {
+    return (Number(note.x) === RACK_NOTE_REGION_X
+        ? RACK_NOTE_REGIONS.find(region => region.y !== 0 && Number(note.y) === region.y)
+        : null) || RACK_NOTE_REGIONS[0];
+}
+
 const colorPattern = /^#[0-9A-F]{6}$/i;
 const boundedNumber = (value, fallback, min, max = Infinity) => {
     const number = value == null ? fallback : Number(value);

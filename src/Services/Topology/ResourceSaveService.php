@@ -28,13 +28,12 @@ final class ResourceSaveService
     {
         $deviceOperations = $this->operations($input['devices'] ?? null, '機器');
         $viewOperations = $this->operations($input['views'] ?? null, 'ビュー');
-        $maps = ['devices' => [], 'views' => [], 'placements' => [], 'links' => [], 'canvas_notes' => []];
+        $maps = ['devices' => [], 'views' => [], 'placements' => [], 'links' => [], 'canvas_notes' => [], 'rack_shelves' => []];
         $deletedDevices = [];
         $deletedViews = [];
         $affectedViews = [];
         $floorPlanFiles = [];
         $meta = new AppMetaRepository($this->db);
-        $deviceIds = array_fill_keys(array_keys($deviceOperations), true);
         $placementIds = [];
         $linkIds = [];
         $noteIds = [];
@@ -45,13 +44,10 @@ final class ResourceSaveService
             foreach ($operation['placements'] as $row) {
                 $row = $this->topologyRow($row, $viewId, '配置');
                 $placementIds[(int)$row['id']] = true;
-                $deviceIds[(int)($row['device_id'] ?? 0)] = true;
             }
             foreach ($operation['links'] as $row) {
                 $row = $this->topologyRow($row, $viewId, '接続');
                 $linkIds[(int)$row['id']] = true;
-                $deviceIds[(int)($row['from_id'] ?? $row['fromId'] ?? 0)] = true;
-                $deviceIds[(int)($row['to_id'] ?? $row['toId'] ?? 0)] = true;
             }
             foreach ($operation['canvas_notes'] as $row) {
                 $row = $this->topologyRow($row, $viewId, 'メモ');
@@ -65,8 +61,14 @@ final class ResourceSaveService
             $this->db->beginTransaction();
             // Acquire the writer lock before reading resource revisions. busy_timeout remains in effect.
             $this->db->exec("UPDATE resource_sequences SET value = value WHERE name = 'revision'");
-            $devices = $this->indexed($this->selectRows('devices', 'id', array_keys($deviceIds)));
+            $devices = $this->indexed($this->db->query('SELECT * FROM devices')->fetchAll(PDO::FETCH_ASSOC));
             $views = $this->indexed($this->db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC));
+            $existingViews = $views;
+            $existingSettings = $this->db->query('SELECT * FROM rack_settings ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC);
+            $existingMounts = $this->db->query('SELECT * FROM rack_mounts ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC);
+            $existingShelves = $this->db->query('SELECT * FROM rack_shelves ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+            $existingShelfDevices = $this->db->query('SELECT * FROM rack_shelf_devices ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC);
+            $existingFloorRacks = $this->db->query('SELECT * FROM floor_rack_placements ORDER BY rack_view_id')->fetchAll(PDO::FETCH_ASSOC);
             // SQLiteのNOCASEに合わせ、退避中も残る既存名（削除予定を含む）を予約する。
             $reservedViewNames = array_fill_keys(array_map('strtolower', array_column($views, 'name')), true);
             $placements = $this->selectRows('device_placements', 'id', array_keys($placementIds));
@@ -105,6 +107,182 @@ final class ResourceSaveService
                     $views[$id] = array_replace($operation['view'], ['id' => $id]);
                 }
             }
+            $replacedViews = [];
+            foreach ($viewOperations as $localId => $operation) {
+                $replacedViews[$maps['views'][$localId] ?? $localId] = true;
+            }
+            RackLayout::assertViewChanges(array_values($existingViews), array_values($views), array_merge($existingMounts, $existingShelves));
+            $floorRacks = [];
+            foreach ($existingFloorRacks as $row) {
+                if (isset($deletedViews[$row['rack_view_id']])) {
+                    $affectedViews[(int)$row['floor_view_id']] = true;
+                } elseif (!isset($replacedViews[$row['floor_view_id']])) {
+                    $floorRacks[] = $row;
+                }
+            }
+            foreach ($viewOperations as $localId => $operation) {
+                if ($operation['operation'] === 'delete') { continue; }
+                $viewId = $maps['views'][$localId] ?? $localId;
+                $rows = $operation['floor_rack_placements'] ?? null;
+                if ($rows === null && !array_key_exists('floor_rack_placements', $operation)
+                    && !in_array($viewId, array_column($existingFloorRacks, 'floor_view_id'), true)) {
+                    $rows = [];
+                }
+                if (!is_array($rows) || !array_is_list($rows)) {
+                    throw new ApiException('ラック配置の全構成を配列で指定してください', 400);
+                }
+                foreach ($rows as $row) {
+                    if (!is_array($row) || ($row['floor_view_id'] ?? $localId) !== $localId
+                        || !is_int($row['rack_view_id'] ?? null)) {
+                        throw new ApiException('ラック配置のビュー参照が不正です', 400);
+                    }
+                    $row['floor_view_id'] = $viewId;
+                    $row['rack_view_id'] = $maps['views'][$row['rack_view_id']] ?? $row['rack_view_id'];
+                    $floorRacks[] = $row;
+                }
+            }
+            $floorRacks = FloorRackPlacement::normalizeRows($floorRacks, array_values($views));
+            $settings = [];
+            $mounts = [];
+            foreach ($existingSettings as $row) {
+                if (!isset($replacedViews[(int)$row['view_id']])) {
+                    $settings[] = $row;
+                }
+            }
+            $previousMounts = array_column($existingMounts, null, 'device_id');
+            foreach ($existingMounts as $row) {
+                if (isset($deletedDevices[(int)$row['device_id']])) {
+                    $affectedViews[(int)$row['view_id']] = true;
+                } elseif (!isset($replacedViews[(int)$row['view_id']])) {
+                    $mounts[] = $row;
+                }
+            }
+            foreach ($viewOperations as $localId => $operation) {
+                if ($operation['operation'] === 'delete') {
+                    continue;
+                }
+                $viewId = $maps['views'][$localId] ?? $localId;
+                $isRack = ($views[$viewId]['view_type'] ?? 'topology') === 'rack';
+                if ($isRack && (!is_array($operation['rack_settings'] ?? null)
+                    || !is_array($operation['rack_mounts'] ?? null) || !array_is_list($operation['rack_mounts']))) {
+                    throw new ApiException('ラック属性と搭載情報の全構成を指定してください', 400);
+                }
+                if (!$isRack && (($operation['rack_settings'] ?? null) !== null || ($operation['rack_mounts'] ?? []) !== [])) {
+                    throw new ApiException('通常ビューにラック情報は保存できません', 400);
+                }
+                if (!$isRack) {
+                    continue;
+                }
+                $setting = $operation['rack_settings'];
+                if (isset($setting['view_id']) && $setting['view_id'] !== $localId) {
+                    throw new ApiException('ラック属性のビュー参照が不正です', 400);
+                }
+                $setting['view_id'] = $viewId;
+                $settings[] = $setting;
+                foreach ($operation['rack_mounts'] as $row) {
+                    if (!is_array($row) || (isset($row['view_id']) && $row['view_id'] !== $localId)) {
+                        throw new ApiException('ラック搭載のビュー参照が不正です', 400);
+                    }
+                    $deviceId = $row['device_id'] ?? null;
+                    if (!is_int($deviceId)) {
+                        throw new ApiException('device_idは正の整数で指定してください', 400);
+                    }
+                    $row['device_id'] = $maps['devices'][$deviceId] ?? $deviceId;
+                    $row['view_id'] = $viewId;
+                    $previous = $previousMounts[$row['device_id']] ?? null;
+                    if ($previous !== null && (int)$previous['view_id'] !== $viewId
+                        && !isset($replacedViews[(int)$previous['view_id']])) {
+                        throw new ApiException('移設には元・先ラック双方のリビジョン付き更新が必要です', 400);
+                    }
+                    $mounts[] = $row;
+                }
+            }
+            $shelves = [];
+            $shelfDevices = [];
+            $previousShelves = array_column($existingShelves, null, 'id');
+            $previousLocations = array_column($existingMounts, 'view_id', 'device_id');
+            foreach ($existingShelfDevices as $row) {
+                $previousLocations[$row['device_id']] = $previousShelves[$row['shelf_id']]['view_id'];
+            }
+            foreach ($existingShelves as $row) {
+                if (!isset($replacedViews[$row['view_id']])) { $shelves[] = $row; }
+            }
+            foreach ($existingShelfDevices as $row) {
+                $owner = $previousShelves[$row['shelf_id']]['view_id'];
+                if (isset($deletedDevices[$row['device_id']])) {
+                    $affectedViews[$owner] = true;
+                } elseif (!isset($replacedViews[$owner])) {
+                    $shelfDevices[] = $row;
+                }
+            }
+            foreach ($viewOperations as $localId => $operation) {
+                if ($operation['operation'] === 'delete') { continue; }
+                $viewId = $maps['views'][$localId] ?? $localId;
+                $rows = $operation['rack_shelves'] ?? null;
+                $members = $operation['rack_shelf_devices'] ?? null;
+                $hasExisting = false;
+                foreach ($existingShelves as $row) {
+                    if ((int)$row['view_id'] === $viewId) { $hasExisting = true; break; }
+                }
+                // Legacy clients can save an empty rack, never erase shelves they did not load.
+                if (!array_key_exists('rack_shelves', $operation) && !array_key_exists('rack_shelf_devices', $operation) && !$hasExisting) {
+                    $rows = []; $members = [];
+                }
+                if (!is_array($rows) || !array_is_list($rows) || !is_array($members) || !array_is_list($members)) {
+                    throw new ApiException('棚板と棚板機器の全構成を指定してください', 400);
+                }
+                if (($views[$viewId]['view_type'] ?? '') !== 'rack' && ($rows !== [] || $members !== [])) {
+                    throw new ApiException('通常ビューに棚板は保存できません', 400);
+                }
+                $localShelfIds = [];
+                foreach ($rows as $row) {
+                    if (!is_array($row) || !is_int($row['id'] ?? null) || $row['id'] === 0
+                        || abs($row['id']) > ResourceId::MAX || isset($localShelfIds[$row['id']])
+                        || (isset($row['view_id']) && $row['view_id'] !== $localId)) {
+                        throw new ApiException('棚板ID・ビュー参照が不正です', 400);
+                    }
+                    $localShelfId = $row['id'];
+                    if (isset($maps['rack_shelves'][$localShelfId])) {
+                        throw new ApiException('棚板IDが重複しています', 400);
+                    }
+                    $previous = $previousShelves[$localShelfId] ?? null;
+                    if ($localShelfId > 0 && ($previous === null
+                        || ((int)$previous['view_id'] !== $viewId && !isset($replacedViews[$previous['view_id']])))) {
+                        throw new ApiException('棚板移設には元・先ラック双方のリビジョン付き更新が必要です', 400);
+                    }
+                    $id = $localShelfId < 0 ? $this->allocate('rack_shelves') : $localShelfId;
+                    $maps['rack_shelves'][$localShelfId] = $id;
+                    $localShelfIds[$localShelfId] = $id;
+                    $row['id'] = $id;
+                    $row['view_id'] = $viewId;
+                    $shelves[] = $row;
+                }
+                foreach ($members as $row) {
+                    if (!is_array($row) || !is_int($row['device_id'] ?? null) || !is_int($row['shelf_id'] ?? null)
+                        || !isset($localShelfIds[$row['shelf_id'] ?? 0])) {
+                        throw new ApiException('棚板機器の参照が不正です', 400);
+                    }
+                    $row['device_id'] = $maps['devices'][$row['device_id']] ?? $row['device_id'];
+                    $row['shelf_id'] = $localShelfIds[$row['shelf_id']];
+                    $previousView = $previousLocations[$row['device_id']] ?? null;
+                    if ($previousView !== null && (int)$previousView !== $viewId && !isset($replacedViews[$previousView])) {
+                        throw new ApiException('移設には元・先ラック双方のリビジョン付き更新が必要です', 400);
+                    }
+                    $shelfDevices[] = $row;
+                }
+            }
+            $nextShelves = array_fill_keys(array_column($shelves, 'id'), true);
+            foreach ($existingShelfDevices as $row) {
+                if (!isset($nextShelves[$row['shelf_id']])) {
+                    throw new ApiException('機器が残る棚板は削除できません。先に機器を取り外してください', 400);
+                }
+            }
+            foreach ($mounts as $row) {
+                $previousView = $previousLocations[$row['device_id']] ?? null;
+                if ($previousView !== null && (int)$previousView !== (int)$row['view_id'] && !isset($replacedViews[$previousView])) {
+                    throw new ApiException('移設には元・先ラック双方のリビジョン付き更新が必要です', 400);
+                }
+            }
 
             $placements = array_merge($placements, $this->selectRows('device_placements', 'device_id', array_keys($deletedDevices)));
             $links = array_merge($links,
@@ -119,10 +297,6 @@ final class ResourceSaveService
             }
             $existingPlacements = $this->indexed($placements);
             $existingLinks = $this->indexed($links);
-            $replacedViews = [];
-            foreach ($viewOperations as $localId => $operation) {
-                $replacedViews[$maps['views'][$localId] ?? $localId] = true;
-            }
             $placements = [];
             $links = [];
             $notes = [];
@@ -194,10 +368,18 @@ final class ResourceSaveService
                 $validationDeviceIds[(int)$row['from_id']] = true;
                 $validationDeviceIds[(int)$row['to_id']] = true;
             }
-            [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, , , $normalizedNotes] =
+            foreach ($mounts as $row) {
+                $validationDeviceIds[(int)$row['device_id']] = true;
+            }
+            foreach ($shelfDevices as $row) {
+                $validationDeviceIds[(int)$row['device_id']] = true;
+            }
+            [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, , , $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices] =
                 (new TopologyService($this->db))->normalizeTopology([
                     'views' => array_values($views), 'devices' => array_values(array_intersect_key($devices, $validationDeviceIds)),
                     'placements' => $placements, 'links' => $links, 'canvas_notes' => $notes,
+                    'rack_settings' => $settings, 'rack_mounts' => $mounts,
+                    'rack_shelves' => $shelves, 'rack_shelf_devices' => $shelfDevices,
                 ], $config);
             $normalizedViews = $this->indexed($normalizedViews);
             $normalizedDevices = $this->indexed($normalizedDevices);
@@ -239,6 +421,10 @@ final class ResourceSaveService
                     $renameView->execute([':name' => $pendingName, ':id' => $id]);
                 }
             }
+            // Clear replaced owners first, including both ends of a cross-floor transfer.
+            foreach (array_keys($replacedViews) as $id) {
+                $this->db->prepare('DELETE FROM floor_rack_placements WHERE floor_view_id = :id')->execute([':id' => $id]);
+            }
             foreach ($viewOperations as $localId => $operation) {
                 $id = $maps['views'][$localId] ?? $localId;
                 if ($operation['operation'] === 'delete' || $normalizedViews[$id]['view_type'] !== 'floor') {
@@ -261,6 +447,27 @@ final class ResourceSaveService
                     $stmt->execute([':id' => $id]);
                 }
             }
+            // Clear all changed racks before insertion so transfers do not trip device uniqueness.
+            foreach ($viewOperations as $localId => $operation) {
+                $id = $maps['views'][$localId] ?? $localId;
+                $this->db->prepare('DELETE FROM rack_mounts WHERE view_id = :id')->execute([':id' => $id]);
+                $this->db->prepare('DELETE FROM rack_shelves WHERE view_id = :id')->execute([':id' => $id]);
+                $this->db->prepare('DELETE FROM rack_settings WHERE view_id = :id')->execute([':id' => $id]);
+            }
+            foreach (['rack_settings' => $normalizedSettings, 'rack_mounts' => $normalizedMounts] as $table => $rows) {
+                foreach ($rows as $row) {
+                    if (isset($replacedViews[$row['view_id']])) {
+                        $this->writeRow($table, $row, true);
+                    }
+                }
+            }
+            foreach ($normalizedShelves as $row) {
+                if (isset($replacedViews[$row['view_id']])) { $this->writeRow('rack_shelves', $row, true); }
+            }
+            $shelfOwners = array_column($normalizedShelves, 'view_id', 'id');
+            foreach ($normalizedShelfDevices as $row) {
+                if (isset($replacedViews[$shelfOwners[$row['shelf_id']]])) { $this->writeRow('rack_shelf_devices', $row, true); }
+            }
             foreach ($normalizedPlacements as $row) {
                 if (isset($replacedViews[$row['view_id']]) && !isset($deletedViews[$row['view_id']])) {
                     $this->writeRow('device_placements', $row, true);
@@ -274,6 +481,11 @@ final class ResourceSaveService
             foreach ($normalizedNotes as $row) {
                 $this->writeRow('canvas_notes', $row, true);
             }
+            foreach ($floorRacks as $row) {
+                if (isset($replacedViews[$row['floor_view_id']])) {
+                    $this->writeRow('floor_rack_placements', $row, true);
+                }
+            }
             if ($monitorChanged) {
                 $meta->incrementMonitorRevision();
             }
@@ -284,10 +496,19 @@ final class ResourceSaveService
             // Read the response before commit, from the same snapshot as the writes.
             $affectedPlacements = $this->selectRows('device_placements', 'view_id', array_keys($affectedViews));
             $affectedLinks = $this->selectRows('links', 'view_id', array_keys($affectedViews));
+            $affectedMounts = $this->selectRows('rack_mounts', 'view_id', array_keys($affectedViews));
+            $affectedShelves = $this->selectRows('rack_shelves', 'view_id', array_keys($affectedViews));
+            $affectedShelfDevices = $this->selectRows('rack_shelf_devices', 'shelf_id', array_column($affectedShelves, 'id'));
             // 削除影響ビューの配置が参照する機器も応答に含め、クライアントの構成欠落を防ぐ
             $responseDeviceIds = $changedDeviceIds;
             foreach ($affectedPlacements as $p) {
                 $responseDeviceIds[(int)$p['device_id']] = true;
+            }
+            foreach ($affectedMounts as $mount) {
+                $responseDeviceIds[(int)$mount['device_id']] = true;
+            }
+            foreach ($affectedShelfDevices as $membership) {
+                $responseDeviceIds[(int)$membership['device_id']] = true;
             }
             $result = [
                 'ok' => true, 'revision' => $meta->getDataRevision(),
@@ -299,6 +520,11 @@ final class ResourceSaveService
                 'placements' => $affectedPlacements,
                 'links' => $affectedLinks,
                 'canvas_notes' => $this->selectRows('canvas_notes', 'view_id', array_keys($affectedViews)),
+                'rack_settings' => $this->selectRows('rack_settings', 'view_id', array_keys($affectedViews)),
+                'rack_mounts' => $affectedMounts,
+                'rack_shelves' => $affectedShelves,
+                'rack_shelf_devices' => $affectedShelfDevices,
+                'floor_rack_placements' => $this->selectRows('floor_rack_placements', 'floor_view_id', array_keys($affectedViews)),
                 'deleted_device_ids' => array_keys($deletedDevices),
                 'deleted_view_ids' => array_keys($deletedViews),
                 'affected_view_ids' => array_keys($affectedViews),
@@ -361,6 +587,14 @@ final class ResourceSaveService
                 if ($key === 'view' && (!is_array($row['placements'] ?? null) || !is_array($row['links'] ?? null)
                     || !is_array($row['canvas_notes'] ?? null) || !array_is_list($row['canvas_notes']))) {
                     throw new ApiException("ビューID {$id}: 配置・接続・メモの全構成を指定してください", 400);
+                }
+                if ($key === 'view' && array_key_exists('rack_mounts', $row)
+                    && (!is_array($row['rack_mounts']) || !array_is_list($row['rack_mounts']))) {
+                    throw new ApiException('ラック搭載情報は配列で指定してください', 400);
+                }
+                if ($key === 'view' && ($row['view']['view_type'] ?? 'topology') === 'rack'
+                    && ($row['floor_plans'] ?? []) !== []) {
+                    throw new ApiException('ラックに図面は保存できません', 400);
                 }
             }
             $result[$id] = $row;
@@ -446,7 +680,9 @@ final class ResourceSaveService
             return [];
         }
         $idList = implode(', ', array_map('intval', $ids));
-        $rows = $this->db->query("SELECT * FROM {$table} WHERE {$column} IN ({$idList}) ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+        $order = $table === 'floor_rack_placements' ? 'rack_view_id'
+            : ($table === 'rack_settings' ? 'view_id' : (in_array($table, ['rack_mounts', 'rack_shelf_devices'], true) ? 'device_id' : 'id'));
+        $rows = $this->db->query("SELECT * FROM {$table} WHERE {$column} IN ({$idList}) ORDER BY {$order}")->fetchAll(PDO::FETCH_ASSOC);
         if ($table === 'links') {
             foreach ($rows as &$row) {
                 $row['manual_route'] = json_decode($row['manual_route'], true, 512, JSON_THROW_ON_ERROR);

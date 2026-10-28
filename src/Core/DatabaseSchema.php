@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const APP_DATABASE_SCHEMA_VERSION = 11;
+const APP_DATABASE_SCHEMA_VERSION = 16;
 
 
 function migrateDatabase(PDO $db): void
@@ -72,6 +72,21 @@ function migrateDatabase(PDO $db): void
                 break;
             case 11:
                 migrateDatabaseToVersion11($db);
+                break;
+            case 12:
+                migrateDatabaseToVersion12($db);
+                break;
+            case 13:
+                migrateDatabaseToVersion13($db);
+                break;
+            case 14:
+                migrateDatabaseToVersion14($db);
+                break;
+            case 15:
+                migrateDatabaseToVersion15($db);
+                break;
+            case 16:
+                migrateDatabaseToVersion16($db);
                 break;
 
             default:
@@ -963,6 +978,228 @@ function migrateDatabaseToVersion11(PDO $db): void
         if ($db->inTransaction()) {
             $db->rollBack();
         }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion12(PDO $db): void
+{
+    // SQLite requires foreign_keys OFF outside the transaction while rebuilding a referenced table.
+    $foreignKeys = (int)$db->query('PRAGMA foreign_keys')->fetchColumn();
+    $db->exec('PRAGMA foreign_keys = OFF');
+    $legacyAlter = (int)$db->query('PRAGMA legacy_alter_table')->fetchColumn();
+    $db->exec('PRAGMA legacy_alter_table = ON');
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 12) {
+            $objects = $db->query("SELECT sql FROM sqlite_master WHERE tbl_name = 'views'
+                AND type IN ('index', 'trigger') AND sql IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN);
+            $db->exec("CREATE TABLE views_new (
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE,
+                facility TEXT NOT NULL DEFAULT '', floor TEXT NOT NULL DEFAULT '',
+                view_type TEXT NOT NULL DEFAULT 'topology' CHECK (view_type IN ('topology','floor','rack')),
+                sort_order INTEGER NOT NULL DEFAULT 0, memo TEXT NOT NULL DEFAULT '',
+                resource_revision INTEGER NOT NULL DEFAULT 1
+            )");
+            $db->exec('INSERT INTO views_new SELECT id,name,facility,floor,view_type,sort_order,memo,resource_revision FROM views');
+            $db->exec('DROP TABLE views');
+            $db->exec('ALTER TABLE views_new RENAME TO views');
+            foreach ($objects as $sql) {
+                $db->exec($sql);
+            }
+            $db->exec("CREATE TABLE rack_settings (
+                view_id INTEGER PRIMARY KEY REFERENCES views(id) ON DELETE CASCADE,
+                total_u INTEGER NOT NULL CHECK (typeof(total_u) = 'integer' AND total_u BETWEEN 1 AND 60),
+                location TEXT NOT NULL DEFAULT '' CHECK (length(location) <= 150)
+            )");
+            $db->exec("CREATE TABLE rack_mounts (
+                device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                view_id INTEGER NOT NULL REFERENCES rack_settings(view_id) ON DELETE CASCADE,
+                face TEXT NOT NULL CHECK (face IN ('front','rear','both')),
+                start_u INTEGER NOT NULL CHECK (typeof(start_u) = 'integer' AND start_u > 0),
+                height_u INTEGER NOT NULL CHECK (typeof(height_u) = 'integer' AND height_u > 0),
+                width_slot TEXT NOT NULL CHECK (width_slot IN ('full','left','right')),
+                CHECK (face <> 'both' OR width_slot = 'full')
+            )");
+            $db->exec('CREATE INDEX idx_rack_mounts_view ON rack_mounts(view_id)');
+            foreach (['rack_settings', 'rack_mounts'] as $table) {
+                foreach (['INSERT', 'UPDATE', 'DELETE'] as $event) {
+                    $refs = $event === 'INSERT' ? 'NEW.view_id' : ($event === 'DELETE' ? 'OLD.view_id' : 'OLD.view_id, NEW.view_id');
+                    $db->exec("CREATE TRIGGER resource_owner_{$table}_" . strtolower($event) . " AFTER {$event} ON {$table} BEGIN
+                        UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                        UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                        WHERE id IN ({$refs});
+                    END");
+                }
+            }
+            if ($db->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('ラック移行後の外部キー検証に失敗しました');
+            }
+            $db->exec('PRAGMA user_version = 12');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    } finally {
+        $db->exec('PRAGMA foreign_keys = ' . $foreignKeys);
+        $db->exec('PRAGMA legacy_alter_table = ' . $legacyAlter);
+    }
+}
+
+function migrateDatabaseToVersion13(PDO $db): void
+{
+    // Rebuild without renaming the original: dependent foreign keys and trigger
+    // bodies must continue to reference devices, without firing delete cascades.
+    $foreignKeys = (int)$db->query('PRAGMA foreign_keys')->fetchColumn();
+    $legacyAlter = (int)$db->query('PRAGMA legacy_alter_table')->fetchColumn();
+    $db->exec('PRAGMA foreign_keys = OFF');
+    $db->exec('PRAGMA legacy_alter_table = ON');
+    try {
+        $db->beginTransaction();
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 13) {
+            $objects = $db->query("SELECT sql FROM sqlite_master WHERE tbl_name = 'devices'
+                AND type IN ('index', 'trigger') AND sql IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN);
+            $sql = (string)$db->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices'")->fetchColumn();
+            $sql = str_replace('CREATE TABLE devices', 'CREATE TABLE devices_new', $sql, $tableCount);
+            $sql = str_replace("'printer'", "'pc', 'printer'", $sql, $typeCount);
+            if ($tableCount !== 1 || $typeCount !== 1) {
+                throw new RuntimeException('機器スキーマの移行元が不正です');
+            }
+            $db->exec($sql);
+            // Copy before restoring triggers so revisions and ID counters stay unchanged.
+            $db->exec('INSERT INTO devices_new SELECT * FROM devices');
+            $db->exec('DROP TABLE devices');
+            $db->exec('ALTER TABLE devices_new RENAME TO devices');
+            foreach ($objects as $objectSql) {
+                $db->exec($objectSql);
+            }
+            if ($db->query('PRAGMA foreign_key_check')->fetch() !== false) {
+                throw new RuntimeException('PC種別移行後の外部キー検証に失敗しました');
+            }
+            $db->exec('PRAGMA user_version = 13');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    } finally {
+        $db->exec('PRAGMA foreign_keys = ' . $foreignKeys);
+        $db->exec('PRAGMA legacy_alter_table = ' . $legacyAlter);
+    }
+}
+
+function migrateDatabaseToVersion14(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        // Adding a defaulted column preserves every existing value and revision;
+        // historical schema12/13 definitions remain unchanged for ZIP validation.
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 14) {
+            $db->exec("ALTER TABLE rack_mounts ADD COLUMN depth TEXT NOT NULL DEFAULT 'half' CHECK (depth IN ('half','full'))");
+            $db->exec('PRAGMA user_version = 14');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion15(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 15) {
+            $db->exec("CREATE TABLE rack_shelves (
+                id INTEGER PRIMARY KEY,
+                view_id INTEGER NOT NULL REFERENCES rack_settings(view_id) ON DELETE CASCADE,
+                name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+                face TEXT NOT NULL CHECK (face IN ('front','rear')),
+                start_u INTEGER NOT NULL CHECK (typeof(start_u) = 'integer' AND start_u > 0),
+                height_u INTEGER NOT NULL CHECK (typeof(height_u) = 'integer' AND height_u > 0),
+                depth TEXT NOT NULL CHECK (depth IN ('half','full'))
+            )");
+            $db->exec('CREATE INDEX idx_rack_shelves_view ON rack_shelves(view_id)');
+            $db->exec("CREATE TABLE rack_shelf_devices (
+                device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                shelf_id INTEGER NOT NULL REFERENCES rack_shelves(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0)
+            )");
+            $db->exec('CREATE INDEX idx_rack_shelf_devices_shelf ON rack_shelf_devices(shelf_id)');
+            $db->exec("INSERT INTO resource_sequences(name,value) VALUES ('rack_shelves',0)");
+            $db->exec("CREATE TRIGGER resource_id_rack_shelves_insert AFTER INSERT ON rack_shelves BEGIN
+                UPDATE resource_sequences SET value = MAX(value, NEW.id) WHERE name = 'rack_shelves';
+            END");
+            foreach (['INSERT', 'UPDATE', 'DELETE'] as $event) {
+                $suffix = strtolower($event);
+                $refs = $event === 'INSERT' ? 'NEW.view_id' : ($event === 'DELETE' ? 'OLD.view_id' : 'OLD.view_id, NEW.view_id');
+                $db->exec("CREATE TRIGGER resource_owner_rack_shelves_{$suffix} AFTER {$event} ON rack_shelves BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id IN ({$refs});
+                END");
+                $shelfRefs = $event === 'INSERT' ? 'NEW.shelf_id' : ($event === 'DELETE' ? 'OLD.shelf_id' : 'OLD.shelf_id, NEW.shelf_id');
+                $db->exec("CREATE TRIGGER resource_owner_rack_shelf_devices_{$suffix} AFTER {$event} ON rack_shelf_devices BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id IN (SELECT view_id FROM rack_shelves WHERE id IN ({$shelfRefs}));
+                END");
+            }
+            $db->exec('PRAGMA user_version = 15');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion16(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 16) {
+            $db->exec("CREATE TABLE floor_rack_placements (
+                floor_view_id INTEGER NOT NULL REFERENCES views(id) ON DELETE CASCADE,
+                rack_view_id INTEGER PRIMARY KEY REFERENCES views(id) ON DELETE CASCADE,
+                x REAL NOT NULL CHECK (typeof(x) IN ('integer','real') AND abs(x) <= 1.7976931348623157e308),
+                y REAL NOT NULL CHECK (typeof(y) IN ('integer','real') AND abs(y) <= 1.7976931348623157e308)
+            )");
+            $db->exec('CREATE INDEX idx_floor_rack_placements_floor ON floor_rack_placements(floor_view_id)');
+            foreach (['INSERT', 'UPDATE'] as $event) {
+                $suffix = strtolower($event);
+                $db->exec("CREATE TRIGGER floor_rack_placements_types_{$suffix} BEFORE {$event} ON floor_rack_placements
+                    WHEN COALESCE((SELECT view_type FROM views WHERE id = NEW.floor_view_id), '') <> 'floor'
+                      OR COALESCE((SELECT view_type FROM views WHERE id = NEW.rack_view_id), '') <> 'rack'
+                    BEGIN SELECT RAISE(ABORT, 'Invalid floor rack view types'); END");
+            }
+            $db->exec("CREATE TRIGGER floor_rack_placements_view_type BEFORE UPDATE OF view_type ON views
+                WHEN (NEW.view_type <> 'floor' AND EXISTS (SELECT 1 FROM floor_rack_placements WHERE floor_view_id = OLD.id))
+                  OR (NEW.view_type <> 'rack' AND EXISTS (SELECT 1 FROM floor_rack_placements WHERE rack_view_id = OLD.id))
+                BEGIN SELECT RAISE(ABORT, 'Placed rack view types cannot change'); END");
+            foreach (['INSERT', 'UPDATE', 'DELETE'] as $event) {
+                $suffix = strtolower($event);
+                $refs = $event === 'INSERT' ? 'NEW.floor_view_id' : ($event === 'DELETE' ? 'OLD.floor_view_id' : 'OLD.floor_view_id, NEW.floor_view_id');
+                $db->exec("CREATE TRIGGER resource_owner_floor_rack_placements_{$suffix} AFTER {$event} ON floor_rack_placements BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id IN ({$refs});
+                END");
+            }
+            $db->exec('PRAGMA user_version = 16');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
         throw $e;
     }
 }

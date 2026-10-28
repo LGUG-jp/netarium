@@ -8,41 +8,55 @@ export const DEVICE_TYPES = Object.freeze({
     switch: {
         label: 'L2スイッチ',
         shortLabel: 'L2SW',
+        color: '#359cf0',
         icon: 'assets/icons/devices/l2-switch.svg'
     },
     l3_switch: {
         label: 'L3スイッチ',
         shortLabel: 'L3SW',
+        color: '#29b6c5',
         icon: 'assets/icons/devices/l3-switch.svg'
     },
     router: {
         label: 'ルータ',
         shortLabel: 'Router',
+        color: '#39ad60',
         icon: 'assets/icons/devices/router.svg'
     },
     firewall: {
         label: 'ファイアウォール',
         shortLabel: 'FW',
+        color: '#f3686d',
         icon: 'assets/icons/devices/firewall.svg'
     },
     ap: {
         label: 'アクセスポイント',
         shortLabel: 'AP',
+        color: '#ffb875',
         icon: 'assets/icons/devices/access-point.svg'
     },
     server: {
         label: 'サーバ',
         shortLabel: 'Server',
+        color: '#ad89e5',
         icon: 'assets/icons/devices/server.svg'
     },
     printer: {
         label: 'プリンタ・複合機',
         shortLabel: 'Printer',
+        color: '#ffcc43',
         icon: 'assets/icons/devices/printer.svg'
+    },
+    pc: {
+        label: 'PC',
+        shortLabel: 'PC',
+        color: '#7075df',
+        icon: 'assets/icons/devices/pc.svg'
     },
     other: {
         label: 'その他',
         shortLabel: 'etc',
+        color: '#9da9b7',
         icon: 'assets/icons/devices/other.svg'
     }
 });

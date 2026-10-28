@@ -4,6 +4,7 @@ import { registerModalOpen, registerModalClose } from '../core/modal-focus.js';
 import { buildPrintModel, createPrintSettings, viewportToPrintBounds, calculatePrintScale } from '../canvas/print-model.js';
 import { renderPrintSheet, waitForPrintAssets } from '../canvas/print-renderer.js';
 import { getLinkCrossingStyle } from '../core/link-display-settings.js';
+import { commitCanvasNoteText } from '../canvas/canvas-notes.js';
 
 const contentKeys = ['links', 'floorPlan', 'notes', 'deviceName', 'deviceType', 'ip', 'labels', 'title'];
 let settings = createPrintSettings();
@@ -37,6 +38,9 @@ async function updatePrintPreview() {
         const model = buildPrintModel({
             view, devices: appState.devices, placements: appState.placements, links: appState.links,
             linkSystems: appState.linkSystems,
+            rackSettings: appState.rackSettings, rackMounts: appState.rackMounts,
+            rackShelves: appState.rackShelves, rackShelfDevices: appState.rackShelfDevices,
+            views: appState.views, floorRackPlacements: appState.floorRackPlacements,
             notes: appState.canvasNotes, floorPlan: getCurrentFloorPlan(), viewport,
             crossingStyle: getLinkCrossingStyle()
         }, settings);
@@ -74,8 +78,10 @@ export function executePrint() {
 }
 
 function syncSettings() {
+    const rack = getCurrentView()?.view_type === 'rack';
     document.querySelectorAll('input[name="print-range"]').forEach(input => {
         input.checked = input.value === settings.range;
+        input.disabled = rack;
     });
     document.querySelectorAll('input[name="print-orientation"]').forEach(input => {
         input.checked = input.value === settings.orientation;
@@ -84,18 +90,27 @@ function syncSettings() {
         document.getElementById(`print-type-${type}`).checked = settings.deviceTypes[type];
     }
     for (const key of contentKeys) document.getElementById(`print-${key}`).checked = settings[key];
+    const notesInput = document.getElementById('print-notes');
+    const notesLabel = notesInput?.parentElement?.querySelector('strong');
+    if (notesLabel) notesLabel.textContent = rack ? 'ラックメモ' : 'キャンバスメモ';
     const planEnabled = getCurrentView()?.view_type === 'floor' && Boolean(getCurrentFloorPlan()?.image_url);
     const planInput = document.getElementById('print-floorPlan');
     planInput.disabled = !planEnabled;
     if (!planEnabled) planInput.checked = false;
+    for (const key of ['links', 'labels']) {
+        const input = document.getElementById(`print-${key}`);
+        input.disabled = rack || (key === 'labels' && !settings.links);
+        if (rack) input.checked = false;
+    }
     const labelInput = document.getElementById('print-labels');
-    labelInput.disabled = !settings.links;
+    labelInput.disabled = rack || !settings.links;
     if (!settings.links) labelInput.checked = false;
     document.getElementById('print-device-count').textContent =
         `${Object.values(settings.deviceTypes).filter(Boolean).length} / ${Object.keys(DEVICE_TYPES).length}種類を印刷`;
 }
 
 export async function openPrintModal() {
+    commitCanvasNoteText();
     const overlay = document.getElementById('print-overlay');
     if (!overlay || !getCurrentView() || !appState.canvas) return;
     settings = createPrintSettings();

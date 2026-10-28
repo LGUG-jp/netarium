@@ -89,6 +89,8 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
             id_maps: { devices: {}, views: {}, placements: {}, links: {}, canvas_notes: Object.fromEntries(payload.views.flatMap(v => v.canvas_notes ?? []).map(n => [n.id, n.id])) },
             devices: [], views: payload.views.map(v => ({ ...v.view, resource_revision: (v.expected_revision || 0) + 1 })),
             placements: [], links: [], canvas_notes: payload.views.flatMap(v => v.canvas_notes ?? []),
+            rack_settings: payload.views.flatMap(v => v.rack_settings ? [v.rack_settings] : []),
+            rack_mounts: payload.views.flatMap(v => v.rack_mounts || []),
             affected_view_ids: payload.views.map(v => v.id), deleted_device_ids: [], deleted_view_ids: [] }));
     };
     const element = id => elements.get(id);
@@ -324,5 +326,322 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         appState.viewStates.set(1, { scale: 0.7, panX: 42, panY: 23 }); restoreCurrentViewState(); assert.equal(appState.viewState.scale, 0.7);
         appState.views[0].view_type = 'floor'; appState.floorPlans = [{ view_id: 1, is_visible: true }];
         let fits = 0; const off = eventBus.on('floor-plan:fit', () => { fits++; }); renderer.fitViewToDevices(); off(); assert.equal(fits, 1);
+    });
+    function setupRack(existing = []) {
+        setup();
+        appState.views[0].view_type = 'rack';
+        appState.rackSettings = [{ view_id: 1, total_u: 8, location: '' }];
+        appState.rackMounts = [];
+        appState.canvasNotes = structuredClone(existing);
+        appState.nextCanvasNoteId = Math.max(0, ...existing.map(note => note.id)) + 1;
+        const area = new Node('div', 'rack-notes-area');
+        elements.set('rack-notes-area', area);
+        resource.resetResourceBaseline(appState);
+        notes.renderCanvasNotes();
+        return area;
+    }
+    const rackSection = (region = 'upper') => element('rack-notes-area').querySelectorAll('.rack-note-region')
+        .find(section => section.dataset.region === region);
+    const rackEditors = (region = 'upper') => rackSection(region)?.querySelectorAll('.rack-note-editor') || [];
+    const rackBlank = (region = 'upper') => rackEditors(region).find(editor => !editor.dataset.noteId);
+    await t.test('ラックは常設入力欄から非空入力時だけ作成し、blurで既存キューへ保存する', async () => {
+        const area = setupRack();
+        assert.equal(area.querySelector('.rack-notes-heading').textContent, 'メモ');
+        assert.equal(appState.noteLayer.children.length, 0);
+        assert.notEqual(appState.noteLayer.parentElement, area);
+        await notes.toggleCanvasNoteMode();
+        assert.equal(appState.noteMode, false);
+        assert.equal(await notes.createCanvasNote({ target: area, clientX: 100, clientY: 100 }), false);
+        const editor = rackBlank();
+        editor.focus(); await editor.dispatch('focus'); await editor.typeText('');
+        assert.equal(appState.canvasNotes.length, 0);
+        assert.equal(requests.length, 0);
+        await editor.typeText('ラック注釈\n直接入力');
+        assert.equal(appState.canvasNotes.length, 1);
+        assert.equal(rackEditors().length, 2);
+        assert.equal(document.activeElement, editor);
+        assert.equal(appState.selectedCanvasNoteId, null);
+        assert.notEqual(element('canvas-context-toolbar').dataset.activeContext, 'canvas-note');
+        assert.equal(requests.length, 0);
+        eventBus.emit('canvas:view-transformed'); eventBus.emit('save-state:changed');
+        assert.equal(rackEditors()[0], editor);
+        assert.equal(editor.value, 'ラック注釈\n直接入力');
+        await editor.dispatch('blur'); await settle();
+        assert.equal(requests.at(-1).views[0].canvas_notes[0].text, editor.value);
+        assert.equal(rackEditors()[0], editor);
+        assert.equal(appState.rackMounts.length, 0);
+    });
+    await t.test('複数の既存メモは本文・色・書式・座標を保持し、個別編集とビュー切替に対応する', async () => {
+        const { DEFAULT_CANVAS_NOTE } = await import('../public/js/core/canvas-note-data.js');
+        const stored = [
+            { ...DEFAULT_CANVAS_NOTE, id: 11, view_id: 1, text: '一つ目\n全文', x: 800, y: 900,
+                width: 450, height: 250, text_color: '#123456', background_color: '#654321', background_opacity: 0.4, font_size: 32 },
+            { ...DEFAULT_CANVAS_NOTE, id: 12, view_id: 1, text: '二つ目', x: 2000, y: 3000 },
+            { ...DEFAULT_CANVAS_NOTE, id: 13, view_id: 2, text: '通常ビューのメモ', x: 77, y: 88 }
+        ];
+        setupRack(stored);
+        assert.deepEqual(rackEditors().map(editor => editor.value), ['一つ目\n全文', '二つ目', '']);
+        assert.equal(rackEditors()[0].style.fontSize, '32px');
+        assert.equal(rackEditors()[0].style.color, '#123456');
+        assert.equal(rackEditors()[0].style.backgroundColor, 'rgba(101, 67, 33, 0.4)');
+        const editor = rackEditors()[1];
+        editor.focus(); await editor.dispatch('focus'); await editor.typeText('二つ目を編集');
+        eventBus.emit('canvas:view-transformed'); notes.renderCanvasNotes();
+        assert.equal(rackEditors()[1], editor);
+        notes.finishCanvasNotes('view'); await settle();
+        assert.deepEqual(new Map(appState.canvasNotes.map(note => [Number(note.id), note])),
+            new Map(stored.map(note => [note.id, note.id === 12 ? { ...note, text: '二つ目を編集' } : note])));
+        const saved = requests.at(-1).views[0].canvas_notes;
+        assert.deepEqual(saved.find(note => note.id === 11), stored[0]);
+        appState.views.push({ id: 2, resource_revision: 1, view_type: 'topology' });
+        appState.currentViewId = 2; notes.renderCanvasNotes();
+        assert.equal(rackEditors().length, 0);
+        assert.equal(currentElement().querySelector('.canvas-note-text').textContent, '通常ビューのメモ');
+        assert.equal(currentElement().style.left, '77px');
+        appState.currentViewId = 1; notes.renderCanvasNotes();
+        assert.deepEqual(rackEditors().map(editor => editor.value), ['一つ目\n全文', '二つ目を編集', '']);
+    });
+    await t.test('旧メモが4件以上でも全件を上段に保持し、通常座標を中下段と誤認しない', async () => {
+        const { DEFAULT_CANVAS_NOTE } = await import('../public/js/core/canvas-note-data.js');
+        const stored = [0, 1, 2, 400, 2400, 9007199254740990].map((x, index) => ({
+            ...DEFAULT_CANVAS_NOTE, id: index + 1, view_id: 1, x, y: index % 3, text: `既存${index}`
+        }));
+        setupRack(stored);
+        assert.deepEqual(rackEditors().filter(editor => editor.dataset.noteId).map(editor => editor.value),
+            stored.map(note => note.text));
+        assert.equal(rackEditors('middle').length, 1);
+        assert.equal(rackEditors('lower').length, 1);
+        for (const editor of rackEditors().filter(editor => editor.dataset.noteId)) {
+            await editor.typeText(`${editor.value}を編集`); await editor.dispatch('blur');
+        }
+        await settle();
+        assert.deepEqual(appState.canvasNotes, stored.map(note => ({ ...note, text: `${note.text}を編集` })));
+        assert.equal(requests.at(-1).views[0].canvas_notes.length, stored.length);
+    });
+    await t.test('3領域は非空だけ追加し、1・42・60Uへの変更と再読込後も固定所属を保持する', async () => {
+        const { getRackNoteRegion } = await import('../public/js/core/canvas-note-data.js');
+        setupRack();
+        assert.deepEqual(element('rack-notes-area').querySelectorAll('.rack-note-region-heading').map(node => node.textContent),
+            ['上段', '中段', '下段']);
+        const editors = new Map();
+        for (const region of ['upper', 'middle', 'lower']) {
+            const editor = rackBlank(region); editors.set(region, editor);
+            await editor.typeText(' \n\t'); await editor.dispatch('blur');
+            assert.equal(appState.canvasNotes.length, editors.size - 1);
+            await editor.typeText(`${region}の本文`); await editor.dispatch('blur'); await settle();
+            assert.equal(rackEditors(region)[0], editor);
+        }
+        assert.deepEqual(appState.canvasNotes.map(note => getRackNoteRegion(note).key), ['upper', 'middle', 'lower']);
+        const saved = structuredClone(requests.at(-1).views[0].canvas_notes);
+        for (const totalU of [1, 42, 60, 1]) {
+            appState.rackSettings[0].total_u = totalU;
+            notes.renderCanvasNotes();
+            for (const [region, editor] of editors) {
+                assert.equal(rackEditors(region)[0], editor);
+                assert.equal(editor.value, `${region}の本文`);
+            }
+            assert.equal(appState.rackSettings[0].total_u, totalU);
+            assert.deepEqual(appState.canvasNotes, saved);
+        }
+        appState.canvasNotes = structuredClone(saved);
+        eventBus.emit('resources:reloaded');
+        for (const region of editors.keys()) assert.equal(rackEditors(region)[0].value, `${region}の本文`);
+        for (const region of editors.keys()) {
+            const editor = rackEditors(region)[0];
+            await editor.typeText(`${region}の追記`); await editor.dispatch('blur'); await settle();
+            assert.equal(appState.canvasNotes.find(note => String(note.id) === editor.dataset.noteId).text, `${region}の追記`);
+        }
+    });
+    for (const region of ['upper', 'middle', 'lower']) {
+        await t.test(`${region}領域のID再割当・競合・再読込・権限変更は下書きを保護する`, async () => {
+            setupRack();
+            const editor = rackBlank(region);
+            await editor.typeText('保存済み'); await editor.dispatch('blur'); await settle();
+            const note = appState.canvasNotes[0], oldId = note.id;
+            await editor.typeText('ID再割当前の下書き');
+            note.id = 101;
+            eventBus.emit('resources:ids-remapped', { canvas_notes: { [oldId]: 101 }, views: {} });
+            notes.renderCanvasNotes();
+            assert.equal(rackEditors(region)[0], editor);
+            assert.equal(editor.dataset.noteId, '101');
+            assert.equal(editor.value, 'ID再割当前の下書き');
+            resource.resetResourceBaseline(appState);
+            notes.commitCanvasNoteText(); await settle();
+            assert.equal(requests.at(-1).views[0].canvas_notes[0].text, 'ID再割当前の下書き');
+            await editor.typeText('競合した本文'); fail = true;
+            notes.commitCanvasNoteText(); await settle();
+            assert.equal(queue.hasResourceConflict('views', 1), true);
+            assert.equal(editor.readOnly, true);
+            assert.ok(['upper', 'middle', 'lower'].every(key => rackBlank(key).hidden));
+            appState.canvasNotes[0].text = 'サーバーの最新本文';
+            eventBus.emit('resource:reloaded', { kind: 'views', id: 1 });
+            assert.equal(rackEditors(region)[0].value, 'サーバーの最新本文');
+            appState.resourceConflicts.views.clear(); fail = false;
+            resource.resetResourceBaseline(appState); notes.renderCanvasNotes();
+            await editor.typeText('権限喪失時の下書き');
+            window.APP_CONFIG.user.isAdmin = false; notes.renderCanvasNotes();
+            assert.equal(editor.readOnly, true);
+            assert.equal(notes.commitCanvasNoteText(), false);
+            assert.equal(editor.value, '権限喪失時の下書き');
+            const count = appState.canvasNotes.length;
+            for (const key of ['upper', 'middle', 'lower']) await rackBlank(key).typeText('禁止された追加');
+            assert.equal(appState.canvasNotes.length, count);
+            window.APP_CONFIG.user.isAdmin = true; notes.renderCanvasNotes();
+            assert.equal(editor.readOnly, false);
+            notes.commitCanvasNoteText(); await settle();
+            assert.equal(appState.canvasNotes[0].text, '権限喪失時の下書き');
+        });
+    }
+    await t.test('ラック直接入力は保存応答・ID再割当でも下書きとフォーカスを保持する', async () => {
+        setupRack();
+        const editor = rackBlank();
+        editor.focus(); await editor.typeText('保存する本文'); await editor.dispatch('blur'); await settle();
+        const note = appState.canvasNotes[0], oldId = note.id;
+        hold = true;
+        await editor.typeText('応答を待つ本文'); notes.commitCanvasNoteText(); await setImmediate();
+        assert.equal(appState.isSaving, true);
+        editor.focus(); await editor.dispatch('focus'); await editor.typeText('応答中の下書き');
+        release(); await settle();
+        assert.equal(editor.value, '応答中の下書き');
+        assert.equal(rackEditors()[0], editor);
+        appState.canvasNotes[0].id = 101;
+        eventBus.emit('resources:ids-remapped', { canvas_notes: { [oldId]: 101 }, views: {} });
+        eventBus.emit('save-state:changed');
+        assert.equal(rackEditors()[0], editor);
+        assert.equal(editor.dataset.noteId, '101');
+        assert.equal(editor.value, '応答中の下書き');
+        assert.equal(document.activeElement, editor);
+        resource.resetResourceBaseline(appState);
+        notes.commitCanvasNoteText(); await settle();
+        assert.equal(requests.at(-1).views[0].canvas_notes[0].text, '応答中の下書き');
+    });
+    await t.test('保存応答待ちのメモ下書きは409後のビュー切替でも消えない', async () => {
+        const { switchView } = await import('../public/js/modals/view-manager-modal.js');
+        setupRack();
+        appState.views.push({ ...appState.views[0], id: 2, name: '別ビュー', view_type: 'topology' });
+        resource.resetResourceBaseline(appState);
+        const editor = rackBlank();
+        await editor.typeText('送信した本文'); hold = true;
+        notes.commitCanvasNoteText();
+        const firstSave = queue.flushSaveQueue({ silent: true }); await setImmediate();
+        await editor.typeText('応答待ちに追記した本文');
+        fail = true; release(); await firstSave; await settle();
+        assert.equal(queue.hasResourceConflict('views', 1), true);
+        assert.equal(editor.value, '応答待ちに追記した本文');
+        assert.equal(await switchView(2), true);
+        assert.equal(appState.canvasNotes[0].text, '応答待ちに追記した本文');
+        assert.equal(await switchView(1), true);
+        assert.equal(rackEditors()[0].value, '応答待ちに追記した本文');
+        assert.equal(requests.length, 1, '競合中のビューを再送しない');
+        appState.resourceConflicts.views.clear(); fail = false; notes.renderCanvasNotes();
+        await rackEditors()[0].typeText('権限変更で確定できない本文');
+        window.APP_CONFIG.user.isAdmin = false;
+        assert.equal(await switchView(2), false);
+        assert.equal(appState.currentViewId, 1);
+        assert.equal(rackEditors()[0].value, '権限変更で確定できない本文');
+        window.APP_CONFIG.user.isAdmin = true; notes.commitCanvasNoteText(); await settle();
+    });
+    await t.test('ラックの1000文字検証と競合・再読込・権限変更は既存保存契約を維持する', async () => {
+        setupRack();
+        const editor = rackBlank(), text = '𠀀'.repeat(1000);
+        await editor.typeText(text); notes.commitCanvasNoteText(); await settle();
+        assert.equal(requests.at(-1).views[0].canvas_notes[0].text, text);
+        await editor.typeText(text + '𠀀'); notes.commitCanvasNoteText(); await settle();
+        assert.equal(requests.length, 1);
+        assert.equal(editor.value, text + '𠀀');
+        await editor.typeText('競合する本文'); fail = true;
+        notes.commitCanvasNoteText(); await settle();
+        assert.equal(queue.hasResourceConflict('views', 1), true);
+        assert.equal(editor.readOnly, true);
+        assert.equal(editor.value, '競合する本文');
+        assert.equal(rackBlank().hidden, true);
+        appState.canvasNotes[0].text = '再読込した最新本文';
+        eventBus.emit('resource:reloaded', { kind: 'views', id: 1 });
+        assert.equal(rackEditors()[0].value, '再読込した最新本文');
+        appState.resourceConflicts.views.clear(); fail = false;
+        resource.resetResourceBaseline(appState); notes.renderCanvasNotes();
+        await editor.typeText('権限変更時の下書き');
+        window.APP_CONFIG.user.isAdmin = false; notes.renderCanvasNotes();
+        assert.equal(editor.readOnly, true);
+        assert.equal(notes.commitCanvasNoteText(), false);
+        assert.equal(editor.value, '権限変更時の下書き');
+        window.APP_CONFIG.user.isAdmin = true; notes.renderCanvasNotes();
+        assert.equal(editor.readOnly, false);
+        notes.commitCanvasNoteText(); await settle();
+        assert.equal(appState.canvasNotes[0].text, '権限変更時の下書き');
+        window.APP_CONFIG.user.isAdmin = false; notes.renderCanvasNotes();
+        const before = requests.length;
+        await rackBlank().typeText('保存できない');
+        assert.equal(appState.canvasNotes.length, 1);
+        assert.equal(requests.length, before);
+    });
+    await t.test('ラックメモの個別削除は上中下段で動作し、確認・取消・権限・競合・非同期blur復活防止を守る', async () => {
+        const { DEFAULT_CANVAS_NOTE, RACK_NOTE_REGION_X } = await import('../public/js/core/canvas-note-data.js');
+        const stored = [
+            { ...DEFAULT_CANVAS_NOTE, id: 1, view_id: 1, x: 0, y: 0, text: '上段メモ1' },
+            { ...DEFAULT_CANVAS_NOTE, id: 2, view_id: 1, x: 0, y: 0, text: '上段メモ2' },
+            { ...DEFAULT_CANVAS_NOTE, id: 3, view_id: 1, x: RACK_NOTE_REGION_X, y: 1, text: '中段メモ' },
+            { ...DEFAULT_CANVAS_NOTE, id: 4, view_id: 1, x: RACK_NOTE_REGION_X, y: 2, text: '下段メモ' }
+        ];
+        setupRack(stored);
+        const deleteButtons = (region = 'upper') => rackSection(region)?.querySelectorAll('.rack-note-delete-btn') || [];
+        assert.equal(deleteButtons('upper').length, 2);
+        assert.equal(deleteButtons('middle').length, 1);
+        assert.equal(deleteButtons('lower').length, 1);
+        assert.equal(rackBlank('upper').parentElement.querySelector('.rack-note-delete-btn'), null);
+
+        let confirmPrompt = null;
+        globalThis.confirm = window.confirm = msg => { confirmPrompt = msg; return false; };
+        await deleteButtons('middle')[0].dispatch('click');
+        assert.equal(confirmPrompt, 'このラックメモを削除しますか？');
+        assert.equal(appState.canvasNotes.length, 4);
+        assert.equal(rackEditors('middle')[0].value, '中段メモ');
+
+        globalThis.confirm = window.confirm = () => true;
+        const middleEditor = rackEditors('middle')[0];
+        middleEditor.focus();
+        await middleEditor.typeText('中段を編集中');
+        await deleteButtons('middle')[0].dispatch('click');
+        await settle();
+        assert.equal(appState.canvasNotes.length, 3);
+        assert.equal(appState.canvasNotes.find(n => n.id === 3), undefined);
+        assert.equal(rackEditors('middle').length, 1, '削除後は空欄のみ');
+        assert.equal(requests.at(-1).views[0].canvas_notes.find(n => n.id === 3), undefined);
+
+        assert.deepEqual(appState.canvasNotes.map(n => [n.id, n.x, n.y]),
+            [[1, 0, 0], [2, 0, 0], [4, RACK_NOTE_REGION_X, 2]]);
+
+        window.APP_CONFIG.user.isAdmin = false;
+        notes.renderCanvasNotes();
+        assert.ok(deleteButtons('upper').every(btn => btn.disabled && btn.hidden));
+        assert.equal(notes.deleteRackNote(1), false);
+        window.APP_CONFIG.user.isAdmin = true;
+        notes.renderCanvasNotes();
+
+        appState.resourceConflicts.views.set(1, {});
+        notes.renderCanvasNotes();
+        assert.ok(deleteButtons('upper').every(btn => btn.disabled));
+        assert.equal(notes.deleteRackNote(1), false);
+        appState.resourceConflicts.views.clear();
+        notes.renderCanvasNotes();
+
+        await deleteButtons('upper')[0].dispatch('click');
+        await settle();
+        assert.equal(appState.canvasNotes.length, 2);
+        assert.equal(appState.canvasNotes.find(n => n.id === 1), undefined);
+    });
+    await t.test('新規入力欄から作成した直後にも削除ボタンが表示され、個別削除できる', async () => {
+        setupRack();
+        globalThis.confirm = window.confirm = () => true;
+        const blank = rackBlank('middle');
+        assert.equal(blank.parentElement.querySelector('.rack-note-delete-btn'), null);
+        await blank.typeText('作成直後のメモ');
+        const button = blank.parentElement.querySelector('.rack-note-delete-btn');
+        assert.ok(button, '再読込なしで削除ボタンが表示される');
+        await blank.dispatch('blur'); await settle();
+        await button.dispatch('click'); await settle();
+        assert.equal(appState.canvasNotes.length, 0);
+        assert.equal(rackEditors('middle').length, 1);
+        assert.equal(requests.at(-1).views[0].canvas_notes.length, 0);
     });
 });

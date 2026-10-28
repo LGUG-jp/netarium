@@ -6,6 +6,11 @@
         aria-label="キャンバス操作"
         aria-hidden="true"
     >
+        <div class="canvas-context-toolbar-content" data-canvas-context="rack-range" aria-label="ラック搭載範囲" hidden>
+            <strong id="rack-range-summary" role="status"></strong>
+            <button id="rack-range-mount-btn" type="button" class="btn btn-primary btn-sm">搭載</button>
+            <button id="rack-range-cancel-btn" type="button" class="btn btn-secondary btn-sm">キャンセル</button>
+        </div>
         <div
             class="canvas-context-toolbar-content"
             data-canvas-context="floor-plan"

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>サーバラック（扉付き・斜め正面）</title>
+  <!-- 既存機器アイコンに合わせた線幅3px、単色面による控えめな立体表現。 -->
+  <g stroke="#33536c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 13 21 8 H47 L54 14 46 19 H13 Z" fill="#e2edf6" />
+    <path d="M46 19 54 14 V51 L46 57 Z" fill="#8ba8bf" />
+    <rect x="13" y="13" width="33" height="44" rx="3" fill="#afc4d6" />
+    <rect x="18" y="18" width="23" height="33" rx="2" fill="#e5edf4" stroke-width="2.5" />
+    <path d="M17 57 V59 H22 M39 59 H44 V57" fill="none" />
+  </g>
+  <!-- 前扉のパンチングを簡略化。サーバ単体のドライブ列と区別する。 -->
+  <g stroke="#7695ad" stroke-width="2.5" stroke-linecap="round">
+    <path d="M22 23 H34 M22 28 H34 M22 33 H34 M22 38 H34 M22 43 H34 M22 48 H34" />
+  </g>
+  <path d="M38 31 V39" stroke="#33536c" stroke-width="3" stroke-linecap="round" />
+  <path d="M49.5 21 V48" stroke="#dce8f2" stroke-width="1.5" stroke-linecap="round" />
+</svg>

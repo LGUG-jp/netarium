@@ -1,6 +1,7 @@
 import { appState, getDeviceById, toSaveDevice, validateDevicesForSave } from './state.js';
 import { validateDeviceValues } from './device-validation.js';
 import { hasDeviceDraftChangesForIds } from './device-drafts.js';
+import { getPlacedDeviceIds, getRackDeviceMounts } from './device-placement.js';
 
 export const BULK_DEVICE_FIELDS = [
     { key: 'facility', label: '施設' },
@@ -65,7 +66,7 @@ export function prepareDeviceBulkEdit(session, updates) {
     });
     const byId = new Map(candidates.map(device => [Number(device.id), device]));
     validateDevicesForSave(appState.devices.map(device => byId.get(Number(device.id)) || { ...device }));
-    const placed = new Set(appState.placements.map(row => Number(row.device_id)));
+    const placed = getPlacedDeviceIds(appState.placements, getRackDeviceMounts(appState));
     return {
         updates: Object.fromEntries(keys.map(key => [key, candidates[0][key]])),
         candidates,

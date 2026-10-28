@@ -61,6 +61,7 @@ HSTSはHTTPS専用ホストで管理者が選んだ場合だけ使用します�
 - IIS実行IDから`php-cgi.exe`と、Ping利用時は`ping.exe`を実行できること。Ping利用時はPHPの`exec`を無効化しない
 - `SourcePath`、`InstallRoot`、`RollbackRoot`が互いに危険な包含関係にならないこと。`InstallRoot`と`RollbackRoot`は別領域にする
 - Application Poolは各Site専用とし、実行IDには仮想アカウント（`ApplicationPoolIdentity`）を強く推奨する。独自のユーザーアカウント（`SpecificUser`）を使用する場合は本Site専用とし、他のApplication Poolやサービスとユーザーアカウントを共有してはならない。同一ユーザーを複数Poolで共有すると、Windows NTFSのファイル所有者権限（WRITE_DAC）によりセッション領域等の分離が破られる。`LocalSystem`や`NetworkService`等の共有システムIDも使用禁止。事前検査ではアカウント名の表記ではなくSIDを比較する。対象Poolまたは他の`SpecificUser` PoolのSIDを解決できない場合や、Pool列挙・実行ID設定の読み取りに失敗した場合、未対応の実行IDの場合は、分離を確認できないため配備を中止する
+- 新設 Site の匿名認証は有効にし、実行主体を Application Pool ID（`anonymousAuthentication.userName=''`）にする。`setup-iis.ps1` は新設時にこの設定を適用し、既存 Site の認証設定は変更しない。既定の `IUSR` のままでは、専用 Pool に限定した NTFS ACL と一致せず、PHP 実行前に IIS が 401.3（Win32 エラー 5）を返す場合がある。既存 Site で発生した場合は、管理者が対象 Site の匿名認証と ACL を確認する。`IUSR` への一律アクセス許可で回避しない
 
 SQLiteは`<InstallRoot>\data\db`へDB本体と一時ファイルを作成します。ACLは`data.sqlite`単体ではなく`data/db`全体への変更権限を必要とします。プログラム領域へ書き込みを許可しません。
 

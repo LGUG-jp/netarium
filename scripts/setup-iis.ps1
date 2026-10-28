@@ -602,6 +602,9 @@ function Ensure-NetariumSite {
     $options = @{ Name = $SiteName; PhysicalPath = $PhysicalPath; ApplicationPool = $ApplicationPoolName; Port = $Port; HostHeader = $HostName; Force = $true; ErrorAction = 'Stop' }
     New-Website @options | Out-Null
     Stop-Website -Name $SiteName -ErrorAction Stop
+    # Match the pool-only NTFS ACL instead of inheriting the shared IUSR identity.
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $SiteName -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name userName -Value '' -ErrorAction Stop
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Location $SiteName -Filter 'system.webServer/security/authentication/anonymousAuthentication' -Name enabled -Value $true -ErrorAction Stop
     if ($Protocol -eq 'https') {
         Remove-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "system.applicationHost/sites/site[@name='$SiteName']/bindings" -Name '.' -AtElement @{ protocol = 'http'; bindingInformation = "*:${Port}:$HostName" } -ErrorAction Stop
     }

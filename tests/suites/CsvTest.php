@@ -238,6 +238,60 @@ class CsvTest extends TestCase
         )->assertOk()->getJson();
     }
 
+    public function testPcCsvRoundTripKeepsTypeEmptyIpAndColumnOrder(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $row = array_fill(0, 19, '');
+            $row[1] = 'CSV PC';
+            $row[2] = 'pc';
+            $row[12] = 'PCメモ';
+            $this->writeCsvRows($client, $path, [$row]);
+            $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+            $this->assertTrue($preview['can_commit']);
+            $this->assertSame(1, $preview['summary']['insert']);
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'], 'revision' => (int)$data['revision'],
+            ])->assertOk();
+            $saved = $db->query("SELECT * FROM devices WHERE name = 'CSV PC'")->fetch(\PDO::FETCH_ASSOC);
+            $this->assertSame('pc', $saved['type']);
+            $this->assertSame('', $saved['ip']);
+            $export = $client->get('/api.php?action=export_devices_csv')->assertStatus(200)->getBody();
+            $stream = fopen('php://temp', 'w+b');
+            try {
+                fwrite($stream, substr($export, 3));
+                rewind($stream);
+                $columns = fgetcsv($stream, null, ',', '"', '');
+                $this->assertSame(['id', 'name', 'type', 'ip', 'facility', 'floor', 'location',
+                    'manufacturer', 'model', 'asset_number', 'serial_number', 'mac_address', 'memo',
+                    'management_scheme', 'management_port', 'department', 'maintenance_vendor',
+                    'install_date', 'maintenance_expiry'], $columns);
+                $exported = null;
+                while (($values = fgetcsv($stream, null, ',', '"', '')) !== false) {
+                    if ($values[1] === 'CSV PC') {
+                        $exported = $values;
+                    }
+                }
+                $row[0] = (string)$saved['id'];
+                $this->assertSame($row, $exported);
+            } finally {
+                fclose($stream);
+            }
+            file_put_contents($path, $export);
+            $db->exec("UPDATE devices SET type = 'other', memo = '変更' WHERE id = " . (int)$saved['id']);
+            $current = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $preview = $this->previewCsv($client, $path, (int)$current['revision']);
+            $this->assertTrue($preview['can_commit']);
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'], 'revision' => (int)$current['revision'],
+            ])->assertOk();
+            $restored = $db->query("SELECT * FROM devices WHERE id = " . (int)$saved['id'])->fetch(\PDO::FETCH_ASSOC);
+            $this->assertSame('pc', $restored['type']);
+            $this->assertSame('', $restored['ip']);
+            $this->assertSame('PCメモ', $restored['memo']);
+        });
+    }
+
     public function testUnsafeCsvIdsAreErrorsWithoutDatabaseChanges(): void
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {

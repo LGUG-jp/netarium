@@ -6,9 +6,9 @@ namespace Netarium\Services\Backup;
 /**
  * バックアップZIP（Web構成情報・停止型完全バックアップ）の復元互換性ポリシー。
  *
- * SemVerやパッチ番号の大小比較で任意の旧版を機械的に許可せず、
- * ZIP形式・format_version・DBスキーマ版・保存データ契約・バックアップ元アプリ版・復元先アプリ版の組を
- * 個別に検証した組み合わせだけを明示的に許可する（fail-closed）。
+ * 同一メジャー内の順方向だけを受け付け、対応する元スキーマ契約と移行経路を確認する。
+ * この入口判定だけでは許可しない。各復元処理で元契約の厳密検証・移行・
+ * 復元先契約の再検証を行ってから配置する。
  */
 final class BackupCompatibilityPolicy
 {
@@ -18,37 +18,9 @@ final class BackupCompatibilityPolicy
     public const CONFIG_FORMAT_VERSION = 1;
     public const FULL_FORMAT_VERSION = 1;
 
-    /**
-     * 形式・format_version・DBスキーマ版・復元先アプリ版ごとの許可されたバックアップ元アプリ版一覧。
-     *
-     * @var array<string, array<int, array<int, array<string, list<string>>>>>
-     */
-    private const ALLOWED_RESTORE_MATRIX = [
-        self::FORMAT_CONFIG => [
-            self::CONFIG_FORMAT_VERSION => [
-                11 => [
-                    '1.0.0' => ['1.0.0'],
-                    '1.0.1' => ['1.0.1', '1.0.0'],
-                    '1.0.2' => ['1.0.2', '1.0.1', '1.0.0'],
-                    '1.0.3' => ['1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                    '1.1.0' => ['1.1.0', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                    '1.2.0' => ['1.2.0', '1.1.0', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                ],
-            ],
-        ],
-        self::FORMAT_FULL => [
-            self::FULL_FORMAT_VERSION => [
-                11 => [
-                    '1.0.0' => ['1.0.0'],
-                    '1.0.1' => ['1.0.1', '1.0.0'],
-                    '1.0.2' => ['1.0.2', '1.0.1', '1.0.0'],
-                    '1.0.3' => ['1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                    '1.1.0' => ['1.1.0', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                    '1.2.0' => ['1.2.0', '1.1.0', '1.0.3', '1.0.2', '1.0.1', '1.0.0'],
-                ],
-            ],
-        ],
-    ];
+    // 両復元処理に元契約の検証と 11→12→13→14→15→16 の移行が実装済み。
+    // 将来のスキーマは、検証・移行を実装するまでこの一覧へ追加しない。
+    private const SUPPORTED_SCHEMAS = [11, 12, 13, 14, 15, 16];
 
     public static function isSupportedFormat(
         string $expectedFormat,
@@ -68,17 +40,6 @@ final class BackupCompatibilityPolicy
             && $actualFormatVersion === $expectedVersion;
     }
 
-    /**
-     * @return list<string>
-     */
-    public static function allowedSourceVersions(
-        string $format,
-        int $formatVersion,
-        int $targetSchemaVersion,
-        string $targetAppVersion
-    ): array {
-        return self::ALLOWED_RESTORE_MATRIX[$format][$formatVersion][$targetSchemaVersion][$targetAppVersion] ?? [];
-    }
 
     public static function isCompatible(
         string $expectedFormat,
@@ -92,19 +53,46 @@ final class BackupCompatibilityPolicy
         if (!self::isSupportedFormat($expectedFormat, $actualFormat, $actualFormatVersion)) {
             return false;
         }
-        if (!is_int($sourceSchemaVersion) || $sourceSchemaVersion !== $targetSchemaVersion) {
-            return false;
+        return self::incompatibilityReason(
+            $sourceSchemaVersion, $sourceAppVersion, $targetSchemaVersion, $targetAppVersion
+        ) === null;
+    }
+
+    private static function incompatibilityReason(
+        mixed $sourceSchemaVersion,
+        mixed $sourceAppVersion,
+        int $targetSchemaVersion,
+        string $targetAppVersion
+    ): ?string {
+        // 安定版 MAJOR.MINOR.PATCH のみ。先頭ゼロ・接頭辞・プレリリース等は非対応。
+        $pattern = '/\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z/';
+        if (!is_string($sourceAppVersion)
+            || preg_match($pattern, $sourceAppVersion, $source) !== 1
+            || preg_match($pattern, $targetAppVersion, $target) !== 1) {
+            return 'invalid application version';
         }
-        if (!is_string($sourceAppVersion) || $sourceAppVersion === '') {
-            return false;
+        if ($source[1] !== $target[1]) {
+            return 'different major version';
         }
-        $allowed = self::allowedSourceVersions(
-            $expectedFormat,
-            $actualFormatVersion,
-            $targetSchemaVersion,
-            $targetAppVersion
-        );
-        return in_array($sourceAppVersion, $allowed, true);
+        // 桁数→同桁の数字の順で比較し、文字列辞書順や整数オーバーフローを避ける。
+        for ($part = 2; $part <= 3; $part++) {
+            $order = (strlen($source[$part]) <=> strlen($target[$part]))
+                ?: strcmp($source[$part], $target[$part]);
+            if ($order > 0) {
+                return 'reverse application version';
+            }
+            if ($order < 0) {
+                break;
+            }
+        }
+        if (!in_array($sourceSchemaVersion, self::SUPPORTED_SCHEMAS, true)
+            || !in_array($targetSchemaVersion, self::SUPPORTED_SCHEMAS, true)) {
+            return 'unsupported schema contract or migration path';
+        }
+        if ($sourceSchemaVersion > $targetSchemaVersion) {
+            return 'reverse schema migration';
+        }
+        return null;
     }
 
     public static function describeConfigIncompatibility(
@@ -113,23 +101,25 @@ final class BackupCompatibilityPolicy
         int $targetSchemaVersion,
         string $targetAppVersion
     ): string {
-        $allowed = self::allowedSourceVersions(
-            self::FORMAT_CONFIG,
-            self::CONFIG_FORMAT_VERSION,
-            $targetSchemaVersion,
-            $targetAppVersion
-        );
-        $allowedText = $allowed !== [] ? implode(', ', $allowed) : 'なし';
+        $reason = match (self::incompatibilityReason(
+            $sourceSchemaVersion, $sourceAppVersion, $targetSchemaVersion, $targetAppVersion
+        )) {
+            'invalid application version' => 'アプリ版の表記が不正または非対応です',
+            'different major version' => 'メジャーバージョンが異なります',
+            'reverse application version' => '新版から旧版への逆方向復元はできません',
+            'reverse schema migration' => 'DBスキーマの逆方向移行はできません',
+            default => 'スキーマの保存契約または移行経路が未対応です',
+        };
         $sourceAppText = is_string($sourceAppVersion) && $sourceAppVersion !== '' ? $sourceAppVersion : '不明';
         $sourceSchemaText = is_int($sourceSchemaVersion) ? (string)$sourceSchemaVersion : '不明';
 
         return sprintf(
-            '構成情報ZIPのスキーマ版またはアプリ版が一致しません（ZIP: アプリ版 %s / スキーマ版 %s、復元先: アプリ版 %s / スキーマ版 %d、対応するバックアップ元アプリ版: %s）',
+            '構成情報ZIPを復元できません: %s（ZIP: アプリ版 %s / スキーマ版 %s、復元先: アプリ版 %s / スキーマ版 %d）',
+            $reason,
             $sourceAppText,
             $sourceSchemaText,
             $targetAppVersion,
-            $targetSchemaVersion,
-            $allowedText
+            $targetSchemaVersion
         );
     }
 
@@ -141,27 +131,25 @@ final class BackupCompatibilityPolicy
         int $targetSchemaVersion,
         string $targetAppVersion
     ): string {
-        $allowed = self::allowedSourceVersions(
-            self::FORMAT_FULL,
-            self::FULL_FORMAT_VERSION,
-            $targetSchemaVersion,
-            $targetAppVersion
-        );
-        $allowedText = $allowed !== [] ? implode(',', $allowed) : 'none';
+        $reason = !self::isSupportedFormat(self::FORMAT_FULL, $actualFormat, $actualFormatVersion)
+            ? 'unsupported ZIP format'
+            : self::incompatibilityReason(
+                $sourceSchemaVersion, $sourceAppVersion, $targetSchemaVersion, $targetAppVersion
+            );
         $formatText = is_string($actualFormat) && $actualFormat !== '' ? $actualFormat : 'unknown';
         $formatVersionText = is_int($actualFormatVersion) ? (string)$actualFormatVersion : 'unknown';
         $sourceAppText = is_string($sourceAppVersion) && $sourceAppVersion !== '' ? $sourceAppVersion : 'unknown';
         $sourceSchemaText = is_int($sourceSchemaVersion) ? (string)$sourceSchemaVersion : 'unknown';
 
         return sprintf(
-            'Incompatible full backup manifest (format=%s v%s, source_app=%s, source_schema=%s, target_app=%s, target_schema=%d, supported_source_apps=%s)',
+            'Incompatible full backup manifest (%s; format=%s v%s, source_app=%s, source_schema=%s, target_app=%s, target_schema=%d)',
+            $reason,
             $formatText,
             $formatVersionText,
             $sourceAppText,
             $sourceSchemaText,
             $targetAppVersion,
-            $targetSchemaVersion,
-            $allowedText
+            $targetSchemaVersion
         );
     }
 }

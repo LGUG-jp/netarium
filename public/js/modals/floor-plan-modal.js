@@ -189,8 +189,11 @@ export function fitViewToFloorPlan(plan) {
 export function updateFloorPlanMenuVisibility() {
     const button = document.getElementById('floor-plan-manage-btn');
     if (!button) return;
-    button.hidden = !isCurrentUserAdmin() || getCurrentView()?.view_type !== 'floor';
-    button.disabled = button.hidden || appState.isFloorPlanUpdating || appState.authExpired;
+    const type = getCurrentView()?.view_type;
+    button.hidden = !isCurrentUserAdmin() || !['floor', 'rack'].includes(type);
+    button.disabled = type !== 'floor' || button.hidden || appState.isFloorPlanUpdating || appState.authExpired;
+    if (type === 'rack') button.title = 'ラックではフロア図面を利用できません';
+    else button.removeAttribute('title');
 }
 
 export function openFloorPlanManager({ returnToViewManager = false } = {}) {

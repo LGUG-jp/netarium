@@ -12,6 +12,10 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
         style: {}, dataset: {},
         appendChild(child) { child.parentElement = this; this.children.push(child); },
         append(...children) { children.forEach(child => this.appendChild(child)); },
+        remove() {
+            if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+            this.parentElement = null;
+        },
         replaceChildren(...children) { this.children = children; },
         contains(element) { return this === element || this.children.some(child => child.contains(element)); },
         querySelector() { return null; }, querySelectorAll() { return []; },
@@ -279,9 +283,13 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
 test('各操作確定時の自動保存と二重操作解消 (Issue #82)', async (t) => {
     const elements = new Map();
     const mockEl = (id = '') => ({
-        id, value: '', textContent: '', title: '', children: [], hidden: true, disabled: false,
+        id, value: '', textContent: '', title: '', children: [], options: [], hidden: true, disabled: false,
         classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
         style: {}, dataset: {}, appendChild() {}, append() {}, replaceChildren() {},
+        remove() {
+            if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+            this.parentElement = null;
+        },
         querySelector() { return null; }, querySelectorAll() { return []; },
         addEventListener() {}, removeEventListener() {}, setAttribute() {}, removeAttribute() {}, getAttribute() { return null; },
         focus() {},

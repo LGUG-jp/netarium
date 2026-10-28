@@ -17,6 +17,10 @@ test('起動時に直接リンクのビューを読み込み、追加したビ�
         style: {}, dataset: {},
         appendChild(child) { child.parentElement = this; this.children.push(child); },
         append(...children) { children.forEach(child => this.appendChild(child)); },
+        remove() {
+            if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+            this.parentElement = null;
+        },
         replaceChildren(...children) { this.children = children; },
         querySelector() { return null; }, querySelectorAll() { return []; },
         addEventListener(type, listener) {
