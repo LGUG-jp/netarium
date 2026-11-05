@@ -10,7 +10,9 @@ use Normalizer;
 use PDO;
 use Throwable;
 use Netarium\Repositories\AppMetaRepository;
+use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Services\Topology\DeviceFields;
+use Netarium\Services\Monitoring\PingReachabilityPolicy;
 
 class QualityDiagnosticService
 {
@@ -763,14 +765,73 @@ class QualityDiagnosticService
         /*
          * 重複値。
          */
-        $this->appendDataQualityDuplicateIssues(
-            $issues,
-            $devices,
-            'ip',
-            'duplicate_ip',
-            'IPアドレスが重複しています',
-            static fn(string $value): string => trim($value)
+        $hasIpSegments = (bool)$this->db->query('SELECT EXISTS(SELECT 1 FROM ip_segments)')->fetchColumn();
+        $ipGroups = [];
+        $ipRecords = (new DeviceIpAddressRepository($this->db))->getIpRecords();
+        $pingDecisions = PingReachabilityPolicy::decisions(
+            $ipRecords,
+            $this->db->query('SELECT * FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
         );
+        foreach ($ipRecords as $record) {
+            $ipGroups[$record['ip']][] = $record;
+            // 不正なIPv4やIPv6は未分類診断の対象に含めない。
+            if ($hasIpSegments && $record['segment_id'] === null
+                && filter_var($record['ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+                $fieldLabel = $record['kind'] === 'management' ? '管理IPv4アドレス' : '追加IPv4アドレス';
+                $issues[] = $this->createDataQualityIssue(
+                    'unclassified_ip', 'warning', 'completeness', 'device', [(int)$record['device_id']],
+                    $fieldLabel . ' ' . $record['ip'] . ' が未分類です。IPアドレス管理で所属を確認してください',
+                    [
+                        'field' => $record['kind'] === 'management' ? 'ip' : 'additional_ips',
+                        'field_labels' => [$fieldLabel],
+                        'value' => $record['ip'],
+                        'devices' => [['id' => (int)$record['device_id'], 'name' => $record['device_name']]],
+                        'ip_records' => [$record],
+                    ]
+                );
+            }
+        }
+        foreach ($ipGroups as $ip => $records) {
+            $records = array_values(array_filter($records, static function (array $record) use ($records): bool {
+                foreach ($records as $other) {
+                    if ($record === $other) { continue; }
+                    if ($record['address_space_id'] === null || $other['address_space_id'] === null
+                        || $record['address_space_id'] === $other['address_space_id']) { return true; }
+                }
+                return false;
+            }));
+            $deviceIds = array_values(array_unique(array_map('intval', array_column($records, 'device_id'))));
+            if (count($records) < 2) { continue; }
+            $issues[] = $this->createDataQualityIssue(
+                'duplicate_ip', 'warning', 'duplicate', 'device', $deviceIds,
+                'IPアドレスが重複しています。利用状況を確認してください',
+                ['field' => 'ip', 'value' => (string)$ip, 'devices' => array_map(
+                    static fn(array $record): array => ['id' => (int)$record['device_id'], 'name' => $record['device_name']],
+                    $records
+                ), 'ip_records' => $records]
+            );
+        }
+
+        // 同値IPという事実ではなく、管理IPの通信先が設定上識別できない場合だけ警告する。
+        $warnedIps = [];
+        foreach ($pingDecisions as $decision) {
+            if (!in_array($decision['reason_code'], ['multiple_reachable', 'unresolved'], true)) { continue; }
+            $records = $decision['records'];
+            $ip = (string)$records[0]['ip'];
+            if (isset($warnedIps[$ip])) { continue; }
+            $warnedIps[$ip] = true;
+            $issues[] = $this->createDataQualityIssue(
+                'ambiguous_ping_target', 'warning', 'monitoring', 'device', array_column($records, 'device_id'),
+                'Ping対象の識別不可: ' . $ip . ' の通信先を特定できないため、Pingはスキップされます',
+                [
+                    'value' => $ip,
+                    'reason' => $decision['reason_code'],
+                    'devices' => array_map(static fn(array $record): array =>
+                        ['id' => (int)$record['device_id'], 'name' => $record['device_name']], $records),
+                    'ip_records' => $records,
+                ]
+            );
+        }
 
         $this->appendDataQualityDuplicateIssues(
             $issues,
@@ -1006,8 +1067,9 @@ class QualityDiagnosticService
             } else {
                 $monitor = $monitorByDeviceId[$deviceId] ?? null;
                 $lastCheckedAt = trim((string)($monitor['last_checked_at'] ?? ''));
+                $intentionallyExcluded = ($pingDecisions[$deviceId]['reason_code'] ?? null) === 'unreachable';
 
-                if ($lastCheckedAt === '') {
+                if ($lastCheckedAt === '' && !$intentionallyExcluded) {
                     $issues[] = $this->createDataQualityIssue(
                         'monitor_unconfirmed',
                         'info',
@@ -1017,11 +1079,11 @@ class QualityDiagnosticService
                         '監視状態が未確認です',
                         []
                     );
-                } else {
+                } elseif ($lastCheckedAt !== '') {
                     try {
                         $checkedAt = new DateTimeImmutable($lastCheckedAt);
 
-                        if ($checkedAt < $staleBefore) {
+                        if (!$intentionallyExcluded && $checkedAt < $staleBefore) {
                             $issues[] = $this->createDataQualityIssue(
                                 'stale_monitor',
                                 'warning',

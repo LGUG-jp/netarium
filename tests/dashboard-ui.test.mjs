@@ -23,8 +23,12 @@ async function setup(t, templates = []) {
         ? dom.get('dashboard-overlay').querySelector('.dashboard-dialog')
         : querySelector(selector);
     let requests = 0;
-    globalThis.fetch = async () => {
+    globalThis.fetch = async url => {
         requests++;
+        if (String(url).includes('action=load_ip_management_summary')) {
+            return { ok: true, json: async () => ({ ok: true, revision: 1,
+                summary: { address_spaces: 0, ip_segments: 0, registered_ips: 0, unclassified_ips: 0 } }) };
+        }
         return { ok: true, json: async () => ({ ok: true, revision: 1, issues: [], summary: { error: 0, warning: 0, info: 0, total: 0 } }) };
     };
     Object.assign(appState, {
@@ -78,6 +82,9 @@ test('実テンプレートのタブ切替は再取得せず、更新後も維�
     await clickTab(dom, 'assets');
     assertSelected(dom, 'assets');
     assert.equal(dom.requests(), before);
+    assert.equal(document.getElementById('dashboard-assets-types-count'), null);
+    assert.equal(dom.get('dashboard-assets-facilities-count').textContent, '0');
+    assert.equal(dom.get('dashboard-maintenance-expired-count').closest('button').classList.contains('dashboard-kpi-unplaced'), false);
     for (const category of ['expired', 'within1Year', 'within2Years']) {
         const count = dom.get(`dashboard-maintenance-${category}-count`);
         assert.equal(count.textContent, '0');
@@ -90,9 +97,10 @@ test('実テンプレートのタブ切替は再取得せず、更新後も維�
     assert.ok(focusable.includes(dom.get('dashboard-maintenance-expired-count').closest('button')));
     appState.devices = [{ id: 1, name: '保守切れ機器', maintenance_expiry: '2000-01-01', status: 'green' }];
     await refreshDashboard();
-    assert.equal(dom.requests(), before + 1);
+    assert.equal(dom.requests(), before + 2);
     assertSelected(dom, 'assets');
     assert.equal(dom.get('dashboard-maintenance-expired-count').textContent, '1');
+    assert.equal(dom.get('dashboard-maintenance-expired-count').closest('button').classList.contains('dashboard-kpi-unplaced'), true);
     closeDashboard();
     openDashboard();
     await settleRefresh();
@@ -158,9 +166,9 @@ test('機器内訳の概要は詳細を閉じても更新し、ラックとは�
     const rackList = dom.get('dashboard-rack-list');
     const summary = () => [
         dom.get('dashboard-assets-devices-count').textContent,
-        dom.get('dashboard-assets-types-count').textContent
+        dom.get('dashboard-assets-facilities-count').textContent
     ];
-    assert.deepEqual(summary(), ['8', '2']);
+    assert.deepEqual(summary(), ['8', '7']);
     assert.equal(details.hidden, true);
     assert.equal(toggle.getAttribute('aria-expanded'), 'false');
     assert.ok(!getDashboardFocusableElements().includes(dom.get('dashboard-type-list').querySelector('button')));
@@ -183,7 +191,7 @@ test('機器内訳の概要は詳細を閉じても更新し、ラックとは�
     assert.equal(rackList.hidden, false);
     appState.devices.push({ id: 9, type: 'router', facility: '追加施設', floor: '2F' });
     await refreshDashboard();
-    assert.deepEqual(summary(), ['9', '3']);
+    assert.deepEqual(summary(), ['9', '8']);
     assert.equal(details.hidden, true);
     assert.equal(rackList.hidden, false);
     await toggle.dispatch('click');
@@ -200,6 +208,25 @@ test('機器内訳の概要は詳細を閉じても更新し、ラックとは�
     assert.equal(facilities.querySelectorAll('button').length, 0);
     assert.equal(dom.get('dashboard-floor-list').querySelectorAll('button').length, 0);
     assert.equal(dom.get('dashboard-type-list').querySelectorAll('button').length, 0);
+});
+
+test('施設数は登録済みの施設だけを重複排除して数え、未設定を含めない', async t => {
+    const dom = await setup(t);
+    appState.devices = [
+        { id: 1, facility: '本庁' },
+        { id: 2, facility: ' 本庁 ' },
+        { id: 3, facility: '分庁舎' },
+        { id: 4, facility: '' },
+        { id: 5, facility: '  ' },
+        { id: 6 }
+    ];
+    openDashboard();
+    await settleRefresh();
+    assert.equal(dom.get('dashboard-assets-devices-count').textContent, '6');
+    assert.equal(dom.get('dashboard-assets-facilities-count').textContent, '2');
+    appState.devices = [{ id: 7, facility: '' }];
+    await refreshDashboard();
+    assert.equal(dom.get('dashboard-assets-facilities-count').textContent, '0');
 });
 
 test('ラック一覧だけを折り畳み、再描画と更新に追従し、開き直すと閉じる', async t => {
@@ -332,4 +359,186 @@ test('ラック選択は未適用編集とPing中の拒否を維持し、成功�
     assert.equal(dom.get('world').hidden, true);
     assert.equal(dom.get('rack-view').getAttribute('aria-label'), '遷移先ラック');
     assert.equal(document.activeElement, selector);
+});
+
+test('IP集計は未取得・取得中・DBの件数・失敗・再取得を区別し、古い画面マスタに依存しない', async t => {
+    const dom = await setup(t);
+    assert.equal(dom.get('dashboard-ip-status').textContent, '未取得');
+    let finish;
+    const pending = new Promise(resolve => { finish = resolve; });
+    const qualityFetch = globalThis.fetch;
+    let fail = false;
+    globalThis.fetch = async url => {
+        if (!String(url).includes('action=load_ip_management_summary')) return qualityFetch(url);
+        await pending;
+        if (fail) return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };
+        return { ok: true, json: async () => ({ ok: true, revision: 7,
+            summary: { address_spaces: 2, ip_segments: 3, registered_ips: 5, unclassified_ips: 1 } }) };
+    };
+    Object.assign(appState, { addressSpaces: [], ipSegments: [] });
+    openDashboard();
+    assert.match(dom.get('dashboard-ip-status').textContent, /取得中/);
+    assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, '—');
+    finish();
+    await settleRefresh();
+    assert.deepEqual(['address_spaces', 'ip_segments', 'registered_ips', 'unclassified_ips']
+        .map(key => dom.get(`dashboard-ip-${key}-count`).textContent), ['2', '3', '5', '1']);
+    assert.equal(dom.get('dashboard-ip-unclassified').classList.contains('is-warning'), true);
+    assert.equal(dom.get('dashboard-ip-unclassified').disabled, false);
+    assert.match(dom.get('dashboard-ip-status').textContent, /画面データと差異/);
+    fail = true;
+    await refreshDashboard();
+    assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, '—');
+    assert.match(dom.get('dashboard-ip-status').textContent, /取得できません/);
+    assert.equal(dom.get('dashboard-ip-unclassified').disabled, true);
+    fail = false;
+    await refreshDashboard();
+    assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, '5');
+    assert.equal(dom.get('dashboard-ip-unclassified').disabled, false);
+});
+
+for (const ipFinished of [false, true]) {
+    test(`更新中の開き直しはIP取得${ipFinished ? '完了後の集計' : '中の状態'}を保持し、通常の開き直しは再取得する`, async t => {
+        const dom = await setup(t);
+        const originalFetch = globalThis.fetch;
+        let finishQuality, finishIp;
+        const qualityPending = new Promise(resolve => { finishQuality = resolve; });
+        const ipPending = new Promise(resolve => { finishIp = resolve; });
+        t.after(() => { finishQuality(); finishIp(); });
+        let registered = 3;
+        globalThis.fetch = async url => {
+            if (String(url).includes('action=data_quality')) {
+                await qualityPending;
+                return originalFetch(url);
+            }
+            await ipPending;
+            return { ok: true, json: async () => ({ ok: true, revision: 1,
+                summary: { address_spaces: 1, ip_segments: 2, registered_ips: registered, unclassified_ips: 1 } }) };
+        };
+        if (ipFinished) finishIp();
+        openDashboard();
+        await settleRefresh();
+        assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, ipFinished ? '3' : '—');
+        closeDashboard();
+        openDashboard();
+        await clickTab(dom, 'assets');
+        assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, ipFinished ? '3' : '—');
+        assert.equal(dom.get('dashboard-ip-unclassified').disabled, true);
+        finishIp();
+        finishQuality();
+        await settleRefresh();
+        assert.deepEqual(['address_spaces', 'ip_segments', 'registered_ips', 'unclassified_ips']
+            .map(key => dom.get(`dashboard-ip-${key}-count`).textContent), ['1', '2', '3', '1']);
+        assert.equal(dom.get('dashboard-ip-status').hidden, true);
+        assert.equal(dom.get('dashboard-ip-unclassified').disabled, false);
+        assert.equal(dom.get('dashboard-refresh-btn').disabled, false);
+        registered = 4;
+        closeDashboard();
+        openDashboard();
+        await settleRefresh();
+        assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, '4');
+    });
+}
+
+test('品質取得の失敗でもIP取得の完了を待ち、IPサマリーは独立して表示する', async t => {
+    const dom = await setup(t);
+    const originalFetch = globalThis.fetch;
+    const originalError = console.error;
+    console.error = () => {};
+    t.after(() => { console.error = originalError; });
+    let finish;
+    const pending = new Promise(resolve => { finish = resolve; });
+    globalThis.fetch = async url => {
+        if (String(url).includes('action=data_quality')) throw new Error('quality unavailable');
+        await pending;
+        return originalFetch(url);
+    };
+    openDashboard();
+    await settleRefresh();
+    assert.equal(dom.get('dashboard-refresh-btn').disabled, true);
+    assert.equal(dom.get('dashboard-ip-unclassified').disabled, true);
+    finish();
+    await settleRefresh();
+    assert.equal(dom.get('dashboard-refresh-btn').disabled, false);
+    assert.equal(dom.get('dashboard-ip-registered_ips-count').textContent, '0');
+    assert.equal(dom.get('dashboard-ip-unclassified').disabled, false);
+    assert.equal(dom.get('dashboard-ip-status').hidden, true);
+    assert.equal(dom.get('dashboard-ip-unclassified').querySelector('.dashboard-kpi-unit').textContent, '件');
+    assert.equal(dom.get('dashboard-status').hidden, false);
+});
+
+test('IP全ゼロは警告にせず、区分一覧と未分類一覧へ排他的に遷移し起動元にフォーカスを戻す', async t => {
+    const dom = await setup(t);
+    const { closeIpManagement } = await import('../public/js/modals/ip-management-modal.js');
+    const originalFetch = globalThis.fetch;
+    const requested = [];
+    globalThis.fetch = async url => {
+        const action = new URL(url, 'http://localhost').searchParams.get('action');
+        requested.push(action);
+        if (action === 'load_ip_management') return new Response(JSON.stringify({
+            ok: true, status: 'success', revision: 1, devices: [], address_spaces: [], ip_segments: [], ip_records: []
+        }));
+        return originalFetch(url);
+    };
+    const origin = document.createElement('button');
+    document.body.appendChild(origin);
+    for (const action of ['ip-management', 'ip-unclassified']) {
+        origin.focus();
+        openDashboard();
+        await settleRefresh();
+        await clickTab(dom, 'assets');
+        assert.equal(dom.get('dashboard-ip-unclassified_ips-count').textContent, '0');
+        assert.equal(dom.get('dashboard-ip-unclassified').classList.contains('is-warning'), false);
+        const before = requested.length;
+        const button = document.querySelector(`[data-dashboard-action="${action}"]`);
+        button.focus();
+        const { handleDashboardAction } = await import('../public/js/modals/dashboard-modal.js');
+        handleDashboardAction(button.dataset.dashboardAction);
+        await settleRefresh();
+        const modal = document.getElementById('ip-management-overlay');
+        assert.equal(dom.get('dashboard-overlay').hidden, true);
+        assert.equal(getTopModalContainer(), modal);
+        assert.equal(modal.hidden, false);
+        assert.match(modal.textContent, action === 'ip-unclassified' ? /未分類IP一覧/ : /ネットワークを登録/);
+        assert.deepEqual(requested.slice(before), ['load_ip_management']);
+        await closeIpManagement();
+        await settleRefresh();
+        assert.equal(getTopModalContainer(), null);
+        assert.equal(document.activeElement, origin);
+    }
+});
+
+test('到達不可を含む未確認も全機器のOK率に含み、到達性警告は既存の品質診断へ進む', async t => {
+    const dom = await setup(t);
+    dom.add('div', 'data-quality-overlay');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async url => String(url).includes('action=data_quality')
+        ? { ok: true, json: async () => ({
+            ok: true, revision: 1,
+            summary: { error: 0, warning: 1, info: 0, total: 1 },
+            issues: [{ code: 'ambiguous_ping_target', severity: 'warning', category: 'monitoring',
+                entity_type: 'device', entity_ids: [1, 2], message: 'Ping対象の識別不可' }]
+        }) }
+        : originalFetch(url);
+    appState.devices = [
+        normalizeDevice({ id: 1, name: '到達可能', status: 'green' }),
+        normalizeDevice({ id: 2, name: '未確定', status: 'unknown' }),
+        normalizeDevice({ id: 3, name: '到達不可', status: 'unknown' }),
+        normalizeDevice({ id: 4, name: '未実行', status: 'unknown' })
+    ];
+    openDashboard();
+    await settleRefresh();
+    assert.equal(dom.get('dashboard-devices-count').textContent, '4');
+    assert.equal(dom.get('dashboard-monitoring-green-count').textContent, '1台');
+    assert.equal(dom.get('dashboard-monitoring-unknown-count').textContent, '3台');
+    assert.equal(dom.get('dashboard-bar-green').style.width, '25.0%');
+    assert.equal(dom.get('dashboard-bar-unknown').style.width, '75.0%');
+    assert.equal(dom.get('dashboard-quality-warning-count').textContent, '1');
+    const { handleDashboardAction } = await import('../public/js/modals/dashboard-modal.js');
+    handleDashboardAction('quality-warning');
+    assert.equal(dom.get('dashboard-overlay').hidden, true);
+    assert.equal(dom.get('data-quality-overlay').hidden, false);
+    assert.equal(appState.dataQualitySeverityFilter, 'warning');
+    assert.equal(appState.dataQualityCategoryFilter, '');
+    assert.equal(appState.dataQualityResult.issues[0].code, 'ambiguous_ping_target');
 });

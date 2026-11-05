@@ -10,12 +10,12 @@
             aria-labelledby="device-search-view-title"
         >
             <header class="placement-manager-header">
-                <div>
+                <div class="modal-header-heading">
                     <h2 id="device-search-view-title">
                         表示先を選択
                     </h2>
 
-                    <p id="device-search-view-device">
+                    <p id="device-search-view-device" class="modal-header-target">
                         -
                     </p>
                 </div>

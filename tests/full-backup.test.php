@@ -21,6 +21,7 @@ function rpc(array $worker, array $request, bool $ok = true): mixed
     check(is_string($line), 'Worker stopped');
     $r = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
     check($r['ok'] === $ok, 'Unexpected worker result: ' . $line);
+    check(!str_contains($line, 'secret-marker'), 'Config body leaked in worker response');
     return $r['result'] ?? null;
 }
 function copyTree(string $source, string $destination): void
@@ -46,7 +47,7 @@ function pinLegacyFixtureSchema(string $app, int $version = 11): void
     // Pin an actual old migration chain, never just falsify archive metadata.
     $path = $app . '/src/Core/DatabaseSchema.php';
     $schema = (string)file_get_contents($path);
-    file_put_contents($path, str_replace('const APP_DATABASE_SCHEMA_VERSION = 16;',
+    file_put_contents($path, str_replace('const APP_DATABASE_SCHEMA_VERSION = ' . APP_DATABASE_SCHEMA_VERSION . ';',
         'const APP_DATABASE_SCHEMA_VERSION = ' . $version . ';', $schema));
 }
 
@@ -375,8 +376,8 @@ try {
     check($manifest110['application_version'] === '1.1.0', 'v1.1.0 pack did not record 1.1.0');
     $reverse110On103 = $root . '/reject-110-on-103'; mkdir($reverse110On103);
     rpc($worker103, ['command' => 'extract', 'archive' => $archive110, 'root' => $reverse110On103, 'max_bytes' => 10000000, 'max_files' => 100], false);
-    // Candidate version is isolated: repository version.php remains unchanged.
-    $candidateVersion = '1.3.0';
+    // Use the actual source version for the isolated current-schema application.
+    $candidateVersion = NETARIUM_VERSION;
     $candidateApp = $root . '/app-candidate'; mkdir($candidateApp); mkdir($candidateApp . '/scripts');
     copy(dirname(__DIR__) . '/bootstrap.php', $candidateApp . '/bootstrap.php');
     file_put_contents($candidateApp . '/version.php', "<?php\ndeclare(strict_types=1);\nconst NETARIUM_VERSION = '$candidateVersion';\n");
@@ -401,15 +402,88 @@ try {
     $currentDb->exec("INSERT INTO views(id,name,view_type) VALUES (91,'Rack floor','floor')");
     $currentDb->exec('INSERT INTO floor_rack_placements VALUES (91,90,12.5,-20)');
     $currentFloorRacks = $currentDb->query('SELECT * FROM floor_rack_placements')->fetchAll(PDO::FETCH_ASSOC);
+    $currentDb->exec("UPDATE devices SET ip='192.0.2.1' WHERE id=1");
+    $currentDb->exec("INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order)
+        VALUES (7,1,'198.51.100.1','service',1),(8,1,'203.0.113.1','backup',0),(9,2,'198.51.100.1','isolated',0)");
+    $currentDb->exec("INSERT INTO address_spaces(id,name,memo,ping_reachability) VALUES(41,'本番','空間メモ','reachable'),(42,'隔離','','unreachable')");
+    $currentDb->exec("INSERT INTO ip_segments(id,address_space_id,cidr,name,purpose,facility,vlan_id,memo)
+        VALUES(51,41,'192.0.2.0/24','管理','管理用','本社',1,''),
+        (52,41,'198.51.100.0/24','業務','','',4094,'メモ'),
+        (53,42,'198.51.100.0/24','隔離','','',NULL,'')");
+    $currentDb->exec('UPDATE devices SET ip_segment_id=51 WHERE id=1');
+    $currentDb->exec('UPDATE device_ip_addresses SET segment_id=52 WHERE id IN (7,9)');
+    $currentSpaces = $currentDb->query('SELECT * FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $currentSegments = $currentDb->query('SELECT * FROM ip_segments ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $currentAddresses = $currentDb->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
     $currentDb->exec("INSERT INTO canvas_notes (id,view_id,text,x,y,width,height,background_color,background_opacity,text_color,font_size)
         VALUES (9001,90,' ラック注釈 <b>文字</b> ',12.5,22,360,180,'#FFF3B0',0.4,'#ABCDEF',24)");
     $currentNotes = $currentDb->query('SELECT * FROM canvas_notes WHERE view_id=90 ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
     $currentMounts = $currentDb->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC);
+    $currentHistoryTime = gmdate('Y-m-d\TH:i:s\Z', time() - 3600);
+    $currentHistoryJson = json_encode(['source' => 'save_resources', 'items' => [['label' => '種別', 'before' => 'その他', 'after' => 'PC']]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+    $currentDb->prepare("INSERT INTO change_history (id,event_id,request_id,occurred_at,actor_user_id,actor_name,target_type,target_id,target_name,operation,summary,changes_json)
+        VALUES (31,31,'full-req-1',?,1,'full-admin','device',1,'backup-fixture','update','種別を変更',?)")->execute([$currentHistoryTime, $currentHistoryJson]);
+    $currentHistory = $currentDb->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $currentDb->exec("INSERT INTO device_config_states(device_id,revision,next_generation) VALUES(1,12,19),(2,8,22)");
+    $configInsert = $currentDb->prepare('INSERT INTO device_configs(id,device_id,generation,content,created_at,actor_user_id,actor_name,memo) VALUES(?,?,?,?,?,?,?,?)');
+    $configInsert->execute([41, 1, 3, "hostname old\n", '2026-01-01T00:00:00Z', null, '削除済み登録者', '旧版']);
+    $configInsert->execute([43, 1, 5, "hostname 日本語\nline 2\n", '2026-01-01T01:00:00Z', 1, 'full-admin', '日本語版']);
+    $configInsert->execute([45, 1, 9, "hostname middle\n", '2026-01-01T02:00:00Z', 1, 'full-admin', '中間版']);
+    $configInsert->execute([47, 1, 12, "hostname previous\n", '2026-01-02T00:00:00Z', 1, 'full-admin', '前版']);
+    $configInsert->execute([49, 1, 17, "hostname kept\n", '2026-01-02T00:00:00Z', 1, 'full-admin', '保存版']);
+    $configInsert = null;
+    $currentConfigs = $currentDb->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $currentConfigStates = $currentDb->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC);
     $currentDb = null;
     $currentArchive = $root . '/good-current.zip';
     $candidateManifest = rpc($currentWorker, ['command' => 'pack', 'root' => $currentStage, 'destination' => $currentArchive]);
-    check($candidateManifest['application_version'] === '1.3.0' && $candidateManifest['schema_version'] === 16,
-        'Candidate helper must use isolated app1.3.0/schema16');
+    check($candidateManifest['application_version'] === $candidateVersion && $candidateManifest['schema_version'] === APP_DATABASE_SCHEMA_VERSION,
+        'Candidate helper must use the current schema');
+    check((string)file_get_contents($root . '/stderr-current') === '',
+        'Current-schema backup emitted PHP diagnostics');
+
+    // Full output preserves expired rows; only a verified isolated restore is
+    // pruned. Keep the no-expired archive above for byte-identical round trips.
+    $retentionStage = $root . '/retention-snapshot';
+    copyTree($currentStage, $retentionStage);
+    $retentionDb = new PDO('sqlite:' . $retentionStage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $retentionDb->prepare("INSERT INTO change_history (id,event_id,request_id,occurred_at,actor_user_id,actor_name,target_type,target_id,target_name,operation,summary,changes_json)
+        VALUES (45,45,'full-expired',?,1,'full-admin','device',1,'backup-fixture','update','期限切れ変更',?)")
+        ->execute([gmdate('Y-m-d\TH:i:s\Z', time() - 95 * 86400), $currentHistoryJson]);
+    $retentionFingerprints = [];
+    foreach ($retentionDb->query("SELECT name FROM sqlite_master WHERE type='table'") as $row) {
+        $table = $row['name'];
+        if ($table === 'change_history') { continue; }
+        $columns = array_column($retentionDb->query('PRAGMA table_info("' . str_replace('"', '""', $table) . '")')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        $retentionFingerprints[$table] = ['columns' => $columns, 'fingerprint' => fullTableFingerprint($retentionDb, $table, $columns)];
+    }
+    $retentionDb = null;
+    $retentionSourceHash = hash_file('sha256', $retentionStage . '/db/data.sqlite');
+    $retentionPrepared = rpc($currentWorker, ['command' => 'prepare', 'root' => $retentionStage]);
+    check($retentionPrepared['change_history'] === 2, 'Full preparation pruned source history');
+    $retentionArchive = $root . '/retention.zip';
+    $retentionManifest = rpc($currentWorker, ['command' => 'pack', 'root' => $retentionStage, 'destination' => $retentionArchive]);
+    check($retentionManifest['counts']['change_history'] === 2, 'Full output omitted expired source history');
+    check($retentionManifest['files']['db/data.sqlite']['sha256'] === $retentionSourceHash, 'Full output rewrote source DB');
+    $retentionZip = new ZipArchive();
+    check($retentionZip->open($retentionArchive) === true, 'Cannot inspect retention archive');
+    check(hash('sha256', (string)$retentionZip->getFromName('db/data.sqlite')) === $retentionSourceHash, 'Archived DB does not match source');
+    $retentionZip->close();
+    $retentionArchiveHash = hash_file('sha256', $retentionArchive);
+    $retentionDestination = $root . '/retention-restored'; mkdir($retentionDestination);
+    $retentionExtracted = rpc($currentWorker, ['command' => 'extract', 'archive' => $retentionArchive,
+        'root' => $retentionDestination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    check($retentionExtracted === $retentionManifest, 'Retention changed original manifest metadata');
+    check(hash_file('sha256', $retentionArchive) === $retentionArchiveHash, 'Retention changed source archive');
+    check(hash_file('sha256', $retentionStage . '/db/data.sqlite') === $retentionSourceHash, 'Retention changed source DB');
+    $retentionDb = new PDO('sqlite:' . $retentionDestination . '/db/data.sqlite');
+    check($retentionDb->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentHistory,
+        'Full restore must retain recent history and prune expired history');
+    foreach ($retentionFingerprints as $table => $source) {
+        check(fullTableFingerprint($retentionDb, $table, $source['columns']) === $source['fingerprint'],
+            'Retention changed other restored data: ' . $table);
+    }
+    $retentionDb = null;
     // Prefer the unchanged official public v1.2.0 source tree (schema11).
     // Without that root, this is explicitly a current-code/schema11 fixture,
     // not evidence that the historical release helper produced the archive.
@@ -437,12 +511,14 @@ try {
     $source120 = rpc($currentWorker, ['command' => 'extract', 'archive' => $legacy120Archive, 'root' => $legacy120Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
     check($source120['application_version'] === '1.2.0' && $source120['schema_version'] === 11, 'Legacy1.2 source metadata was falsified');
     $legacy120Db = new PDO('sqlite:' . $legacy120Destination . '/db/data.sqlite');
-    check((int)$legacy120Db->query('PRAGMA user_version')->fetchColumn() === 16, 'Legacy1.2 was not migrated');
-    check($legacy120Db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $liveRows['users'],
-        'v1.2.0->v1.3.0 changed users or password hashes');
+    check((int)$legacy120Db->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Legacy1.2 was not migrated');
+    $migratedUsers = $legacy120Db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    check(array_column($migratedUsers, 'deleted_at') === array_fill(0, count($migratedUsers), null), 'Legacy users must migrate as not deleted');
+    check(array_map(static function (array $row): array { unset($row['deleted_at']); return $row; }, $migratedUsers) === $liveRows['users'],
+        'Legacy restore changed users or password hashes');
     foreach ($imageFiles as $name => $bytes) {
         check(hash_file('sha256', $legacy120Destination . '/' . $name) === hash('sha256', $bytes),
-            'v1.2.0->v1.3.0 changed image bytes');
+            'Legacy restore changed image bytes');
     }
     $legacy120Db = null;
     $schema12App = $root . '/app-schema12'; mkdir($schema12App); mkdir($schema12App . '/scripts');
@@ -470,7 +546,7 @@ try {
         'root' => $schema12Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
     check($schema12Source['schema_version'] === 12, 'Schema12 source metadata changed');
     $schema12Restored = new PDO('sqlite:' . $schema12Destination . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    check((int)$schema12Restored->query('PRAGMA user_version')->fetchColumn() === 16, 'Schema12 not migrated');
+    check((int)$schema12Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema12 not migrated');
     check($schema12Restored->query('PRAGMA foreign_key_check')->fetch() === false, 'Schema12 migration broke foreign keys');
     check($schema12Restored->query('SELECT location FROM rack_settings WHERE view_id=90')->fetchColumn() === 'Legacy room', 'Schema12 rack data lost');
     check($schema12Restored->query('SELECT depth FROM rack_mounts')->fetchColumn() === 'half', 'Schema12 depth default missing');
@@ -509,7 +585,7 @@ try {
         'root' => $schema13Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
     check($schema13Source['schema_version'] === 13, 'Schema13 source metadata changed');
     $schema13Restored = new PDO('sqlite:' . $schema13Destination . '/db/data.sqlite');
-    check((int)$schema13Restored->query('PRAGMA user_version')->fetchColumn() === 16, 'Schema13 not migrated');
+    check((int)$schema13Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema13 not migrated');
     check($schema13Restored->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC)
         === array_map(static fn($row) => $row + ['depth' => 'half'], $schema13Before), 'Schema13 mount values changed');
     check($schema13Restored->query('SELECT type FROM devices WHERE id=1')->fetchColumn() === 'pc', 'Schema13 PC lost');
@@ -537,7 +613,7 @@ try {
         'root' => $schema14Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
     check($schema14Source['schema_version'] === 14, 'Schema14 source metadata changed');
     $schema14Restored = new PDO('sqlite:' . $schema14Destination . '/db/data.sqlite');
-    check((int)$schema14Restored->query('PRAGMA user_version')->fetchColumn() === 16, 'Schema14 not migrated');
+    check((int)$schema14Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema14 not migrated');
     check($schema14Restored->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC) === $schema14Before, 'Schema14 depth lost');
     check((int)$schema14Restored->query('SELECT COUNT(*) FROM rack_shelves')->fetchColumn() === 0, 'Migration invented shelves');
     $schema14Restored = null;
@@ -564,10 +640,151 @@ try {
         'root' => $schema15Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
     check($schema15Source['schema_version'] === 15, 'Schema15 source metadata changed');
     $schema15Restored = new PDO('sqlite:' . $schema15Destination . '/db/data.sqlite');
-    check((int)$schema15Restored->query('PRAGMA user_version')->fetchColumn() === 16, 'Schema15 not migrated');
+    check((int)$schema15Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema15 not migrated');
     check($schema15Restored->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC) === $schema15Shelves, 'Schema15 shelf lost');
     check((int)$schema15Restored->query('SELECT COUNT(*) FROM floor_rack_placements')->fetchColumn() === 0, 'Migration invented floor references');
     $schema15Restored = null;
+    $schema16App = $root . '/app-schema16';
+    copyTree($candidateApp, $schema16App);
+    pinLegacyFixtureSchema($schema16App, 16);
+    $schema16Process = proc_open([PHP_BINARY, $schema16App . '/scripts/full-backup-helper.php', $schema16App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema16', 'a']], $schema16Pipes, null, $environment);
+    check(is_resource($schema16Process), 'Cannot launch schema16 helper');
+    $schema16Worker = [$schema16Process, $schema16Pipes]; $workers[] = $schema16Worker;
+    $schema16Stage = $root . '/schema16-stage';
+    copyTree($stage, $schema16Stage);
+    $schema16Db = new PDO('sqlite:' . $schema16Stage . '/db/data.sqlite');
+    foreach (range(12, 16) as $version) { ('migrateDatabaseToVersion' . $version)($schema16Db); }
+    $schema16Db->exec("UPDATE devices SET ip='192.0.2.16' WHERE id=1");
+    $schema16Devices = $schema16Db->query('SELECT * FROM devices')->fetchAll(PDO::FETCH_ASSOC);
+    $schema16Db = null;
+    $schema16Archive = $root . '/schema16.zip';
+    rpc($schema16Worker, ['command' => 'pack', 'root' => $schema16Stage, 'destination' => $schema16Archive]);
+    $schema16Destination = $root . '/restored-schema16'; mkdir($schema16Destination);
+    rpc($currentWorker, ['command' => 'extract', 'archive' => $schema16Archive,
+        'root' => $schema16Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    $schema16Restored = new PDO('sqlite:' . $schema16Destination . '/db/data.sqlite');
+    check((int)$schema16Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema16 not migrated');
+    check($schema16Restored->query('SELECT * FROM devices')->fetchAll(PDO::FETCH_ASSOC)
+        === array_map(static fn($row) => $row + ['ip_segment_id' => null], $schema16Devices), 'Schema16 management IP or device changed');
+    check($schema16Restored->query('SELECT * FROM device_ip_addresses')->fetchAll(PDO::FETCH_ASSOC) === [], 'Schema16 migration invented additional IPs');
+    $schema16Restored = null;
+    $schema17App = $root . '/app-schema17';
+    copyTree($candidateApp, $schema17App);
+    pinLegacyFixtureSchema($schema17App, 17);
+    $schema17Process = proc_open([PHP_BINARY, $schema17App . '/scripts/full-backup-helper.php', $schema17App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema17', 'a']], $schema17Pipes, null, $environment);
+    check(is_resource($schema17Process), 'Cannot launch schema17 helper');
+    $schema17Worker = [$schema17Process, $schema17Pipes]; $workers[] = $schema17Worker;
+    $schema17Stage = $root . '/schema17-stage'; copyTree($schema16Stage, $schema17Stage);
+    $schema17Db = new PDO('sqlite:' . $schema17Stage . '/db/data.sqlite');
+    migrateDatabaseToVersion17($schema17Db);
+    $schema17Db->exec("UPDATE devices SET ip='legacy invalid IP' WHERE id=1");
+    $schema17Db->exec("INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order)
+        VALUES(71,1,'198.51.100.71','旧用途',4)");
+    $schema17Rows = $schema17Db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $schema17Db = null;
+    $schema17Archive = $root . '/schema17.zip';
+    rpc($schema17Worker, ['command' => 'pack', 'root' => $schema17Stage, 'destination' => $schema17Archive]);
+    $schema17Destination = $root . '/restored-schema17'; mkdir($schema17Destination);
+    rpc($currentWorker, ['command' => 'extract', 'archive' => $schema17Archive,
+        'root' => $schema17Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    $schema17Restored = new PDO('sqlite:' . $schema17Destination . '/db/data.sqlite');
+    check((int)$schema17Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema17 not migrated');
+    check($schema17Restored->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+        === array_map(static fn($row) => $row + ['segment_id' => null], $schema17Rows), 'Schema17 IDs or additional data changed');
+    check($schema17Restored->query('SELECT ip_segment_id FROM devices')->fetchColumn() === null, 'Legacy membership not null');
+    check($schema17Restored->query('SELECT * FROM address_spaces')->fetchAll() === []
+        && $schema17Restored->query('SELECT * FROM ip_segments')->fetchAll() === [], 'Legacy migration invented IP masters');
+    $schema17Restored = null;
+    $schema18App = $root . '/app-schema18';
+    copyTree($candidateApp, $schema18App);
+    pinLegacyFixtureSchema($schema18App, 18);
+    $schema18Process = proc_open([PHP_BINARY, $schema18App . '/scripts/full-backup-helper.php', $schema18App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema18', 'a']], $schema18Pipes, null, $environment);
+    check(is_resource($schema18Process), 'Cannot launch schema18 helper');
+    $schema18Worker = [$schema18Process, $schema18Pipes]; $workers[] = $schema18Worker;
+    $schema18Stage = $root . '/schema18-stage'; copyTree($schema17Stage, $schema18Stage);
+    $schema18Db = new PDO('sqlite:' . $schema18Stage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    migrateDatabaseToVersion18($schema18Db);
+    $schema18Db->exec("UPDATE devices SET ip='198.51.100.10' WHERE id=1");
+    $schema18Db = null;
+    $schema18Archive = $root . '/schema18.zip';
+    rpc($schema18Worker, ['command' => 'pack', 'root' => $schema18Stage, 'destination' => $schema18Archive]);
+    $schema18Destination = $root . '/restored-schema18'; mkdir($schema18Destination);
+    rpc($currentWorker, ['command' => 'extract', 'archive' => $schema18Archive,
+        'root' => $schema18Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    $schema18Restored = new PDO('sqlite:' . $schema18Destination . '/db/data.sqlite');
+    check((int)$schema18Restored->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Schema18 not migrated');
+    check($schema18Restored->query('SELECT * FROM change_history')->fetchAll(PDO::FETCH_ASSOC) === [], 'Schema18 migration invented change_history');
+    $schema18Restored = null;
+    $schema19App = $root . '/app-schema19';
+    copyTree($candidateApp, $schema19App);
+    pinLegacyFixtureSchema($schema19App, 19);
+    $schema19Process = proc_open([PHP_BINARY, $schema19App . '/scripts/full-backup-helper.php', $schema19App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema19', 'a']], $schema19Pipes, null, $environment);
+    check(is_resource($schema19Process), 'Cannot launch schema19 helper');
+    $schema19Worker = [$schema19Process, $schema19Pipes]; $workers[] = $schema19Worker;
+    $schema19Stage = $root . '/schema19-stage'; copyTree($schema18Stage, $schema19Stage);
+    $schema19Db = new PDO('sqlite:' . $schema19Stage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    migrateDatabaseToVersion19($schema19Db);
+    $schema19Db = null;
+    $schema19Archive = $root . '/schema19.zip';
+    rpc($schema19Worker, ['command' => 'pack', 'root' => $schema19Stage, 'destination' => $schema19Archive]);
+    $schema20App = $root . '/app-schema20';
+    copyTree($candidateApp, $schema20App);
+    pinLegacyFixtureSchema($schema20App, 20);
+    $schema20Process = proc_open([PHP_BINARY, $schema20App . '/scripts/full-backup-helper.php', $schema20App],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema20', 'a']], $schema20Pipes, null, $environment);
+    check(is_resource($schema20Process), 'Cannot launch schema20 helper');
+    $schema20Worker = [$schema20Process, $schema20Pipes]; $workers[] = $schema20Worker;
+    $schema20Stage = $root . '/schema20-stage'; copyTree($schema19Stage, $schema20Stage);
+    $schema20Db = new PDO('sqlite:' . $schema20Stage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    migrateDatabaseToVersion20($schema20Db);
+    $schema20Db->exec("INSERT INTO address_spaces(id,name,memo) VALUES(41,'旧区分','保存')");
+    $schema20Db = null;
+    $schema20Archive = $root . '/schema20.zip';
+    rpc($schema20Worker, ['command' => 'pack', 'root' => $schema20Stage, 'destination' => $schema20Archive]);
+    $schema20Destination = $root . '/restored-schema20'; mkdir($schema20Destination);
+    rpc($currentWorker, ['command' => 'extract', 'archive' => $schema20Archive,
+        'root' => $schema20Destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    $schema20Db = new PDO('sqlite:' . $schema20Destination . '/db/data.sqlite');
+    check($schema20Db->query('SELECT ping_reachability FROM address_spaces')->fetchColumn() === 'unset', 'Schema20 reachability must default to unset');
+    check($schema20Db->query('SELECT memo FROM address_spaces')->fetchColumn() === '保存', 'Schema20 migration changed existing space data');
+    $schema20Db = null;
+
+    // Full restore must retain the declaration but discard stale OK/latency
+    // only for the intentionally excluded management IP.
+    $reachabilityStage = $root . '/reachability-stage'; copyTree($currentStage, $reachabilityStage);
+    $reachabilityDb = new PDO('sqlite:' . $reachabilityStage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $reachabilityDb->exec("INSERT INTO ip_segments(id,address_space_id,cidr) VALUES(54,42,'192.0.2.0/24')");
+    $reachabilityDb->exec("UPDATE devices SET ip='192.0.2.1',ip_segment_id=54 WHERE id=2");
+    $reachabilityDb->exec("INSERT OR REPLACE INTO device_monitor_status(device_id,status,last_response_ms) VALUES(1,'green',8),(2,'green',9)");
+    $reachableBefore = $reachabilityDb->query('SELECT * FROM device_monitor_status WHERE device_id=1')->fetch(PDO::FETCH_ASSOC);
+    $reachabilityDb = null;
+    $reachabilityArchive = $root . '/reachability.zip';
+    rpc($currentWorker, ['command' => 'pack', 'root' => $reachabilityStage, 'destination' => $reachabilityArchive]);
+    $reachabilityDestination = $root . '/reachability-restored'; mkdir($reachabilityDestination);
+    rpc($currentWorker, ['command' => 'extract', 'archive' => $reachabilityArchive,
+        'root' => $reachabilityDestination, 'max_bytes' => 10000000, 'max_files' => 100]);
+    $reachabilityDb = new PDO('sqlite:' . $reachabilityDestination . '/db/data.sqlite');
+    check($reachabilityDb->query('SELECT * FROM device_monitor_status WHERE device_id=1')->fetch(PDO::FETCH_ASSOC) === $reachableBefore, 'Restore changed permitted target monitor');
+    $excluded = $reachabilityDb->query('SELECT * FROM device_monitor_status WHERE device_id=2')->fetch(PDO::FETCH_ASSOC);
+    check($excluded['status'] === 'unknown' && $excluded['last_response_ms'] === null
+        && str_contains($excluded['last_error'], '到達不可'), 'Restore retained obsolete excluded target OK or latency');
+    check($reachabilityDb->query('SELECT ping_reachability FROM address_spaces WHERE id=42')->fetchColumn() === 'unreachable', 'Full restore lost reachability declaration');
+    $reachabilityDb = null;
+    foreach ([12 => $schema12Archive, 13 => $schema13Archive, 16 => $schema16Archive, 17 => $schema17Archive, 18 => $schema18Archive, 19 => $schema19Archive] as $sourceSchema => $sourceArchive) {
+        $destination = $root . '/config-empty-from-' . $sourceSchema; mkdir($destination);
+        rpc($currentWorker, ['command' => 'extract', 'archive' => $sourceArchive, 'root' => $destination, 'max_bytes' => 10000000, 'max_files' => 100]);
+        $restoredConfigDb = new PDO('sqlite:' . $destination . '/db/data.sqlite');
+        check($restoredConfigDb->query('SELECT * FROM device_configs')->fetchAll() === []
+            && $restoredConfigDb->query('SELECT * FROM device_config_states')->fetchAll() === [], 'Legacy migration invented config history or watermarks');
+        $restoredConfigDb = null;
+    }
+    $reverse19 = $root . '/reject20-on19'; mkdir($reverse19);
+    rpc($schema19Worker, ['command' => 'extract', 'archive' => $currentArchive,
+        'root' => $reverse19, 'max_bytes' => 10000000, 'max_files' => 100], false);
     $reverse13 = $root . '/reject14-on13'; mkdir($reverse13);
     rpc($schema13Worker, ['command' => 'extract', 'archive' => $currentArchive,
         'root' => $reverse13, 'max_bytes' => 10000000, 'max_files' => 100], false);
@@ -642,7 +859,7 @@ try {
     check($limitedExit === 0, 'Large legacy restore failed with 24 MiB: ' . $limitedOutput . $limitedError);
     $limitedResult = json_decode($limitedOutput, true, 512, JSON_THROW_ON_ERROR);
     $limitedDb = new PDO('sqlite:' . $limitedDestination . '/db/data.sqlite');
-    check((int)$limitedDb->query('PRAGMA user_version')->fetchColumn() === 16 && $limitedResult['schema_version'] === 11,
+    check((int)$limitedDb->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION && $limitedResult['schema_version'] === 11,
         'Memory-limited restore did not preserve source metadata and migrate the staged DB');
     check((int)$limitedDb->query('SELECT COUNT(*) FROM canvas_notes')->fetchColumn() === 32768, 'Large restore lost note rows');
     $differentNotes = $limitedDb->prepare('SELECT COUNT(*) FROM canvas_notes WHERE text <> ?');
@@ -695,7 +912,7 @@ try {
         rpc($mutationWorker, ['command' => 'extract', 'archive' => $legacy120Archive, 'root' => $mutationDestination,
             'max_bytes' => 10000000, 'max_files' => 100], false);
         $mutationDb = new PDO('sqlite:' . $mutationDestination . '/db/data.sqlite');
-        check((int)$mutationDb->query('PRAGMA user_version')->fetchColumn() === 16,
+        check((int)$mutationDb->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION,
             'Data-changing migration was not exercised');
         check($fault === 'content'
             ? $mutationDb->query('SELECT password_hash FROM users')->fetchColumn() === 'changed-by-migration'
@@ -706,7 +923,11 @@ try {
     check(hash_file('sha256', $legacy120Archive) === $legacyArchiveHash
         && hash_file('sha256', $dbFile) === $liveDbHash && hash_file('sha256', $dbFile . '-wal') === $liveWalHash,
         'Rejected data-changing migration modified source archive or live DB');
-    foreach (['unknown-column', 'collision', 'depth-collision', 'invalid-depth', 'both-half', 'outside', 'xy-placement', 'xy-link', 'floor-plan'] as $fault) {
+    foreach (['unknown-column', 'collision', 'depth-collision', 'invalid-depth', 'both-half', 'outside', 'xy-placement', 'xy-link', 'floor-plan', 'ip-invalid', 'ip-duplicate', 'ip-management', 'ip-foreign',
+        'cidr-invalid', 'cidr-host-bits', 'space-foreign', 'segment-foreign', 'segment-range', 'segment-overlap', 'segment-vlan', 'history-bad-json', 'history-expired-bad-json',
+        'space-sequence-exhausted', 'segment-sequence-exhausted', 'history-sequence-exhausted', 'history-sequence-negative', 'history-sequence-text',
+        'config-state', 'config-foreign', 'config-watermark', 'config-order', 'config-count', 'config-size', 'config-empty', 'config-utf8', 'config-nul', 'config-control', 'config-crlf', 'config-bom', 'config-memo', 'config-date',
+        'config-id-exhausted', 'config-revision-exhausted', 'config-generation-exhausted', 'config-empty-generation-exhausted', 'config-sequence-exhausted'] as $fault) {
         $badDbFile = $root . '/rack-invalid-' . $fault . '.sqlite';
         copy($currentStage . '/db/data.sqlite', $badDbFile);
         $badDb = new PDO('sqlite:' . $badDbFile, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
@@ -734,6 +955,68 @@ try {
             $badDb->exec('INSERT INTO links (id,view_id,from_id,to_id) VALUES (9001,90,1,99)');
         }
         if ($fault === 'floor-plan') { $badDb->exec('UPDATE view_floor_plans SET view_id=90 WHERE view_id=1'); }
+        if ($fault === 'ip-invalid') { $badDb->exec("UPDATE device_ip_addresses SET ip='999.1.1.1' WHERE id=7"); }
+        if ($fault === 'ip-duplicate') { $badDb->exec("UPDATE device_ip_addresses SET ip='203.0.113.1' WHERE id=7"); }
+        if ($fault === 'ip-management') { $badDb->exec("UPDATE device_ip_addresses SET ip='192.0.2.1' WHERE id=7"); }
+        if ($fault === 'ip-foreign') { $badDb->exec("UPDATE device_ip_addresses SET device_id=999 WHERE id=7"); }
+        if ($fault === 'cidr-invalid') { $badDb->exec("UPDATE ip_segments SET cidr='192.0.2.0/33' WHERE id=51"); }
+        if ($fault === 'cidr-host-bits') { $badDb->exec("UPDATE ip_segments SET cidr='192.0.2.1/24' WHERE id=51"); }
+        if ($fault === 'space-foreign') { $badDb->exec('UPDATE ip_segments SET address_space_id=999999 WHERE id=51'); }
+        if ($fault === 'segment-foreign') { $badDb->exec('UPDATE devices SET ip_segment_id=999999 WHERE id=1'); }
+        if ($fault === 'segment-range') { $badDb->exec("UPDATE device_ip_addresses SET ip='203.0.113.2' WHERE id=7"); }
+        if ($fault === 'segment-overlap') { $badDb->exec('UPDATE ip_segments SET address_space_id=41 WHERE id=53'); }
+        if ($fault === 'segment-vlan') { $badDb->exec('PRAGMA ignore_check_constraints=ON; UPDATE ip_segments SET vlan_id=4095 WHERE id=51'); }
+        if ($fault === 'history-bad-json') { $badDb->exec("UPDATE change_history SET changes_json='{\"items\":123}' WHERE id=31"); }
+        if ($fault === 'history-expired-bad-json') {
+            // Expiration must not bypass validation of the original payload.
+            $badDb->prepare("UPDATE change_history SET changes_json='{\"items\":123}', occurred_at=? WHERE id=31")
+                ->execute([gmdate('Y-m-d\TH:i:s\Z', time() - 95 * 86400)]);
+        }
+        $sequenceTable = match ($fault) {
+            'space-sequence-exhausted' => 'address_spaces',
+            'segment-sequence-exhausted' => 'ip_segments',
+            'history-sequence-exhausted', 'history-sequence-negative', 'history-sequence-text' => 'change_history',
+            default => null,
+        };
+        if ($sequenceTable !== null) {
+            $value = match ($fault) {
+                'history-sequence-negative' => -1,
+                'history-sequence-text' => 'invalid',
+                default => \Netarium\Core\ResourceId::MAX,
+            };
+            $sequenceUpdate = $badDb->prepare('UPDATE sqlite_sequence SET seq = ? WHERE name = ?');
+            $sequenceUpdate->bindValue(1, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+            $sequenceUpdate->bindValue(2, $sequenceTable, PDO::PARAM_STR);
+            $sequenceUpdate->execute();
+        }
+        if ($fault === 'config-state') { $badDb->exec('DELETE FROM device_config_states WHERE device_id=1'); }
+        if ($fault === 'config-foreign') { $badDb->exec('UPDATE device_configs SET device_id=9999 WHERE id=41'); }
+        if ($fault === 'config-watermark') { $badDb->exec('UPDATE device_config_states SET next_generation=17 WHERE device_id=1'); }
+        if ($fault === 'config-id-exhausted') { $badDb->exec('UPDATE device_configs SET id=' . \Netarium\Core\ResourceId::MAX . ' WHERE id=49'); }
+        if ($fault === 'config-revision-exhausted') { $badDb->exec('UPDATE device_config_states SET revision=' . \Netarium\Core\ResourceId::MAX . ' WHERE device_id=1'); }
+        if ($fault === 'config-generation-exhausted') { $badDb->exec('UPDATE device_config_states SET next_generation=' . PHP_INT_MAX . ' WHERE device_id=1'); }
+        if ($fault === 'config-empty-generation-exhausted') { $badDb->exec('UPDATE device_config_states SET next_generation=' . PHP_INT_MAX . ' WHERE device_id=2'); }
+        if ($fault === 'config-sequence-exhausted') { $badDb->exec("UPDATE sqlite_sequence SET seq=" . PHP_INT_MAX . " WHERE name='device_configs'"); }
+        if ($fault === 'config-order') { $badDb->exec("UPDATE device_configs SET created_at='2025-01-01T00:00:00Z' WHERE id=49"); }
+        if ($fault === 'config-count') {
+            $badDb->exec('UPDATE device_config_states SET next_generation=30 WHERE device_id=1');
+            for ($i = 0; $i < 1; $i++) {
+                $badDb->prepare("INSERT INTO device_configs(id,device_id,generation,content,created_at,actor_user_id,actor_name,memo) VALUES(?,1,?,'hostname extra','2026-01-02T00:00:00Z',NULL,'admin','')")
+                    ->execute([50 + $i, 18 + $i]);
+            }
+        }
+        $invalidContent = match ($fault) {
+            'config-size' => str_repeat('x', 262145), 'config-empty' => " \t\n",
+            'config-utf8' => "secret-marker\xFF", 'config-nul' => "secret-marker\0",
+            'config-control' => "secret-marker\x01", 'config-crlf' => "secret-marker\r\n",
+            'config-bom' => "\xEF\xBB\xBFsecret-marker", default => null,
+        };
+        if ($invalidContent !== null) { $badDb->prepare('UPDATE device_configs SET content=? WHERE id=41')->execute([$invalidContent]); }
+        if ($fault === 'config-memo') {
+            $badDb->exec('PRAGMA ignore_check_constraints=ON');
+            $badDb->prepare('UPDATE device_configs SET memo=? WHERE id=41')->execute([str_repeat('長', 201)]);
+        }
+        if ($fault === 'config-date') { $badDb->exec("UPDATE device_configs SET created_at='2026-02-30T00:00:00Z' WHERE id=41"); }
         $badCounts = [];
         foreach ($badDb->query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") as $row) {
             $badCounts[$row['name']] = (int)$badDb->query('SELECT COUNT(*) FROM "' . $row['name'] . '"')->fetchColumn();
@@ -762,8 +1045,8 @@ try {
             check(hash_file('sha256', $destination . '/' . $name) === hash('sha256', $bytes), 'Image changed on current restore');
         }
         $restoredDb = new PDO('sqlite:' . $destination . '/db/data.sqlite');
-        check((int)$restoredDb->query('PRAGMA user_version')->fetchColumn() === 16, 'Old archive was not migrated to schema16');
-        check($extracted['schema_version'] === ($sourceVersion === $candidateVersion ? 16 : 11), 'Source schema metadata changed');
+        check((int)$restoredDb->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Old archive was not migrated to the current schema');
+        check($extracted['schema_version'] === ($sourceVersion === $candidateVersion ? APP_DATABASE_SCHEMA_VERSION : 11), 'Source schema metadata changed');
         if ($sourceVersion === $candidateVersion) {
             check($restoredDb->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC) === $currentMounts, 'Rack physical fields lost');
             check($restoredDb->query('SELECT * FROM canvas_notes WHERE view_id=90 ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentNotes, 'Rack note fields lost');
@@ -771,14 +1054,32 @@ try {
             check($restoredDb->query('SELECT name FROM rack_shelves WHERE id=1')->fetchColumn() === 'Backup shelf', 'Shelf lost on full round trip');
             check($restoredDb->query('SELECT shelf_id FROM rack_shelf_devices WHERE device_id=2')->fetchColumn() === 1, 'Shelf membership lost on full round trip');
             check($restoredDb->query('SELECT * FROM floor_rack_placements')->fetchAll(PDO::FETCH_ASSOC) === $currentFloorRacks, 'Floor rack reference lost');
+            check($restoredDb->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentAddresses, 'Additional IP identities, labels or order lost');
+            check($restoredDb->query('SELECT * FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentSpaces, 'Address space identities or fields lost');
+            check($restoredDb->query('SELECT * FROM ip_segments ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentSegments, 'Segment identities or fields lost');
+            check((int)$restoredDb->query('SELECT ip_segment_id FROM devices WHERE id=1')->fetchColumn() === 51, 'Management segment lost');
+            check($restoredDb->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentHistory, 'Change history lost on full round trip');
+            check($restoredDb->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentConfigs, 'Config identities, generation gaps or contents lost');
+            check($restoredDb->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC) === $currentConfigStates, 'Config revision/high watermark or empty-history state lost');
         } else {
+            check($restoredDb->query('SELECT * FROM device_ip_addresses')->fetchAll(PDO::FETCH_ASSOC) === [], 'Old source invented additional IPs');
+            check($restoredDb->query('SELECT * FROM change_history')->fetchAll(PDO::FETCH_ASSOC) === [], 'Old source invented change history');
+            check($restoredDb->query('SELECT * FROM device_configs')->fetchAll() === []
+                && $restoredDb->query('SELECT * FROM device_config_states')->fetchAll() === [], 'Old source invented configs');
+            check($restoredDb->query('SELECT * FROM address_spaces')->fetchAll() === []
+                && $restoredDb->query('SELECT * FROM ip_segments')->fetchAll() === [], 'Old source invented IP masters');
+            check((int)$restoredDb->query('SELECT COUNT(*) FROM devices WHERE ip_segment_id IS NOT NULL')->fetchColumn() === 0,
+                'Old source invented management memberships');
             check((int)$restoredDb->query('SELECT COUNT(*) FROM rack_settings')->fetchColumn() === 0
                 && (int)$restoredDb->query('SELECT COUNT(*) FROM rack_mounts')->fetchColumn() === 0, 'Old source invented rack data');
             $sourceDb = new PDO('sqlite:' . $stage . '/db/data.sqlite');
             foreach (array_keys($manifest['counts']) as $table) {
                 $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-                check($restoredDb->query("SELECT * FROM \"$table\"$where ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC)
-                    === $sourceDb->query("SELECT * FROM \"$table\" ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC), 'Migration changed source rows: ' . $table);
+                $columns = array_map(static fn(array $column): string => '"' . str_replace('"', '""', $column['name']) . '"',
+                    $sourceDb->query("PRAGMA table_info(\"$table\")")->fetchAll(PDO::FETCH_ASSOC));
+                $projection = implode(',', $columns);
+                check($restoredDb->query("SELECT $projection FROM \"$table\"$where ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC)
+                    === $sourceDb->query("SELECT $projection FROM \"$table\" ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC), 'Migration changed source rows: ' . $table);
             }
             $sourceDb = null;
         }
@@ -800,10 +1101,10 @@ try {
         $numericWorkers[$numericVersion] = [$numericProcess, $numericPipes];
         $workers[] = $numericWorkers[$numericVersion];
     }
-    foreach (['1.2.9' => [$currentWorker, '1.3.0'], '1.3.2' => [$numericWorkers['1.3.10'], '1.3.10']] as $sourceVersion => [$targetWorker, $targetVersion]) {
+    foreach (['1.2.9' => [$currentWorker, $candidateVersion], '1.3.2' => [$numericWorkers['1.3.10'], '1.3.10']] as $sourceVersion => [$targetWorker, $targetVersion]) {
         $numericArchive = $root . '/numeric-' . $sourceVersion . '.zip';
         $numericManifest = rpc($numericWorkers[$sourceVersion], ['command' => 'pack', 'root' => $currentStage, 'destination' => $numericArchive]);
-        check($numericManifest['application_version'] === $sourceVersion && $numericManifest['schema_version'] === 16,
+        check($numericManifest['application_version'] === $sourceVersion && $numericManifest['schema_version'] === APP_DATABASE_SCHEMA_VERSION,
             'Numeric source fixture did not pack its own version/schema');
         $numericDestination = $root . '/numeric-' . $sourceVersion . '-on-' . $targetVersion; mkdir($numericDestination);
         $numericExtracted = rpc($targetWorker, ['command' => 'extract', 'archive' => $numericArchive,
@@ -821,7 +1122,9 @@ try {
         rpc($oldWorker, ['command' => 'extract', 'archive' => $currentArchive, 'root' => $reverseDestination, 'max_bytes' => 10000000, 'max_files' => 100], false);
     }
     // Metadata mutations below are rejection fixtures, not historical release archives.
-    foreach (['0.3.0', '1.3.1', '2.0.0', '1.3', '01.3.0', '1.03.0', '1.3.00', 'v1.3.0', '1.3.0-rc.1', '1.3.0+build.1', '', 'corrupt', 'schema', 'future-schema', 'format', 'format-name'] as $unsupportedVersion) {
+    [$major, $minor, $patch] = explode('.', $candidateVersion);
+    $futureVersion = $major . '.' . $minor . '.' . ((int)$patch + 1);
+    foreach (['0.3.0', $futureVersion, '2.0.0', '1.3', '01.3.0', '1.03.0', '1.3.00', 'v1.3.0', '1.3.0-rc.1', '1.3.0+build.1', '', 'corrupt', 'schema', 'future-schema', 'format', 'format-name'] as $unsupportedVersion) {
         $badZip = $root . '/reject-current-' . $unsupportedVersion . '.zip'; copy($currentArchive, $badZip);
         if ($unsupportedVersion === 'corrupt') {
             file_put_contents($badZip, 'not a zip');
@@ -831,7 +1134,7 @@ try {
             if ($unsupportedVersion === 'schema') {
                 $m['schema_version'] = 10;
             } elseif ($unsupportedVersion === 'future-schema') {
-                $m['schema_version'] = 17;
+                $m['schema_version'] = APP_DATABASE_SCHEMA_VERSION + 1;
             } elseif ($unsupportedVersion === 'format-name') {
                 $m['format'] = 'netarium-config';
             } elseif ($unsupportedVersion === 'format') {
@@ -852,7 +1155,7 @@ try {
         check(hash_file('sha256', $storage . '/uploads/' . $name) === hash('sha256', $bytes), 'Backup changed live image');
     }
     $db = null;
-    echo "PASS full backup: schema11/12/13/14/15 source verification and isolated schema16 migration, rack/depth/shelf/floor reference roundtrip, image/archive rejection, numeric patch/minor forward compatibility, reverse/invalid/major/schema/format rejection, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
+    echo "PASS full backup: source verification and isolated schema" . APP_DATABASE_SCHEMA_VERSION . " migration, Config identities/generation watermarks and bounds, IP reachability/master/membership and additional IP identity/order roundtrip, rack/depth/shelf/floor references, invalid data rejection, numeric patch/minor forward compatibility, reverse/major/schema/format rejection, WAL/live invariance, ZIP/manifest/reference SHA, users/login, lock contention; $assertions assertions\n";
 } finally {
     if (isset($copy)) { $copy = null; } if (isset($db)) { $db = null; }
     unset($largeDb, $limitedDb, $largeInsert, $differentNotes, $mutationDb, $fingerprintDb);

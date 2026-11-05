@@ -8,6 +8,7 @@ import {
 
 import { appState } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
+import { rememberLastView } from '../core/last-view.js';
 import { endLinkMode } from '../core/link-mode.js';
 import { mappedResourceId } from '../core/resource-save.js';
 import { chooseUnsavedChanges } from '../core/unsaved-changes-dialog.js';
@@ -62,7 +63,7 @@ import {
 } from '../ui/status-bar.js';
 import {
     flushSaveQueue, scheduleSave, hasResourceConflict, reloadConflictedResource,
-    hasResourceChanges, isSaveInFlight
+    hasResourceChanges, isSaveInFlight, waitForActiveResourceSave
 } from '../core/save-queue.js';
 import {
     registerModalClose,
@@ -70,6 +71,7 @@ import {
 } from '../core/modal-focus.js';
 import { openFloorPlanManager } from './floor-plan-modal.js';
 import { syncViewCombobox } from '../ui/view-combobox.js';
+import { openChangeHistory } from './change-history-modal.js';
 
 let viewManagerSelectedId = null;
 let viewManagerSnapshot = null;
@@ -258,6 +260,7 @@ export function openViewManager() {
 
 
 export function renderViewSelector() {
+    rememberLastView(appState.currentViewId);
     syncViewCombobox();
 }
 
@@ -666,6 +669,7 @@ export function loadSelectedViewIntoForm() {
         if (rackFields) rackFields.hidden = true;
         
         appState.viewManagerFormDirty = false;
+        updateViewManagerButtons();
         return;
     }
 
@@ -1127,6 +1131,11 @@ export async function deleteSelectedView() {
 }
 
 
+function isConfirmedView(view) {
+    return Boolean(view) && Number.isSafeInteger(Number(view.id)) && Number(view.id) > 0 &&
+        Number.isSafeInteger(Number(view.resource_revision)) && Number(view.resource_revision) > 0;
+}
+
 export function updateViewManagerButtons() {
     const selected =
         Boolean(
@@ -1187,12 +1196,31 @@ export function updateViewManagerButtons() {
         reloadButton.hidden = !selected || !hasResourceConflict('views', viewManagerSelectedId);
         reloadButton.disabled = reloadButton.hidden;
     }
+    const historyButton = document.getElementById('view-history-btn');
+    if (historyButton) {
+        const currentSelected = getViewManagerSelectedView();
+        const confirmed = isConfirmedView(currentSelected);
+        historyButton.hidden = !isCurrentUserAdmin();
+        historyButton.disabled = !confirmed || !isCurrentUserAdmin() || appState.authExpired;
+        historyButton.title = confirmed
+            ? 'このビューの変更履歴を表示します'
+            : 'ビューの保存が完了すると変更履歴を表示できます';
+    }
+    const floorPlanActions = document.getElementById('vm-floor-plan-actions');
     const floorPlanButton = document.getElementById('vm-floor-plan-btn');
+    const floorPlanStatus = document.getElementById('vm-floor-plan-status');
     const floorPlanHelp = document.getElementById('vm-floor-plan-help');
+    const selectedView = getViewManagerSelectedView();
+    const isFloor = Boolean(selectedView) && document.getElementById('vm-type')?.value === 'floor';
+    const hasFloorPlan = isFloor && appState.floorPlans.some(plan => Number(plan.view_id) === Number(selectedView.id));
     const floorPlanBlockReason = getSelectedViewFloorPlanBlockReason();
-    if (floorPlanButton) floorPlanButton.disabled = Boolean(floorPlanBlockReason);
-    if (floorPlanHelp) floorPlanHelp.textContent = floorPlanBlockReason ||
-        'このビューの図面を登録・変更できます。';
+    if (floorPlanActions) floorPlanActions.hidden = !isFloor;
+    if (floorPlanButton) {
+        floorPlanButton.disabled = Boolean(floorPlanBlockReason);
+        floorPlanButton.textContent = hasFloorPlan ? '図面を管理' : '図面を登録';
+    }
+    if (floorPlanStatus) floorPlanStatus.hidden = !hasFloorPlan;
+    if (floorPlanHelp) floorPlanHelp.textContent = isFloor ? floorPlanBlockReason : '';
 }
 
 function getSelectedViewFloorPlanBlockReason() {
@@ -1227,6 +1255,35 @@ export async function openSelectedViewFloorPlan() {
     hideViewManager({ restoreFocus: false });
     document.getElementById('floor-plan-manage-btn')?.focus();
     openFloorPlanManager({ returnToViewManager: true });
+}
+
+export async function openSelectedViewHistory() {
+    if (!requireAdminUiAction()) return false;
+    const view = getViewManagerSelectedView();
+    if (!isConfirmedView(view)) {
+        showToast('ビューの保存が完了すると変更履歴を表示できます', 'warning');
+        return false;
+    }
+    const selectedId = Number(view.id);
+    const hadUnapplied = hasUnappliedViewForm();
+    if (!await resolveUnappliedViewForm()) return false;
+    if (hadUnapplied && hasUnappliedViewForm()) {
+        loadSelectedViewIntoForm();
+    }
+    await waitForActiveResourceSave();
+    const latestView = getViewManagerSelectedView();
+    if (!isConfirmedView(latestView) || Number(latestView.id) !== selectedId) return false;
+    if (appState.authExpired || hasResourceConflict('views', selectedId) ||
+        hasResourceChanges('views', selectedId) || hasUnappliedViewForm()) {
+        showToast('ビューの保存が完了していません。ビュー管理で保存状態と入力を確認してください', 'warning');
+        return false;
+    }
+    await openChangeHistory({
+        targetType: 'view',
+        targetId: Number(latestView.id),
+        targetName: latestView.name || ''
+    });
+    return true;
 }
 
 export async function reloadSelectedViewConflict() {

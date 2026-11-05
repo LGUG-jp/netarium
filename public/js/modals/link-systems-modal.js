@@ -140,7 +140,7 @@ function renderList() {
     }
 }
 function acceptSystems(data) {
-    if (!Array.isArray(data.link_systems)) throw new Error('接続系統の応答が不完全です。再読込してください');
+    if (!Array.isArray(data.link_systems)) throw new Error('接続系統の応答が不完全です。更新してください');
     appState.linkSystems = data.link_systems;
     if (Number.isSafeInteger(data.revision) && data.revision > 0) appState.dataRevision = data.revision;
     eventBus.emit('link-systems:changed');
@@ -218,7 +218,7 @@ async function mutate(action, deleting = false) {
         setStatus('');
         return true;
     } catch (error) {
-        setStatus(error.status === 409 ? `${error.message} 入力を保持しています。「再読込」で最新の設定を確認してください。` : error.message, true);
+        setStatus(error.status === 409 ? `${error.message} 入力を保持しています。「更新」で最新の設定を確認してください。` : error.message, true);
         return false;
     } finally {
         busy = false;

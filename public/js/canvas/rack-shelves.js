@@ -11,6 +11,7 @@ import { createDeviceTypePicker, closeDeviceTypePicker } from '../ui/device-type
 import { eventBus } from '../core/event-bus.js';
 import { createRackTransferConfirmation } from '../ui/rack-transfer-confirmation.js';
 import { validateDeviceValues } from '../core/device-validation.js';
+import { switchView } from '../modals/view-manager-modal.js';
 
 let adding = false, selectedShelfId = null, dialog = null, dialogViewId = null, deviceDialog = null, deviceDialogViewId = null;
 const eq = (a, b) => Number(a) === Number(b);
@@ -109,7 +110,24 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
     const overlay = el('div', 'view-manager-overlay rack-mount-overlay');
     const section = el('section', 'view-manager-dialog rack-mount-dialog'); section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true'); section.setAttribute('aria-labelledby', 'rack-shelf-title');
     const title = el('h2', '', previous ? '棚板の設定' : '棚板を追加'); title.id = 'rack-shelf-title';
+    const heading = el('div', 'modal-header-heading rack-mount-heading');
+    const target = el('p', 'modal-header-target', `搭載先：${rackName(previous?.view_id || viewId)}`);
+    heading.append(title, target);
     const form = el('form', 'rack-mount-form'), body = el('div', 'rack-mount-body'), fields = {};
+    const comparison = el('div', 'rack-mount-comparison');
+    comparison.setAttribute('role', 'group'); comparison.setAttribute('aria-label', '搭載位置の比較');
+    const locationDetail = shelf => `棚板「${shelf.name}」 / ${shelf.face === 'rear' ? '背面' : '前面'} / ${shelf.start_u}〜${shelf.start_u + shelf.height_u - 1}U（${shelf.height_u}U） / 全幅 / 奥行き：${shelf.depth === 'full' ? '全体' : '半分'}`;
+    const previewCard = (label, className, shelf) => {
+        const card = el('div', `rack-transfer-card ${className}`), rack = el('strong', 'rack-transfer-rack'), detail = el('span', 'rack-transfer-detail');
+        card.append(el('span', 'rack-transfer-badge', label), rack, detail); comparison.appendChild(card);
+        if (shelf) { rack.textContent = rackName(shelf.view_id); detail.textContent = locationDetail(shelf); }
+        return { rack, detail };
+    };
+    if (previous) previewCard('現在の搭載位置', 'rack-transfer-from', previous);
+    else comparison.style.gridTemplateColumns = 'minmax(0, 1fr)';
+    const destinationCard = previewCard(previous ? '移設先（変更後）' : '搭載位置（指定先）', 'rack-transfer-to');
+    destinationCard.detail.setAttribute('role', 'status');
+    body.appendChild(comparison);
     function field(name, label, tag, value, options) {
         const group = el('div', 'rack-mount-field'), text = el('label', '', label), input = el(tag);
         input.id = `rack-shelf-${name}`; text.setAttribute('for', input.id);
@@ -117,35 +135,40 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
         input.value = String(value); fields[name] = input; group.append(text, input); body.appendChild(group); return input;
     }
     const name = field('name', '棚板名', 'input', previous?.name || '棚板'); name.required = true; name.maxLength = 100;
-    const rack = field('view', '搭載先ラック', previous ? 'select' : 'input', previous?.view_id || rackName(viewId),
-        previous ? appState.views.filter(row => row.view_type === 'rack').map(row => [String(row.id), row.name]) : []);
-    if (!previous) rack.readOnly = true;
-    const positionRow = el('div', 'rack-mount-row-secondary');
-    const faceInput = field('face', '搭載面', 'select', previous?.face || face, [['front', '前面'], ['rear', '背面']]);
-    const depthInput = field('depth', '奥行き', 'select', previous?.depth || 'half', [['half', '半分'], ['full', '全体']]);
-    positionRow.append(faceInput.parentElement, depthInput.parentElement); body.appendChild(positionRow);
-    const unitRow = el('div', 'rack-mount-row-secondary');
+    const rack = previous ? field('view', '搭載先ラック', 'select', previous.view_id,
+        appState.views.filter(row => row.view_type === 'rack').map(row => [String(row.id), row.name])) : null;
+    const position = el('fieldset', 'rack-mount-position');
+    const units = el('div', 'rack-mount-position-grid');
+    const dimensions = el('div', 'rack-mount-position-grid');
+    position.append(el('legend', '', '棚板の搭載位置（全幅）'), units, dimensions);
     for (const [key, label, value] of [['start', '開始U（最下段）', previous?.start_u || startU], ['height', '占有U数', previous?.height_u || heightU]]) {
         const input = field(key, label, 'input', value); input.type = 'number'; input.min = '1'; input.max = '60'; input.step = '1'; input.required = true;
-        unitRow.appendChild(input.parentElement);
+        units.appendChild(input.parentElement);
     }
-    body.appendChild(unitRow);
-    const summary = el('p', 'rack-mount-summary'); summary.setAttribute('aria-live', 'polite'); body.appendChild(summary);
+    const faceInput = field('face', '搭載面', 'select', previous?.face || face, [['front', '前面'], ['rear', '背面']]);
+    const depthInput = field('depth', '奥行き', 'select', previous?.depth || 'half', [['half', '半分'], ['full', '全体']]);
+    dimensions.append(faceInput.parentElement, depthInput.parentElement); body.appendChild(position);
     const updateSummary = () => {
-        const start = Number(fields.start.value), height = Number(fields.height.value);
-        summary.textContent = `${previous ? rackName(Number(rack.value)) : rackName(viewId)} / ${fields.face.value === 'rear' ? '背面' : '前面'} / ${start}〜${start + height - 1}U（${height}U） / 全幅 / 奥行き：${fields.depth.value === 'full' ? '全体' : '半分'}`;
+        const destination = previous ? Number(rack.value) : Number(viewId);
+        const moving = previous && !eq(previous.view_id, destination);
+        title.textContent = moving ? '棚板をラックへ移設' : previous ? '棚板の設定' : '棚板を追加';
+        target.textContent = moving ? 'ラックへ移設：現在 → 移設先' : previous ? '設定・搭載位置を変更：現在 → 変更後' : `搭載先：${rackName(destination)}`;
+        submit.textContent = pending ? '移設を確定' : moving ? 'ラックへ移設' : previous ? '設定を保存' : '棚板を追加';
+        destinationCard.rack.textContent = rackName(destination);
+        destinationCard.detail.textContent = locationDetail({ name: fields.name.value, face: fields.face.value,
+            start_u: Number(fields.start.value), height_u: Number(fields.height.value), depth: fields.depth.value });
     };
-    updateSummary();
     body.appendChild(el('p', 'rack-warning', '棚板は全幅です。棚板上の機器は追加のUを占有しません。奥行きは簡易占有であり、現物の干渉・耐荷重・放熱は保証しません。'));
     const error = el('p', 'form-error'); error.setAttribute('role', 'alert'); body.appendChild(error);
     const confirmation = createRackTransferConfirmation(); body.appendChild(confirmation.element);
     const actions = el('div', 'rack-mount-actions'), submit = el('button', 'btn btn-primary', previous ? '設定を保存' : '棚板を追加'); submit.type = 'submit';
     actions.append(btn('キャンセル', () => {
         if (!pending) { closeShelfDialog(); return; }
-        pending = null; confirmation.hide(); submit.textContent = '設定を保存'; error.textContent = '';
+        pending = null; confirmation.hide(); updateSummary(); error.textContent = '';
     }), submit);
-    form.addEventListener('input', () => { pending = null; confirmation.hide(); submit.textContent = previous ? '設定を保存' : '棚板を追加'; updateSummary(); });
-    form.addEventListener('change', () => { pending = null; confirmation.hide(); submit.textContent = previous ? '設定を保存' : '棚板を追加'; updateSummary(); });
+    updateSummary();
+    form.addEventListener('input', () => { pending = null; confirmation.hide(); updateSummary(); });
+    form.addEventListener('change', () => { pending = null; confirmation.hide(); updateSummary(); });
     form.addEventListener('submit', event => {
         event.preventDefault(); error.textContent = '';
         const destination = previous ? Number(fields.view.value) : Number(viewId);
@@ -172,7 +195,7 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
             else closeShelfPanel();
         }
     });
-    form.append(body, actions); section.append(title, form); overlay.appendChild(section); document.body.appendChild(overlay); dialog = overlay; dialogViewId = origin;
+    form.append(body, actions); section.append(heading, form); overlay.appendChild(section); document.body.appendChild(overlay); dialog = overlay; dialogViewId = origin;
     registerModalOpen('rack-shelf', overlay, '#rack-shelf-name', { onClose: closeShelfDialog });
 }
 function closeShelfDeviceDialog() {
@@ -191,6 +214,8 @@ function openShelfDeviceDialog(shelfId) {
     const section = el('section', 'view-manager-dialog rack-mount-dialog');
     section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true'); section.setAttribute('aria-labelledby', 'rack-shelf-device-title');
     const title = el('h2', '', '棚板に機器を追加'); title.id = 'rack-shelf-device-title';
+    const heading = el('div', 'modal-header-heading rack-mount-heading');
+    heading.append(title, el('p', 'modal-header-target', `搭載先：${rackName(shelf.view_id)} / 棚板「${shelf.name}」`));
     const form = el('form', 'rack-mount-form rack-shelf-device-form'), body = el('div', 'rack-mount-body');
     const modes = el('div', 'rack-shelf-device-modes'), existing = el('div', 'rack-shelf-existing'), fresh = el('div', 'rack-shelf-new');
     let mode = 'existing', selectedId = null, pending = null, busy = false;
@@ -236,7 +261,7 @@ function openShelfDeviceDialog(shelfId) {
         if (!current() || !shelfEditable([shelf.view_id])) { error.textContent = 'ラックまたは保存状態が変わりました。開き直してください。'; return; }
         if (mode === 'new') {
             const values = { name: inputs.name.value.trim(), ip: inputs.ip.value.trim() };
-            const validation = validateDeviceValues({ ...values, name: values.name || '新しい機器' }, appState.devices);
+            const validation = validateDeviceValues({ ...values, name: values.name || '新しい機器' });
             if (Object.keys(validation.errors).length) { error.textContent = Object.values(validation.errors).join('\n'); return; }
             busy = true; submit.disabled = true;
             try {
@@ -265,7 +290,7 @@ function openShelfDeviceDialog(shelfId) {
         else { resetConfirmation(); error.textContent = '追加できませんでした。所属と保存状態を確認してください。'; }
     });
     actions.append(btn('キャンセル', () => { if (pending) resetConfirmation(); else closeShelfDeviceDialog(); }), submit);
-    body.append(modes, existing, fresh, confirmation.element, error); form.append(body, actions); section.append(title, form); overlay.appendChild(section);
+    body.append(modes, existing, fresh, confirmation.element, error); form.append(body, actions); section.append(heading, form); overlay.appendChild(section);
     document.body.appendChild(overlay); deviceDialog = overlay; deviceDialogViewId = shelf.view_id;
     registerModalOpen('rack-shelf-device', overlay, '#rack-shelf-device-search', { onClose: closeShelfDeviceDialog });
 }
@@ -274,8 +299,18 @@ export function closeShelfPanel() {
     document.getElementById('rack-shelf-panel')?.remove(); selectedShelfId = null;
 }
 export async function showShelfPanel(id) {
+    const available = () => {
+        const shelf = shelfById(id);
+        return shelf && appState.views.some(view => eq(view.id, shelf.view_id) && view.view_type === 'rack') ? shelf : null;
+    };
+    let shelf = available();
+    if (!shelf) { showToast('棚板または配置先ラックが見つかりません。最新データを確認してください。', 'warning'); return false; }
+    if (!eq(shelf.view_id, appState.currentViewId) && !await switchView(shelf.view_id)) return false;
     if (!await closePanel() || !await closeLinkPanel()) return false;
-    const shelf = shelfById(id); if (!shelf || !eq(shelf.view_id, appState.currentViewId)) return false;
+    shelf = available();
+    if (!shelf || !eq(shelf.view_id, appState.currentViewId)) {
+        showToast('棚板の配置先が変わりました。最新データを確認してください。', 'warning'); return false;
+    }
     if (selectedShelfId != null && !eq(selectedShelfId, id)) closeShelfDeviceDialog();
     selectedShelfId = shelf.id; renderShelfPanel(); return true;
 }

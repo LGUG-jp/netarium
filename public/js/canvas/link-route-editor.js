@@ -196,10 +196,7 @@ function returnToAuto() {
         redraw();
     }
 }
-function pointerMove(event) {
-    if (!session?.drag || event.pointerId !== session.drag.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
+function updateDragPreview(event) {
     syncLinkRouteEditor();
     if (!session?.drag) return;
     const drag = session.drag;
@@ -213,9 +210,19 @@ function pointerMove(event) {
         redraw();
     } catch (error) { cancelPreview(); report(error); }
 }
+function pointerMove(event) {
+    if (!session?.drag || event.pointerId !== session.drag.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateDragPreview(event);
+}
 function pointerEnd(event, cancelled) {
     if (!session?.drag || event.pointerId !== session.drag.pointerId) return;
     event.preventDefault();
+    // 最後のpointermoveとpointerupが異なる場合は離した位置で検証し直す。
+    // pointercancelではプレビューを破棄し、最終座標を取り込まない。
+    if (!cancelled) updateDragPreview(event);
+    if (!session?.drag || event.pointerId !== session.drag.pointerId) return;
     // SVG rootへ届く合成clickだけを抑え、clickが発生しなくても次の操作まで残さない。
     if (!cancelled) suppressCanvasClickOnce();
     const points = copy(session.points), changed = session.drag.changed;

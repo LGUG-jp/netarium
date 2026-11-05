@@ -12,9 +12,12 @@
     position: fixed;
     inset: 0;
     z-index: 1200;
-    display: grid;
-    place-items: center;
-    padding: 24px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
     background: rgba(15, 23, 42, 0.56);
     backdrop-filter: blur(4px);
 }
@@ -27,7 +30,8 @@
     display: flex;
     flex-direction: column;
     width: min(980px, 100%);
-    max-height: calc(100vh - 48px);
+    box-sizing: border-box;
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     overflow: hidden;
     border: 1px solid rgba(148, 163, 184, 0.34);
     border-radius: var(--radius-md);
@@ -59,6 +63,9 @@
 
 .view-manager-header h2 {
     margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.3;
 }
 
 .view-manager-header p,
@@ -121,6 +128,26 @@
     overflow-x: hidden;
 }
 
+.view-manager-form #vm-memo {
+    min-height: clamp(100px, 16dvh, 180px);
+    resize: vertical;
+}
+
+.view-manager-field-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 10px;
+}
+
+.view-manager-field {
+    flex: 1 1 160px;
+    min-width: 0;
+}
+
+.view-manager-field-short {
+    flex: 0 1 120px;
+}
+
 .view-manager-list-area label,
 .view-manager-list-area input {
     flex-shrink: 0;
@@ -148,8 +175,8 @@
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
 }
-.view-manager-form .form-support { margin: 0 0 12px; color: var(--text-muted); font-size: 12px; }
-#vm-rack-fields { min-width: 0; margin: 0 0 16px; padding: 8px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
+.view-manager-form .form-support { margin: 0 0 8px; color: var(--text-muted); font-size: 12px; }
+#vm-rack-fields { min-width: 0; margin: 0 0 8px; padding: 4px 10px 6px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
 #vm-rack-fields legend { padding: 0 4px; font-size: 12px; font-weight: 700; }
 #vm-rack-fields p:not(.form-error) { margin: 0; color: var(--text-muted); font-size: 12px; }
 
@@ -196,9 +223,14 @@
 
 .view-manager-floor-plan-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
+}
+
+.view-manager-floor-plan-actions[hidden] {
+    display: none;
 }
 
 .view-manager-floor-plan-actions button {
@@ -208,6 +240,10 @@
 .view-manager-floor-plan-actions span {
     color: var(--text-muted);
     font-size: 12px;
+}
+
+#vm-floor-plan-status {
+    white-space: nowrap;
 }
 
 .view-manager-form-actions {

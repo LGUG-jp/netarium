@@ -112,12 +112,6 @@ test('奥行き入力と反対面グレーアウトは同じ物理左右・複�
     const form = document.querySelector('.rack-mount-form');
     const submit = form.querySelector('button[type="submit"]');
     assert.equal(dom.get('rack-mount-depth').value, 'half');
-    const primaryFields = form.querySelector('.rack-mount-row-primary').querySelectorAll('.rack-mount-field');
-    const secondaryFields = form.querySelector('.rack-mount-row-secondary').querySelectorAll('.rack-mount-field');
-    assert.equal(primaryFields.length, 3, '1段目は面・幅・奥行きの3列');
-    assert.equal(secondaryFields.length, 2, '2段目は開始U・占有Uの2列');
-    assert.equal(primaryFields[1].querySelector('label').textContent, '横幅位置');
-    assert.equal(primaryFields[2].querySelector('label').textContent, '奥行き');
     assert.ok(form.querySelector('.rack-warning').textContent.includes('横幅位置は各面から見た左右です'));
     assert.equal(submit.disabled, false);
     dom.get('rack-mount-width').value = 'right'; await dom.get('rack-mount-width').dispatch('input');

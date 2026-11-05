@@ -214,7 +214,10 @@ if [ "$healthy" -ne 1 ]; then
     exit 1
 fi
 
-echo "=== Netarium Docker update completed successfully ==="
 if [[ "$PREV_IMAGE_REF" == netarium-rollback:* ]]; then
-    docker image rm "$PREV_IMAGE_REF" >/dev/null
+    # Remove only our temporary tag. containerd may still have the old image
+    # in use after a no-content-change rebuild; --force permits untagging it
+    # without removing the running container or the updated target tag.
+    docker image rm --force "$PREV_IMAGE_REF" >/dev/null
 fi
+echo "=== Netarium Docker update completed successfully ==="

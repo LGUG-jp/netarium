@@ -4,11 +4,42 @@ import { test, beforeEach } from 'node:test';
 // ブラウザ環境の軽量モック
 const mockElements = new Map();
 
+function registerMockTree(element, connected) {
+    if (element.id) {
+        if (connected) mockElements.set(element.id, element);
+        else if (mockElements.get(element.id) === element) mockElements.delete(element.id);
+    }
+    for (const child of element.children) registerMockTree(child, connected);
+}
+
 function createMockElement(tag = 'div') {
     const el = {
         tagName: tag.toUpperCase(),
         className: '',
         children: [],
+        parentElement: null,
+        get parentNode() { return this.parentElement; },
+        get isConnected() {
+            return this === globalThis.document?.body || Boolean(this.parentElement?.isConnected);
+        },
+        get id() { return this._id || ''; },
+        set id(value) {
+            if (mockElements.get(this.id) === this) mockElements.delete(this.id);
+            this._id = String(value);
+            if (this.isConnected && this.id) mockElements.set(this.id, this);
+        },
+        get lastElementChild() { return this.children.at(-1) || null; },
+        get value() { return this.tagName === 'SELECT' ? this.selectedOptions[0]?.value ?? '' : this._value ?? ''; },
+        set value(value) {
+            if (this.tagName !== 'SELECT') { this._value = String(value); return; }
+            let matched = false;
+            for (const option of this.options) {
+                option.selected = !matched && option.value === String(value);
+                if (option.selected) matched = true;
+            }
+        },
+        get options() { return this.children.filter(child => child.tagName === 'OPTION'); },
+        get selectedOptions() { return this.options.filter(option => option.selected); },
         dataset: {},
         hidden: false,
         classList: {
@@ -28,7 +59,7 @@ function createMockElement(tag = 'div') {
             contains(c) { return this.classes.has(c); }
         },
         set innerHTML(val) {
-            if (val === '') this.children = [];
+            if (val === '') this.replaceChildren();
         },
         setAttribute(name, val) {
             this[name] = val;
@@ -47,13 +78,42 @@ function createMockElement(tag = 'div') {
         getAttribute(name) { return this[name] || null; },
         focus() {},
         _listeners: {},
-        append(...children) { this.children.push(...children); },
-        replaceChildren(...children) { this.children = [...children]; },
+        append(...children) { children.forEach(child => this.appendChild(child)); },
+        replaceChildren(...children) {
+            for (const child of [...this.children]) this.removeChild(child);
+            this.append(...children);
+        },
         querySelector() { return null; },
         querySelectorAll() { return []; },
-        appendChild(child) {
-            this.children.push(child);
+        appendChild(child) { return this.insertBefore(child, null); },
+        insertBefore(child, reference) {
+            if (reference !== null && !this.children.includes(reference)) throw new Error('Reference is not a child');
+            if (child === reference) return child;
+            child.remove();
+            const index = reference === null ? this.children.length : this.children.indexOf(reference);
+            this.children.splice(index, 0, child);
+            child.parentElement = this;
+            registerMockTree(child, this.isConnected);
+            if (this.tagName === 'SELECT' && !this.multiple && !this.selectedOptions.length) child.selected = true;
             return child;
+        },
+        removeChild(child) {
+            const index = this.children.indexOf(child);
+            if (index === -1) throw new Error('Node is not a child');
+            this.children.splice(index, 1);
+            registerMockTree(child, false);
+            child.parentElement = null;
+            return child;
+        },
+        remove() {
+            if (this.parentElement) this.parentElement.removeChild(this);
+            else registerMockTree(this, false);
+        },
+        after(...children) {
+            const parent = this.parentElement;
+            if (!parent) return;
+            const reference = parent.children[parent.children.indexOf(this) + 1] || null;
+            children.forEach(child => parent.insertBefore(child, reference));
         },
         addEventListener(ev, fn) { this._listeners[ev] = fn; },
         removeEventListener(ev) { delete this._listeners[ev]; },
@@ -78,7 +138,9 @@ if (typeof globalThis.document === 'undefined') {
         getElementById: (id) => {
             if (id === 'rack-position-section') return null;
             if (!mockElements.has(id)) {
-                mockElements.set(id, createMockElement('div'));
+                const element = createMockElement('div');
+                element.id = id;
+                document.body.appendChild(element);
             }
             return mockElements.get(id);
         },
@@ -129,6 +191,7 @@ import { clampPosition } from '../public/js/canvas/drag-drop.js';
 import { openDirectLink } from '../public/js/core/direct-link.js';
 
 beforeEach(() => {
+    document.body.replaceChildren();
     mockElements.clear();
     appState.views = [{ id: 1, name: '通常ビュー', view_type: 'normal' }];
     appState.currentViewId = 1;

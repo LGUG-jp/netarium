@@ -55,6 +55,8 @@ import {
 } from './status-bar.js';
 import { scheduleSave, hasResourceConflict, reloadConflictedResource, hasResourceChanges, isSaveInFlight } from '../core/save-queue.js';
 import { getDeviceDraft, commitDeviceDraft, discardDeviceDraft, hasDeviceDraftChanges } from '../core/device-drafts.js';
+import { createDeviceIpEditor } from './device-ip-editor.js';
+import { createIpDuplicateNotice } from './ip-duplicate-notice.js';
 import { chooseUnsavedChanges } from '../core/unsaved-changes-dialog.js';
 import {
     buildViewOptionLabel
@@ -132,13 +134,14 @@ function updatePanelDraft(target) {
             const value = getTrimmedInputValue(id);
             draft[field] = field === 'management_port' ? (value === '' ? null : (/^\d+$/.test(value) ? Number(value) : value)) : value;
         }
-        const errors = validateDeviceValues({ ...draft, ...readPanelValues(panelFields) }, appState.devices).errors;
+        const errors = validateDeviceValues({ ...draft, ...readPanelValues(panelFields) }).errors;
         for (const [field, id] of Object.entries(panelFields)) {
             const input = document.getElementById(id);
             if (id === target.id || input?.getAttribute('aria-invalid') === 'true') {
                 setInputError(input, document.getElementById(`${id}-error`), errors[field]);
             }
         }
+        document.getElementById('p-additional-ips')?.querySelector('.device-ip-editor')?.validateIps();
         updatePanelSummaries(draft);
         eventBus.emit('device-drafts:changed');
     }
@@ -197,6 +200,12 @@ function updatePanelConflictButtons() {
 eventBus.on('resource:conflict', updatePanelConflictButtons);
 eventBus.on('save-state:changed', updatePanelConflictButtons);
 eventBus.on('device-drafts:changed', updatePanelConflictButtons);
+eventBus.on('ip-management:changed', () => {
+    if (typeof document === 'undefined' || appState.editingDeviceId == null) return;
+    const panel = document.getElementById('panel');
+    const device = getDeviceById(appState.editingDeviceId);
+    if (panel && device && !panel.hidden && !panel.classList.contains('hidden')) populatePanelForm(device, panel);
+});
 eventBus.on('resource:reloaded', ({ kind, id }) => {
     if (typeof document === 'undefined') return;
     if (kind === 'devices' && Number(id) === Number(appState.editingDeviceId)) {
@@ -522,6 +531,22 @@ function populatePanelForm(device, panel) {
         onChange: input => updatePanelDraft(input)
     });
     setInputValue('p-ip', device.ip);
+    document.getElementById('p-ip-notice')?.remove();
+    const notice = createIpDuplicateNotice({
+        getRecord: () => getDeviceDraft('panel', appState.editingDeviceId),
+        field: 'ip_segment_id', ipInput: document.getElementById('p-ip'),
+        canEdit: () => appState.editingDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+            !hasResourceConflict('devices', appState.editingDeviceId),
+        onChange: () => eventBus.emit('device-drafts:changed')
+    });
+    notice.id = 'p-ip-notice';
+    document.getElementById('p-ip')?.after(notice);
+    document.getElementById('p-additional-ips')?.replaceChildren(createDeviceIpEditor({
+        getDevice: () => getDeviceDraft('panel', appState.editingDeviceId),
+        canEdit: () => appState.editingDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+            !hasResourceConflict('devices', appState.editingDeviceId),
+        onChange: () => eventBus.emit('device-drafts:changed')
+    }));
 
     setInputValue('p-facility', device.facility);
     setInputValue('p-floor', device.floor);
@@ -725,17 +750,28 @@ export function applyPanelValues(options = {}) {
 
     const result = validateDeviceValues({
         id: device.id, name, type, ip, facility, floor, location, manufacturer, model,
+        additional_ips: getDeviceDraft('panel', device.id)?.additional_ips || [],
+        ip_segment_id: getDeviceDraft('panel', device.id)?.ip_segment_id ?? null,
         asset_number: assetNumber, serial_number: serialNumber, mac_address: macAddress,
         memo, install_date: installDate, management_scheme: scheme, management_port: portStr,
         department, maintenance_vendor: maintenanceVendor, maintenance_expiry: maintenanceExpiry
-    }, appState.devices);
+    });
     const groups = {
         name: 'basic', ip: 'basic', facility: 'placement', floor: 'placement', location: 'placement',
         manufacturer: 'asset', model: 'asset', asset_number: 'asset', serial_number: 'asset',
         mac_address: 'asset', install_date: 'asset', memo: 'extra'
     };
     const errors = Object.entries(result.errors);
+    const addressInput = document.getElementById('p-additional-ips')?.querySelector('.device-ip-editor')?.validateIps({
+        reveal: true, device: result.values
+    });
     errors.forEach(([field, message], index) => {
+        if (field === 'additional_ips') {
+            const group = document.getElementById('p-group-basic');
+            if (group) group.open = true;
+            if (focusError && index === 0) addressInput?.focus();
+            return;
+        }
         const id = `p-${field.replaceAll('_', '-')}`;
         setFieldError(id, `${id}-error`, `p-group-${groups[field] || 'management'}`, message,
             { focus: focusError && index === 0 });

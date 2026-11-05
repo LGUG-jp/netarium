@@ -75,6 +75,16 @@ test('別ラック移設は表示条件を確認してから両ラックを保�
             if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];
         }
     });
+    await t.test('指定した移設先を開いても現在の搭載と保存状態を変更しない', async () => {
+        reset();
+        rack.openRackMountDialog({ viewId: 2, deviceId: 1 });
+        assert.equal(dom.get('rack-mount-view').value, '2');
+        assert.deepEqual(appState.rackMounts, [initial]);
+        assert.equal(writes.length, 0);
+        await cancel();
+        assert.deepEqual(appState.rackMounts, [initial]);
+        assert.equal(writes.length, 0);
+    });
     await t.test('元先の面・U範囲・各面から見た幅を表示し取消とEscapeで保存しない', async () => {
         reset(); await beginTransfer();
         const confirmation = form().querySelector('.rack-transfer-confirmation');

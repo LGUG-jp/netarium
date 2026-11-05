@@ -1,0 +1,966 @@
+/* ========================================================
+   Netarium - 機器Config管理モーダル (CSS)
+   UIモック基準：5画面構成（未登録・登録/編集・閲覧・削除・差分比較）
+======================================================== */
+
+.device-config-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2200;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    background: var(--bg-overlay, rgba(15, 23, 42, 0.45));
+    backdrop-filter: blur(2px);
+}
+
+.device-config-overlay[hidden] {
+    display: none !important;
+}
+
+/* モーダルダイアログ外枠 */
+.device-config-dialog,
+.device-config-confirm-dialog {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    width: min(1160px, 100%);
+    box-sizing: border-box;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md, 8px);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+
+.device-config-dialog {
+    height: min(88dvh, 860px);
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
+}
+
+/* 1. モーダルヘッダー（全画面共通） */
+.device-config-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+    min-height: 48px;
+    box-sizing: border-box;
+}
+
+
+.device-config-target-name {
+    color: var(--text-main);
+    font-weight: 600;
+}
+
+/* 削除モード案内バー（画面④） */
+/* 通知メッセージバー */
+.device-config-notice {
+    margin: 0;
+    padding: 10px 20px;
+    background: var(--warning-bg);
+    border-bottom: 1px solid var(--border-light);
+    color: var(--warning-text, var(--text-main));
+    font-size: 13px;
+    overflow-wrap: anywhere;
+    flex-shrink: 0;
+}
+
+/* 2. 上部操作バー（全画面共通） */
+.device-config-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+    min-height: 48px;
+    height: 48px;
+    box-sizing: border-box;
+}
+
+.device-config-delete-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--danger-bg);
+    border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
+    border-radius: var(--radius-sm, 4px);
+    padding: 3px 6px 3px 10px;
+    flex-shrink: 0;
+}
+
+.device-config-delete-msg {
+    font-size: 13px;
+    color: var(--danger);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.device-config-delete-controls .device-config-selection-badge {
+    color: var(--danger);
+    background: var(--bg-panel);
+    border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+    font-size: 11px;
+    padding: 1px 7px;
+    white-space: nowrap;
+}
+
+.device-config-delete-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.device-config-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--neutral-bg, #f5f5f5);
+    padding: 2px;
+    border-radius: var(--radius-sm, 4px);
+    border: 1px solid var(--border-light);
+}
+
+.device-config-tab-btn {
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast, 0.15s ease);
+}
+
+.device-config-tab-btn:hover:not(:disabled) {
+    color: var(--text-main);
+    background: var(--bg-panel);
+}
+
+.device-config-tab-btn[aria-pressed="true"] {
+    border-color: var(--border-light);
+    background: var(--bg-panel);
+    color: var(--primary);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.device-config-tab-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.device-config-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+/* 3. コンテンツエリア（レイアウト） */
+.device-config-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+/* 2カラムレイアウト（未登録・登録・閲覧・削除モード共通） */
+.device-config-layout {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+}
+
+/* 左カラム：履歴サイドバー */
+.device-config-sidebar {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border-light);
+    background: var(--neutral-bg, #fafafa);
+    min-height: 0;
+    overflow: hidden;
+}
+
+.device-config-sidebar-header {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 16px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+}
+
+.device-config-sidebar-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.device-config-sidebar-delete-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.device-config-selection-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--primary);
+    background: var(--primary-soft);
+    border-radius: var(--radius-full, 9999px);
+    white-space: nowrap;
+}
+
+.device-config-select-toggle-btn {
+    padding: 2px 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.device-config-select-toggle-btn:hover {
+    color: var(--text-main);
+}
+
+.device-config-history-scroll {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+    gap: 8px;
+}
+
+/* 履歴0件時の空表示（画面①・②） */
+.device-config-history-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px 16px;
+    color: var(--text-muted);
+    gap: 10px;
+    margin: auto 0;
+}
+
+.device-config-history-empty-icon {
+    width: 40px;
+    height: 40px;
+    color: var(--neutral-disabled, #a0aec0);
+    opacity: 0.8;
+}
+
+.device-config-history-empty-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+    margin: 0;
+}
+
+.device-config-history-empty-desc {
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 0;
+    color: var(--text-muted);
+}
+
+/* 履歴カード */
+.device-config-card {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-panel);
+    text-align: left;
+    cursor: pointer;
+    transition: all var(--transition-fast, 0.15s ease);
+}
+
+.device-config-card:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-toolbar-hover, #f8fafc);
+}
+
+.device-config-card.is-selected {
+    border: 2px solid var(--primary);
+    background: var(--primary-soft);
+    padding: 9px 11px; /* 枠線太さ補正 */
+}
+
+.device-config-card-time {
+    display: block;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 2px;
+}
+
+.device-config-card-actor {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+
+.device-config-card-memo {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+}
+
+/* 削除モード時のカード行 */
+.device-config-delete-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-panel);
+    cursor: pointer;
+    transition: all var(--transition-fast, 0.15s ease);
+}
+
+.device-config-delete-row:hover {
+    border-color: var(--border-strong);
+}
+
+.device-config-delete-row.is-checked {
+    border: 2px solid var(--primary);
+    background: var(--primary-soft);
+    padding: 9px 11px;
+}
+
+.device-config-card-checkbox {
+    margin-top: 2px;
+    cursor: pointer;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+}
+
+.device-config-delete-row-content {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+/* 右メインエリア */
+.device-config-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg-panel);
+    overflow: hidden;
+}
+
+/* 画面①：未登録状態の中央案内 */
+.device-config-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    flex: 1;
+    padding: 40px 24px;
+    gap: 14px;
+}
+
+.device-config-empty-state-icon {
+    width: 64px;
+    height: 64px;
+    color: var(--primary);
+    opacity: 0.85;
+    margin-bottom: 4px;
+}
+
+.device-config-empty-state-title {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+    color: var(--text-main);
+}
+
+.device-config-empty-state-desc {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin: 0 0 10px 0;
+    max-width: 380px;
+    line-height: 1.5;
+}
+
+/* 画面②：登録／編集フォーム */
+.device-config-form {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    padding: 16px 20px;
+    gap: 14px;
+    overflow-y: auto;
+}
+
+.device-config-warning-box {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--warning-bg);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--warning-text, var(--text-main));
+    flex-shrink: 0;
+}
+
+.device-config-warning-box-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.device-config-form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.device-config-form-group.is-flex {
+    flex: 1;
+    min-height: 220px;
+}
+
+.device-config-form-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.device-config-form-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.device-config-form-counter {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.device-config-file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.device-config-file-input {
+    font-size: 13px;
+    color: var(--text-main);
+}
+
+.device-config-editor-wrap {
+    display: flex;
+    flex: 1;
+    min-height: 180px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-input, var(--bg-panel));
+    overflow: hidden;
+}
+
+.device-config-editor-textarea {
+    width: 100%;
+    height: 100%;
+    flex: 1;
+    resize: none;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-main);
+    font: 13px/20px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+}
+
+.device-config-memo-input {
+    min-height: 34px;
+    box-sizing: border-box;
+    color: var(--text-main);
+    background: var(--bg-input, var(--bg-panel));
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+/* 画面③・④：閲覧ビューアおよび削除時本文表示 */
+.device-config-viewer {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.device-config-viewer-tools {
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0 16px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-panel);
+    flex-shrink: 0;
+}
+
+.device-config-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.device-config-viewer-tools input[type="search"].device-config-search-input,
+.device-config-search-box input[type="search"],
+.device-config-search-input {
+    width: 160px;
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 13px;
+    line-height: 30px;
+    box-sizing: border-box;
+    background: var(--bg-input, var(--bg-panel));
+    color: var(--text-main);
+}
+
+.device-config-viewer-tools .btn,
+.device-config-diff-header-bar .btn {
+    height: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+    line-height: 30px;
+    box-sizing: border-box;
+    white-space: nowrap;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.device-config-search-status {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    min-width: 56px;
+    height: 32px;
+    line-height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    flex-shrink: 0;
+}
+.device-config-content-view {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+    background: var(--bg-input, var(--bg-panel));
+}
+
+.device-config-content-textarea {
+    width: 100%;
+    height: 100%;
+    flex: 1;
+    resize: none;
+    box-sizing: border-box;
+    padding: 12px 16px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-main);
+    font: 13px/20px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+}
+
+.device-config-content-textarea::selection {
+    background-color: var(--primary, #0055cc);
+    color: #ffffff;
+}
+/* 画面⑤：差分比較（全幅表示） */
+.device-config-diff-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-panel);
+}
+
+.device-config-diff-header-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--neutral-bg, #fafafa);
+    flex-shrink: 0;
+}
+
+.device-config-diff-selector-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.device-config-diff-selector-row label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+}
+
+.device-config-diff-select {
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font-size: 13px;
+    flex: 1 1 180px;
+    min-width: 0;
+    max-width: 320px;
+}
+
+.device-config-diff-timestamps {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.device-config-diff-header-bar .device-config-search-box {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.device-config-diff-header-bar .device-config-search-input {
+    flex: 1 1 100px;
+    min-width: 60px;
+    max-width: 160px;
+}
+
+.device-config-diff-header-bar .device-config-search-box .device-config-search-status {
+    flex: 0 0 15ch;
+}
+
+.device-config-diff-navigation .device-config-search-status {
+    flex: 0 0 auto;
+    min-width: 5ch;
+    justify-content: center;
+}
+
+.device-config-diff-search-side {
+    flex: 0 0 3em;
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.device-config-diff-navigation {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+.device-config-diff-row.is-current-diff pre {
+    box-shadow: inset 0 1px var(--primary), inset 0 -1px var(--primary);
+}
+
+.device-config-diff-row.is-current-diff.is-diff-block-start pre {
+    box-shadow: inset 0 3px var(--primary), inset 0 -1px var(--primary);
+}
+
+.device-config-diff-row.is-current-diff.is-diff-block-end pre {
+    box-shadow: inset 0 1px var(--primary), inset 0 -3px var(--primary);
+}
+
+.device-config-diff-row.is-current-diff.is-diff-block-start.is-diff-block-end pre {
+    box-shadow: inset 0 3px var(--primary), inset 0 -3px var(--primary);
+}
+
+.device-config-diff-match {
+    background: var(--text-main);
+    color: var(--bg-panel);
+    outline: 2px solid var(--primary);
+    border-radius: 2px;
+}
+
+.device-config-diff-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    background: var(--bg-input, var(--bg-panel));
+}
+
+.device-config-diff-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    min-width: 100%;
+}
+
+.device-config-diff-row pre {
+    margin: 0;
+    padding: 2px 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 13px/20px ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.device-config-diff-row pre:first-child {
+    border-right: 1px solid var(--border-light);
+}
+
+.device-config-diff-row .is-removed {
+    background: var(--danger-bg);
+    border-left: 3px solid var(--danger);
+    color: var(--text-main);
+}
+
+.device-config-diff-row .is-added {
+    background: var(--success-bg);
+    border-left: 3px solid var(--success);
+    color: var(--text-main);
+}
+
+.device-config-diff-empty-msg {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+/* 削除確認ダイアログ */
+.device-config-confirm-overlay {
+    align-items: center;
+}
+
+.device-config-confirm-dialog {
+    width: min(580px, 100%);
+    overflow: hidden;
+}
+
+.device-config-confirm-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.device-config-confirm-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.device-config-confirm-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.device-config-confirm-body p {
+    margin: 0;
+}
+
+.device-config-confirm-dates {
+    margin: 4px 0;
+    padding-left: 20px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+}
+
+.device-config-confirm-warning {
+    padding: 10px 14px;
+    background: var(--warning-bg);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 13px;
+    color: var(--warning-text, var(--text-main));
+}
+
+.device-config-confirm-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-light);
+    background: var(--neutral-bg, #fafafa);
+}
+
+/* レスポンシブ対応 (760px以下) */
+@media (max-width: 760px) {
+    .device-config-overlay {
+        padding: 8px;
+    }
+    .device-config-dialog {
+        height: calc(100dvh - 16px);
+        max-height: calc(100dvh - 16px);
+    }
+    .device-config-header {
+        padding: 10px 14px;
+        gap: 8px;
+    }
+    .device-config-header-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+    .device-config-toolbar {
+        flex-wrap: wrap;
+        padding: 8px 14px;
+        gap: 8px;
+    }
+    .device-config-toolbar-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+    .device-config-layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(240px, 1fr);
+    }
+    .device-config-sidebar {
+        border-right: none;
+        border-bottom: 1px solid var(--border-light);
+        max-height: 180px;
+    }
+    .device-config-history-scroll {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 8px;
+    }
+    .device-config-card,
+    .device-config-delete-row {
+        flex: 0 0 200px;
+        width: 200px;
+    }
+    .device-config-diff-header-bar {
+        padding: 10px 12px;
+    }
+    .device-config-diff-timestamps {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+    }
+    .device-config-diff-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .device-config-diff-row pre:first-child {
+        border-right: none;
+        border-bottom: 1px solid var(--border-light);
+    }
+    .device-config-diff-header-bar .device-config-search-box {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 8px;
+        flex-basis: 100%;
+        width: 100%;
+    }
+    .device-config-diff-header-bar .device-config-search-input {
+        flex: 1 1 120px;
+        min-width: 80px;
+        max-width: none;
+    }
+    .device-config-diff-header-bar .device-config-search-box .device-config-search-status {
+        flex: 0 0 auto;
+        min-width: 8ch;
+        justify-content: flex-start;
+    }
+    .device-config-diff-navigation {
+        margin-left: 0;
+        width: 100%;
+        justify-content: flex-start;
+        gap: 6px 8px;
+    }
+    .device-config-diff-row pre:empty {
+        display: none;
+    }
+}

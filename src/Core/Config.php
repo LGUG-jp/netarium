@@ -153,6 +153,11 @@ final class Config
                 'floor_plans' => [
                     'max_files' => 100,
                 ],
+                'device_configs' => [
+                    'max_version_bytes' => 256 * 1024,
+                    'max_versions_per_device' => 5,
+                    'max_total_bytes' => 40 * 1024 * 1024,
+                ],
                 'backup' => [
                     'max_zip_bytes' => 24 * 1024 * 1024,
                     'max_uncompressed_bytes' => 64 * 1024 * 1024,

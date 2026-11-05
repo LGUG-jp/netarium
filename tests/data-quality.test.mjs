@@ -49,8 +49,11 @@ import {
     getDataQualitySeverityIcon,
     getDataQualityTargetField,
     getDataQualityTargetSummary,
+    getDataQualityDetailLines,
     normalizeDataQualityCodeFilter,
-    openDataQualityDeviceInSheet
+    openDataQualityDeviceInSheet,
+    createDataQualityIssueElement,
+    createDataQualityIssueActions
 } from '../public/js/modals/data-quality-modal.js';
 
 import { eventBus } from '../public/js/core/event-bus.js';
@@ -363,3 +366,192 @@ test('getDataQualityPrimaryAction: details.fields配列形式の入力不足イ�
     unsubscribe();
 });
 
+
+test('未分類IPの主操作・対象別操作は管理と追加の登録を混同せず未分類一覧へ進み、キャンセルで画面を保つ', async t => {
+    const dom = prepareNavigation(true);
+    const previousFetch = globalThis.fetch;
+    const previousConfirm = globalThis.confirm;
+    const previous = {
+        ipSegments: appState.ipSegments, addressSpaces: appState.addressSpaces,
+        dataQualityPreviousFocus: appState.dataQualityPreviousFocus
+    };
+    t.after(() => {
+        globalThis.fetch = previousFetch;
+        globalThis.confirm = previousConfirm;
+        appState.appStatus.dirty = false;
+        Object.assign(appState, previous);
+    });
+    const records = [
+        { device_id: 3, device_name: 'AP-01', kind: 'management', id: null, ip: '192.0.2.31', segment_id: null },
+        { device_id: 3, device_name: 'AP-01', kind: 'additional', id: 81, ip: '192.0.2.31', label: '追加81', segment_id: null },
+        { device_id: 2, device_name: 'Edge-SW-02', kind: 'additional', id: 82, ip: '192.0.2.31', label: '追加82', segment_id: null },
+        { device_id: 3, device_name: 'AP-01', kind: 'additional', id: 83, ip: '192.0.2.31', label: '追加83', segment_id: null }
+    ];
+    let requests = 0;
+    globalThis.fetch = async () => {
+        requests++;
+        return new Response(JSON.stringify({
+            status: 'success', revision: 1, address_spaces: [], ip_segments: [], ip_records: records
+        }));
+    };
+    const { closeIpManagement } = await import('../public/js/modals/ip-management-modal.js');
+    const qualityOverlay = dom.add('div', 'data-quality-overlay');
+    const previousFocus = dom.add('button', 'quality-opener');
+    const settle = async () => {
+        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setImmediate(resolve));
+    };
+    const assertTarget = record => {
+        const overlay = document.getElementById('ip-management-overlay');
+        assert.equal(overlay.hidden, false);
+        const rows = overlay.querySelectorAll('.ip-management-record');
+        assert.equal(rows.length, records.length);
+        assert.equal(overlay.querySelectorAll('.ip-management-target').length, 1);
+        const selected = rows[records.indexOf(record)];
+        assert.equal(selected.dataset.recordKey, `${record.device_id}:${record.kind}:${record.id ?? ''}`);
+        assert.equal(selected.classList.contains('ip-management-target'), true);
+        const checkbox = selected.querySelector('input[type="checkbox"]');
+        if (window.APP_CONFIG.user.isAdmin) {
+            assert.ok(checkbox);
+            assert.equal(checkbox.disabled, true, '診断対象でも候補なし登録は選択できない');
+            assert.equal(checkbox.checked, false, '診断からの遷移で登録を勝手に選択しない');
+        } else {
+            assert.equal(checkbox, null, '閲覧者は診断対象でも選択操作できない');
+        }
+        assert.equal(selected.querySelector('.ip-management-ip-cell').querySelector('.ip-management-target-label')?.textContent, '診断対象');
+        assert.ok(document.activeElement === selected);
+        assert.equal(qualityOverlay.hidden, true);
+        assert.equal(appState.dataQualityPreviousFocus, null);
+    };
+    const prepareQuality = () => {
+        qualityOverlay.hidden = false;
+        appState.dataQualityPreviousFocus = previousFocus;
+        previousFocus.focus();
+    };
+    const issueFor = record => ({
+        code: 'unclassified_ip', severity: 'warning', category: 'completeness',
+        entity_type: 'device', entity_ids: [record.device_id],
+        details: {
+            field: record.kind === 'management' ? 'ip' : 'additional_ips',
+            field_labels: [record.kind === 'management' ? '管理IPv4アドレス' : '追加IPv4アドレス'],
+            value: record.ip, devices: [{ id: record.device_id, name: record.device_name }],
+            ip_records: [{ ...record, device_id: String(record.device_id), id: record.id === null ? null : String(record.id) }]
+        }
+    });
+    for (const record of records) {
+        const issue = issueFor(record);
+        const lines = getDataQualityDetailLines(issue).join('\n');
+        assert.match(lines, record.kind === 'management' ? /管理IPv4アドレス/ : /追加IPv4アドレス/);
+        assert.match(lines, /192\.0\.2\.31/);
+        assert.match(lines, new RegExp(`ID ${record.device_id}: ${record.device_name}`));
+        for (const isAdmin of [true, false]) {
+            window.APP_CONFIG.user.isAdmin = isAdmin;
+            prepareQuality();
+            const article = createDataQualityIssueElement(issue);
+            qualityOverlay.replaceChildren(article);
+            const primary = article.querySelector('.data-quality-action-primary');
+            assert.equal(primary.textContent, 'IPアドレス管理で確認');
+            await primary.dispatch('click');
+            await settle();
+            assertTarget(record);
+            assert.equal(closeIpManagement(), true);
+        }
+    }
+
+    const multiRecords = [records[3], records[0], records[2], records[1]];
+    const multiIssue = {
+        ...issueFor(records[3]), entity_ids: [3, 2],
+        details: { ip_records: multiRecords }
+    };
+    const actions = createDataQualityIssueActions(multiIssue);
+    qualityOverlay.replaceChildren(actions);
+    assert.equal(actions.querySelector('h5').textContent, '対象ごとの操作');
+    const targetRows = actions.querySelectorAll('.data-quality-target-row');
+    assert.equal(targetRows.length, multiRecords.length);
+    for (const [index, record] of multiRecords.entries()) {
+        const buttons = targetRows[index].querySelectorAll('button');
+        assert.deepEqual(buttons.map(button => button.textContent), ['所属を確認']);
+        prepareQuality();
+        await buttons[0].dispatch('click');
+        await settle();
+        assertTarget(record);
+        assert.equal(closeIpManagement(), true);
+    }
+    prepareQuality();
+    const multiArticle = createDataQualityIssueElement(multiIssue);
+    qualityOverlay.replaceChildren(multiArticle);
+    await multiArticle.querySelector('.data-quality-action-primary').dispatch('click');
+    await settle();
+    assertTarget(multiRecords[0]);
+    assert.equal(closeIpManagement(), true);
+
+    globalThis.confirm = () => false;
+    appState.appStatus.dirty = true;
+    prepareQuality();
+    const primary = multiArticle.querySelector('.data-quality-action-primary');
+    const before = requests;
+    const rowButton = multiArticle.querySelectorAll('.data-quality-target-row')[1].querySelector('button');
+    for (const button of [primary, rowButton]) {
+        button.focus();
+        await button.dispatch('click');
+        await settle();
+        assert.equal(requests, before);
+        assert.equal(document.getElementById('ip-management-overlay').hidden, true);
+        assert.equal(qualityOverlay.hidden, false);
+        assert.ok(appState.dataQualityPreviousFocus === previousFocus);
+        assert.ok(document.activeElement === button);
+        assert.equal(appState.appStatus.dirty, true);
+    }
+});
+
+test('到達性矛盾は関係する区分と状態を示し、閲覧者も対象IPの管理画面へ進める', async t => {
+    const dom = prepareNavigation(false);
+    const previousFetch = globalThis.fetch;
+    const previous = { addressSpaces: appState.addressSpaces, ipSegments: appState.ipSegments };
+    const records = [
+        { device_id: 1, device_name: '合成A', kind: 'management', id: null, ip: '192.0.2.71',
+            segment_id: 101, address_space_id: 10, address_space_name: '運用区分', ping_reachability: 'reachable' },
+        { device_id: 2, device_name: '合成B', kind: 'additional', id: 201, ip: '192.0.2.71',
+            label: '比較用', segment_id: 102, address_space_id: 20, address_space_name: '比較区分', ping_reachability: 'unset' },
+        { device_id: 3, device_name: '合成C', kind: 'management', id: null, ip: '192.0.2.71',
+            segment_id: null, address_space_id: null, address_space_name: null, ping_reachability: 'unset' }
+    ];
+    const issue = {
+        code: 'ambiguous_ping_target', severity: 'warning', category: 'monitoring', entity_type: 'device',
+        entity_ids: [1, 2, 3], message: 'Ping対象の識別不可',
+        details: { value: '192.0.2.71', ip_records: records }
+    };
+    globalThis.fetch = async () => new Response(JSON.stringify({
+        ok: true, revision: 1,
+        address_spaces: [{ id: 10, name: '運用区分', ping_reachability: 'reachable' },
+            { id: 20, name: '比較区分', ping_reachability: 'unset' }],
+        ip_segments: [{ id: 101, name: 'A', address_space_id: 10, cidr: '192.0.2.0/24' },
+            { id: 102, name: 'B', address_space_id: 20, cidr: '192.0.2.0/24' }],
+        ip_records: records
+    }));
+    const { closeIpManagement } = await import('../public/js/modals/ip-management-modal.js');
+    t.after(() => {
+        closeIpManagement();
+        globalThis.fetch = previousFetch;
+        Object.assign(appState, previous);
+    });
+    const lines = getDataQualityDetailLines(issue);
+    assert.ok(lines.some(line => line.includes('192.0.2.71') && line.includes('合成A') && line.includes('運用区分 / 到達可能')));
+    assert.ok(lines.some(line => line.includes('追加IP（比較用）') && line.includes('比較区分 / 未設定')));
+    assert.ok(lines.some(line => line.includes('合成C') && line.includes('未分類 / 未設定')));
+    const overlay = dom.add('div', 'data-quality-overlay');
+    for (const isAdmin of [true, false]) {
+        window.APP_CONFIG.user.isAdmin = isAdmin;
+        overlay.hidden = false;
+        const article = createDataQualityIssueElement(issue);
+        overlay.replaceChildren(article);
+        await article.querySelector('.data-quality-action-primary').dispatch('click');
+        await new Promise(resolve => setImmediate(resolve));
+        const ipOverlay = document.getElementById('ip-management-overlay');
+        assert.equal(overlay.hidden, true);
+        assert.equal(ipOverlay.hidden, false);
+        assert.equal(ipOverlay.querySelector('.ip-management-search-match')?.dataset.ip, '192.0.2.71');
+        assert.equal(ipOverlay.querySelector('.ip-management-search-match')?.dataset.recordKey, '1:management:');
+        assert.equal(closeIpManagement(), true);
+    }
+});

@@ -26,6 +26,7 @@ import {
     registerModalOpen
 } from '../core/modal-focus.js';
 import { openDashboardLedger } from './ledger-modal.js';
+import { openIpManagement } from './ip-management-modal.js';
 import {
     fetchDataQuality,
     focusDataQualityDialog,
@@ -37,6 +38,8 @@ import {
 let dashboardModel = null;
 let isDashboardLoading = false;
 let dashboardPreviousFocus = null;
+let ipSummary = null;
+let ipSummaryState = 'unloaded';
 const dashboardBreakdownExpanded = {
     facility: false,
     floor: false,
@@ -316,6 +319,10 @@ export function openDashboard() {
     setDashboardDetailsExpanded('dashboard-racks-toggle', false);
 
     appState.isDashboardNavigating = false;
+    if (!isDashboardLoading) {
+        ipSummary = null;
+        ipSummaryState = 'unloaded';
+    }
 
     overlay.hidden = false;
 
@@ -561,6 +568,15 @@ export function handleDashboardAction(
         String(action || '');
 
     switch (normalizedAction) {
+        case 'ip-management':
+        case 'ip-unclassified': {
+            if (!isCurrentUserAdmin() || isDashboardLoading) return;
+            const previousFocus = dashboardPreviousFocus;
+            hideDashboardForNavigation();
+            previousFocus?.focus();
+            void openIpManagement({ unclassified: normalizedAction === 'ip-unclassified' });
+            return;
+        }
         case 'toggle-breakdown':
         case 'toggle-racks': {
             const toggleId = normalizedAction === 'toggle-racks' ? 'dashboard-racks-toggle' : 'dashboard-breakdown-toggle';
@@ -684,6 +700,7 @@ export async function refreshDashboard() {
     }
 
     isDashboardLoading = true;
+    const ipSummaryRequest = refreshDashboardIpSummary();
 
     setDashboardLoadingState(
         true
@@ -697,8 +714,9 @@ export async function refreshDashboard() {
     renderDashboard();
 
     try {
-        appState.dataQualityResult =
-            await fetchDataQuality();
+        const [qualityResult] = await Promise.allSettled([fetchDataQuality(), ipSummaryRequest]);
+        if (qualityResult.status === 'rejected') throw qualityResult.reason;
+        appState.dataQualityResult = qualityResult.value;
 
         renderDashboard();
 
@@ -747,6 +765,7 @@ export async function refreshDashboard() {
             false
         );
         renderDashboardCounts();
+        renderDashboardIpSummary();
     }
 }
 
@@ -783,10 +802,8 @@ export function setDashboardLoadingState(
 
     if (button) {
         button.disabled = loading;
-        button.textContent =
-            loading
-                ? '更新中...'
-                : '更新';
+        const label = document.getElementById('dashboard-refresh-label');
+        if (label) label.textContent = loading ? '更新中...' : '更新';
     }
 
     if (status) {
@@ -796,7 +813,7 @@ export function setDashboardLoadingState(
                 'dashboard-status is-loading';
 
             status.textContent =
-                'データ品質情報を取得しています...';
+                'データ品質・IP管理情報を取得しています...';
         } else if (
             status.classList.contains(
                 'is-loading'
@@ -863,6 +880,53 @@ export function setDashboardLoadingState(
             delete element.dataset
                 .disabledBeforeDashboardLoading;
         });
+}
+
+function renderDashboardIpSummary() {
+    const ready = ipSummaryState === 'ready';
+    for (const key of ['address_spaces', 'ip_segments', 'registered_ips', 'unclassified_ips']) {
+        const element = document.getElementById(`dashboard-ip-${key}-count`);
+        if (element) element.textContent = ready ? String(ipSummary.summary[key]) : '—';
+    }
+    const unclassified = document.getElementById('dashboard-ip-unclassified');
+    if (unclassified) {
+        unclassified.disabled = isDashboardLoading || !ready;
+        unclassified.classList.toggle('is-warning', ready && ipSummary.summary.unclassified_ips > 0);
+    }
+    const status = document.getElementById('dashboard-ip-status');
+    if (!status) return;
+    const stale = ready && (ipSummary.revision !== appState.dataRevision || appState.appStatus?.dirty);
+    status.hidden = ready && !stale;
+    status.classList.toggle('is-warning', ipSummaryState === 'error');
+    if (ipSummaryState === 'loading') status.textContent = '保存済みDBから取得中...';
+    else if (ipSummaryState === 'error') status.textContent = '取得できませんでした。「更新」で再取得してください。';
+    else if (!ready) status.textContent = '未取得';
+    else status.textContent = '画面データと差異がある可能性があります。';
+}
+
+async function refreshDashboardIpSummary() {
+    ipSummaryState = 'loading';
+    renderDashboardIpSummary();
+    try {
+        const response = await fetch('api.php?action=load_ip_management_summary', {
+            method: 'GET', credentials: 'same-origin', cache: 'no-store',
+            headers: { Accept: 'application/json' }
+        });
+        const data = await response.json();
+        if (response.status === 401 && typeof window.handleAuthExpired === 'function') window.handleAuthExpired();
+        if (!response.ok || data?.ok !== true ||
+            !Number.isInteger(data.revision) ||
+            !['address_spaces', 'ip_segments', 'registered_ips', 'unclassified_ips']
+                .every(key => Number.isInteger(data.summary?.[key]) && data.summary[key] >= 0)) {
+            throw new Error('IP管理集計を取得できませんでした');
+        }
+        ipSummary = data;
+        ipSummaryState = 'ready';
+    } catch {
+        ipSummary = null;
+        ipSummaryState = 'error';
+    }
+    renderDashboardIpSummary();
 }
 
 
@@ -1736,16 +1800,20 @@ export function renderDashboard() {
 
     renderDashboardCounts();
     setDashboardCount('dashboard-assets-devices-count', dashboardModel.totals.devices);
-    setDashboardCount('dashboard-assets-types-count', dashboardModel.groups.types.length);
+    setDashboardCount('dashboard-assets-facilities-count',
+        dashboardModel.groups.facilities.filter(group => group.label !== DASHBOARD_UNSET_LABEL).length);
     ['expired', 'within1Year', 'within2Years', 'beyond2Years', 'unset'].forEach(category => {
         setDashboardCount(
             `dashboard-maintenance-${category}-count`,
             dashboardModel?.maintenance?.[category] || 0
         );
     });
+    const expiredCard = document.getElementById('dashboard-maintenance-expired-count')?.closest('button');
+    expiredCard?.classList.toggle('dashboard-kpi-unplaced', Number(dashboardModel?.maintenance?.expired || 0) > 0);
     renderDashboardNotices();
     renderDashboardRacks();
     renderDashboardBreakdowns();
+    renderDashboardIpSummary();
 
     if (content) {
         content.hidden = false;

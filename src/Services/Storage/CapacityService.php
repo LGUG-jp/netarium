@@ -21,6 +21,9 @@ final class CapacityService
         $backup = is_array($configured['backup'] ?? null)
             ? $configured['backup']
             : [];
+        $deviceConfigs = is_array($configured['device_configs'] ?? null)
+            ? $configured['device_configs']
+            : [];
 
         return [
             'warning_ratio' => self::normalizeRatio(
@@ -42,6 +45,20 @@ final class CapacityService
                 'max_files' => self::positiveInt(
                     $floorPlans['max_files'] ?? $config['max_views'] ?? 100,
                     100
+                ),
+            ],
+            'device_configs' => [
+                'max_version_bytes' => self::positiveInt(
+                    $deviceConfigs['max_version_bytes'] ?? 256 * 1024,
+                    256 * 1024
+                ),
+                'max_versions_per_device' => self::positiveInt(
+                    $deviceConfigs['max_versions_per_device'] ?? 5,
+                    5
+                ),
+                'max_total_bytes' => self::positiveInt(
+                    $deviceConfigs['max_total_bytes'] ?? 40 * self::BYTES_PER_MIB,
+                    40 * self::BYTES_PER_MIB
                 ),
             ],
             'backup' => [

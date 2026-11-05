@@ -193,7 +193,7 @@
                             </div>
                             <div class="wiring-header-group">
                                 <a id="wiring-help" class="btn btn-tertiary btn-sm wiring-header-action"
-                                    href="help.html#connections" target="_blank" rel="noopener"
+                                    href="help-canvas.html#connections" target="_blank" rel="noopener"
                                     aria-label="接続の使い方（別タブで開く）" title="接続の使い方（別タブで開く）"
                                     ><span><span aria-hidden="true">？</span><span class="wiring-help-text">使い方</span></span></a>
                                 <button id="wiring-close-btn" type="button" class="modal-close-btn palette-popover-close"

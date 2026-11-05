@@ -31,11 +31,11 @@ export function showStatusMessage(message, type = 'info') {
 }
 
 /**
- * 操作不能・注意はwarning、横断的な処理失敗はerrorで表示する。
+ * モーダルの前面にも結果を表示する。注意・失敗には警告記号を付ける。
  */
 export function showToast(message, type = 'warning') {
-    if (type !== 'warning' && type !== 'error') {
-        throw new TypeError('トーストはwarningまたはerrorを指定してください');
+    if (type !== 'info' && type !== 'success' && type !== 'warning' && type !== 'error') {
+        throw new TypeError('トーストはinfo、success、warningまたはerrorを指定してください');
     }
     let toast = document.getElementById('toast');
     const text = String(message ?? '').trim();
@@ -60,7 +60,8 @@ export function showToast(message, type = 'warning') {
 
     toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
     toast.className = `toast toast-${type}`;
-    const fullMessage = text.startsWith('!') ? text : `! ${text}`;
+    const transient = type === 'info' || type === 'success';
+    const fullMessage = transient || text.startsWith('!') ? text : `! ${text}`;
     if (toast.textContent !== fullMessage) toast.textContent = fullMessage;
     toast.hidden = false;
 
@@ -68,5 +69,5 @@ export function showToast(message, type = 'warning') {
         toast.hidden = true;
         toast.textContent = '';
         toastMessage = '';
-    }, type === 'error' ? 6000 : 5000);
+    }, transient ? 3000 : type === 'error' ? 6000 : 5000);
 }

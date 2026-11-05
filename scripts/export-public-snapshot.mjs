@@ -235,7 +235,6 @@ const EXCLUDED_PATHS = new Set([
     'tests/release-sync.test.mjs',
     'scripts/release-control.mjs',
     'tests/release-control.test.mjs',
-    '.github/workflows/release-check.yml',
     '.github/workflows/release-candidate.yml',
     '.github/workflows/release-publish.yml',
     'docs/repository-rules.md',

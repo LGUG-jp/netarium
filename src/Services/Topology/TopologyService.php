@@ -12,6 +12,7 @@ use Netarium\Core\Request;
 use Netarium\Core\ResourceId;
 use Netarium\Repositories\AppMetaRepository;
 use Netarium\Repositories\DeviceRepository;
+use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Repositories\FloorPlanRepository;
 use Netarium\Repositories\DeviceImageRepository;
 use Netarium\Repositories\LinkRepository;
@@ -121,6 +122,8 @@ class TopologyService
             'placements' => $placements,
             'links' => $links,
             'link_systems' => (new LinkSystemService($this->db))->list()['link_systems'],
+            'address_spaces' => (new IpManagementService($this->db))->masters()['address_spaces'],
+            'ip_segments' => (new IpManagementService($this->db))->masters()['ip_segments'],
             'canvas_notes' => $canvasNotes,
             'floor_plans' => $floorPlans,
             'rack_settings' => $this->db->query('SELECT * FROM rack_settings ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC),
@@ -183,6 +186,13 @@ class TopologyService
                     409
                 );
             }
+            $ipManagement = new IpManagementService($this->db);
+            $monitor = new \Netarium\Services\Monitoring\PingReachabilityMonitor($this->db);
+            $beforeMonitor = $monitor->snapshot();
+            $normalizedDevices = $ipManagement->resolveDevices($normalizedDevices);
+            $ipManagement->assertFinal($normalizedDevices);
+            foreach ($normalizedDevices as &$device) { unset($device['ip_conflicts_confirmed']); }
+            unset($device);
             $existingViews = $this->viewRepo->getAll();
             $existingMounts = $this->db->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC);
             $existingShelves = $this->db->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC);
@@ -262,6 +272,8 @@ class TopologyService
                 $membership['shelf_id'] = $shelfIdMap[$membership['shelf_id']];
             }
             unset($membership);
+            $changeHistory = new ChangeHistoryService($this->db);
+            $beforeHistory = $changeHistory->captureSnapshot();
             /*
              * 今回の保存データに含まれる機器IDを
              * 一時テーブルへ格納する。
@@ -423,12 +435,12 @@ class TopologyService
                     id, name, type, ip, x, y, facility, floor, location,
                     manufacturer, model, asset_number, serial_number, mac_address, memo,
                     management_scheme, management_port, department, maintenance_vendor,
-                    install_date, maintenance_expiry
+                    install_date, maintenance_expiry, ip_segment_id
                 ) VALUES (
                     :id, :name, :type, :ip, :x, :y, :facility, :floor, :location,
                     :manufacturer, :model, :asset_number, :serial_number, :mac_address, :memo,
                     :management_scheme, :management_port, :department, :maintenance_vendor,
-                    :install_date, :maintenance_expiry
+                    :install_date, :maintenance_expiry, :ip_segment_id
                 )
                 ON CONFLICT(id)
                 DO UPDATE SET
@@ -451,7 +463,8 @@ class TopologyService
                     department = excluded.department,
                     maintenance_vendor = excluded.maintenance_vendor,
                     install_date = excluded.install_date,
-                    maintenance_expiry = excluded.maintenance_expiry
+                    maintenance_expiry = excluded.maintenance_expiry,
+                    ip_segment_id = excluded.ip_segment_id
             ");
             foreach ($normalizedDevices as $device) {
                 $deviceStmt->execute([
@@ -476,7 +489,11 @@ class TopologyService
                     ':maintenance_vendor' => $device['maintenance_vendor'],
                     ':install_date' => $device['install_date'],
                     ':maintenance_expiry' => $device['maintenance_expiry'],
+                    ':ip_segment_id' => $device['ip_segment_id'],
                 ]);
+                (new DeviceIpAddressRepository($this->db))->saveForDevice(
+                    $device['id'], $device['additional_ips'] ?? null, $device['ip']
+                );
             }
 
             /*
@@ -615,8 +632,10 @@ class TopologyService
                 }
             }
 
+            $monitor->reconcile($beforeMonitor, $changedIpCount === 0);
             $savedAt = date(DATE_ATOM);
             $this->appMetaRepo->set('last_saved_at', $savedAt);
+            $changeHistory->recordFromSnapshot($beforeHistory, null, null, 'save');
             $snapshot = $this->readSnapshot();
 
             $this->db->commit();
@@ -812,7 +831,16 @@ class TopologyService
                 'maintenance_vendor' => $fields['maintenance_vendor'],
                 'install_date' => $fields['install_date'],
                 'maintenance_expiry' => $fields['maintenance_expiry'],
+                'additional_ips' => array_key_exists('additional_ips', $device)
+                    ? (is_array($device['additional_ips'])
+                        ? DeviceIpAddressRepository::normalize($device['additional_ips'], $ip, "機器ID {$id}: ")
+                        : throw new ApiException('追加IPは配列で指定してください', 400))
+                    : null,
             ];
+            if (array_key_exists('ip_segment_id', $device)) {
+                $normalizedDevices[array_key_last($normalizedDevices)]['ip_segment_id'] = $device['ip_segment_id'];
+            }
+            $normalizedDevices[array_key_last($normalizedDevices)]['ip_conflicts_confirmed'] = ($device['ip_conflicts_confirmed'] ?? false) === true;
         }
 
         $normalizedPlacements = [];

@@ -4,9 +4,13 @@
         <header class="placement-manager-header">
             <h2 id="link-systems-title">接続系統設定</h2>
             <div class="link-systems-header-actions">
-                <a id="link-systems-help" class="btn btn-tertiary btn-sm" href="help.html#link-systems"
+                <a id="link-systems-help" class="btn btn-tertiary btn-sm" href="help-canvas.html#link-systems"
                     target="_blank" rel="noopener" aria-label="接続系統のヘルプ（別タブで開く）"
                     title="接続系統のヘルプ（別タブで開く）">？設定方法</a>
+                <button type="button" class="btn btn-secondary btn-sm" id="link-systems-refresh">
+                    <img src="assets/icons/app/refresh.svg" width="16" height="16" alt="" aria-hidden="true">
+                    <span>更新</span>
+                </button>
                 <button type="button" class="modal-close-btn" id="link-systems-close" aria-label="閉じる">×</button>
             </div>
         </header>
@@ -16,8 +20,7 @@
                 <section class="link-systems-list-area" aria-labelledby="link-systems-list-title">
                     <h3 id="link-systems-list-title">接続系統</h3>
                     <div class="link-systems-list-actions">
-                        <button type="button" class="btn btn-secondary admin-only" id="link-systems-new"><span aria-hidden="true">＋</span>新規作成</button>
-                        <button type="button" class="btn btn-tertiary btn-sm" id="link-systems-refresh">再読込</button>
+                        <button type="button" class="btn btn-primary btn-sm admin-only" id="link-systems-new"><span aria-hidden="true">＋</span>新規作成</button>
                     </div>
                     <div id="link-systems-list" class="link-systems-list" aria-labelledby="link-systems-list-title"></div>
                 </section>
@@ -35,9 +38,9 @@
                         </div>
                     </div>
                     <div id="link-systems-actions" class="link-systems-actions admin-only">
+                        <button type="button" class="btn btn-danger btn-secondary" id="link-systems-delete" hidden>削除</button>
                         <button type="button" class="btn btn-cancel" id="link-systems-cancel">キャンセル</button>
                         <button type="submit" class="btn btn-primary" id="link-systems-save">登録</button>
-                        <button type="button" class="btn btn-danger btn-secondary" id="link-systems-delete" hidden>削除</button>
                     </div>
                 </form>
             </div>

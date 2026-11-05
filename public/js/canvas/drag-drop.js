@@ -85,6 +85,7 @@ export function onCanvasPointerDown(event) {
  * 空白ドラッグによるパンを開始する。
  */
 export function beginCanvasPan(event) {
+    const pointerId = event.pointerId;
     const startClientX =
         event.clientX;
 
@@ -117,6 +118,7 @@ export function beginCanvasPan(event) {
     }
 
     const onMove = moveEvent => {
+        if (moveEvent.pointerId !== pointerId) return;
         const dx =
             moveEvent.clientX -
             startClientX;
@@ -143,6 +145,7 @@ export function beginCanvasPan(event) {
 
     const onFinish =
         finishEvent => {
+            if (finishEvent.pointerId !== pointerId) return;
             try {
                 if (
                     appState.canvas.hasPointerCapture(
@@ -329,6 +332,14 @@ export function makePlacementDraggable(
             const currentPlacement = appState.placements.find(item =>
                 Number(item.id) === Number(el.dataset.placementId ?? placement.id));
             if (!currentPlacement) return;
+
+            const pointerId = event.pointerId;
+            if (
+                activePlacementDrag &&
+                activePlacementDrag.pointerId !== pointerId
+            ) {
+                return;
+            }
             activePlacementDrag?.cancel();
             let primaryId = Number(currentPlacement.id);
 
@@ -357,6 +368,7 @@ export function makePlacementDraggable(
                     return [
                     Number(item.id),
                     {
+                        placement: item,
                         x:
                             Number(item.x) ||
                             0,
@@ -368,157 +380,141 @@ export function makePlacementDraggable(
                 })
             );
 
-            const pointerId =
-                event.pointerId;
+            // ダイアログ表示中にupが来ても複数の開始処理を走らせない。
+            let finished = false;
+            let pendingPointerUp = false;
+            let moveSequence = 0;
+            let startPromise = null;
+            const beginDrag = () => {
+                if (dragStarted) return Promise.resolve(true);
+                if (dragAborted || finished) return Promise.resolve(false);
+                if (startPromise) return startPromise;
 
-            const beginDrag = async () => {
-                if (dragStarted || dragAborted) {
-                    return !dragAborted;
-                }
-
-                const target = appState.placements.find(item => Number(item.id) === primaryId);
-                if (!target || Number(target.view_id) !== Number(appState.currentViewId)) return false;
-                if (appState.editingDeviceId !== Number(target.device_id)) {
-                    const panelOpen = !document.getElementById('panel')?.hidden ||
-                        !document.getElementById('link-panel')?.hidden;
-                    if (panelOpen && !await openPanel(appState.devices.find(
-                        device => Number(device.id) === Number(target.device_id)
-                    ))) {
-                        dragAborted = true;
-                        return false;
+                startPromise = (async () => {
+                    const target = appState.placements.find(item => Number(item.id) === primaryId);
+                    if (!target || Number(target.view_id) !== Number(appState.currentViewId)) return false;
+                    if (appState.editingDeviceId !== Number(target.device_id)) {
+                        const panelOpen = !document.getElementById('panel')?.hidden ||
+                            !document.getElementById('link-panel')?.hidden;
+                        if (panelOpen && !await openPanel(appState.devices.find(
+                            device => Number(device.id) === Number(target.device_id)
+                        ))) {
+                            dragAborted = true;
+                            return false;
+                        }
+                        if (finished || activePlacementDrag !== dragSession) return false;
+                        appState.editingDeviceId = Number(target.device_id);
                     }
-                    appState.editingDeviceId = Number(target.device_id);
-                }
 
-                if (!multiSelectKey) {
-                    appState.selectedPlacementIds.clear();
-                    dragIds.forEach(id => appState.selectedPlacementIds.add(id));
-                    eventBus.emit('canvas:selection-changed');
-                }
+                    if (finished || activePlacementDrag !== dragSession) return false;
+                    if (!multiSelectKey) {
+                        appState.selectedPlacementIds.clear();
+                        dragIds.forEach(id => appState.selectedPlacementIds.add(id));
+                        eventBus.emit('canvas:selection-changed');
+                    }
 
-                dragStarted = true;
-                event.preventDefault();
+                    dragStarted = true;
+                    event.preventDefault();
+                    try {
+                        appState.canvas.setPointerCapture(pointerId);
+                    } catch (err) {
+                        // 継続
+                    }
 
-                try {
-                    appState.canvas.setPointerCapture(
-                        pointerId
-                    );
-                } catch (err) {
-                    // 継続
-                }
-
-                dragIds.forEach(id => getPlacementElement(id)?.classList.add('dragging'));
-                return true;
+                    dragIds.forEach(id => getPlacementElement(id)?.classList.add('dragging'));
+                    return true;
+                })();
+                return startPromise;
             };
 
-            const onPointerMove =
-                async moveEvent => {
-                    if (!refreshTargets()) return;
-                    const screenDx =
-                        moveEvent.clientX -
-                        startX;
+            const applyPointerPosition = moveEvent => {
+                const requestedDx = (moveEvent.clientX - startX) / appState.viewState.scale;
+                const requestedDy = (moveEvent.clientY - startY) / appState.viewState.scale;
+                const delta = clampGroupDelta(startPositions, requestedDx, requestedDy);
 
-                    const screenDy =
-                        moveEvent.clientY -
-                        startY;
-
-                    if (
-                        !dragStarted &&
-                        Math.abs(screenDx) <= 3 &&
-                        Math.abs(screenDy) <= 3
-                    ) {
-                        return;
+                dragIds.forEach(id => {
+                    const item = appState.placements.find(row => Number(row.id) === id);
+                    const start = startPositions.get(id);
+                    if (!item || !start) return;
+                    item.x = start.x + delta.dx;
+                    item.y = start.y + delta.dy;
+                    const targetElement = getPlacementElement(id);
+                    if (targetElement) {
+                        targetElement.style.transform = `translate(${item.x}px, ${item.y}px)`;
                     }
+                });
+                scheduleRenderLinks();
+            };
 
-                    if (!await beginDrag()) {
-                        return;
+            const onPointerMove = async moveEvent => {
+                if (moveEvent.pointerId !== pointerId || finished) return;
+                if (!refreshTargets()) return;
+                const screenDx = moveEvent.clientX - startX;
+                const screenDy = moveEvent.clientY - startY;
+                if (!dragStarted && Math.abs(screenDx) <= 3 && Math.abs(screenDy) <= 3) return;
+
+                const sequence = ++moveSequence;
+                if (!await beginDrag() || finished || sequence !== moveSequence ||
+                    activePlacementDrag !== dragSession) return;
+                moved = true;
+                applyPointerPosition(moveEvent);
+            };
+
+            const finish = async upEvent => {
+                if (upEvent.pointerId !== pointerId || finished ||
+                    (upEvent.type === 'pointerup' && pendingPointerUp)) return;
+                // 重複upは先の確定を上書きしない。cancelは保留中のupより優先する。
+                if (upEvent.type === 'pointerup') pendingPointerUp = true;
+                // 最終のmoveが配信されなくても、upの座標を同じ制約で確定する。
+                if (upEvent.type === 'pointerup' &&
+                    Number.isFinite(upEvent.clientX) && Number.isFinite(upEvent.clientY)) {
+                    await onPointerMove(upEvent);
+                }
+                if (finished) return;
+                finished = true;
+                moveSequence++;
+
+                try {
+                    if (appState.canvas.hasPointerCapture(upEvent.pointerId)) {
+                        appState.canvas.releasePointerCapture(upEvent.pointerId);
                     }
-                    moved = true;
+                } catch (err) {
+                    // 無視
+                }
 
-                    const requestedDx =
-                        screenDx /
-                        appState.viewState.scale;
+                dragIds.forEach(id => getPlacementElement(id)?.classList.remove('dragging'));
+                document.removeEventListener('pointermove', onPointerMove);
+                document.removeEventListener('pointerup', finish);
+                document.removeEventListener('pointercancel', finish);
 
-                    const requestedDy =
-                        screenDy /
-                        appState.viewState.scale;
-
-                    const delta =
-                        clampGroupDelta(
-                            startPositions,
-                            requestedDx,
-                            requestedDy
-                        );
-
+                if (renderRafId !== null) {
+                    cancelAnimationFrame(renderRafId);
+                    renderRafId = null;
+                }
+                if (upEvent.type !== 'pointerup' && moved) {
+                    // 内部終了も取消として移動を戻す。再読込で差し替わった配置は変更しない。
                     dragIds.forEach(id => {
                         const item = appState.placements.find(row => Number(row.id) === id);
                         const start = startPositions.get(id);
-                        if (!item || !start) return;
-                        item.x = start.x + delta.dx;
-                        item.y = start.y + delta.dy;
-                        const targetElement = getPlacementElement(id);
-                        if (targetElement) {
-                            targetElement.style.transform = `translate(${item.x}px, ${item.y}px)`;
-                        }
+                        if (!start || item !== start.placement) return;
+                        item.x = start.x;
+                        item.y = start.y;
+                        const target = getPlacementElement(id);
+                        if (target) target.style.transform = `translate(${item.x}px, ${item.y}px)`;
                     });
+                }
+                if (moved) eventBus.emit('canvas:render-links');
+                if (moved && upEvent.type === 'pointerup' && !dragAborted) {
+                    markDirty();
+                    scheduleSave({ immediate: true, silent: true });
+                }
+                if (moved || dragAborted) suppressCanvasClickOnce();
 
-                    scheduleRenderLinks();
-                };
-
-            const finish =
-                upEvent => {
-                    try {
-                        if (
-                            appState.canvas.hasPointerCapture(
-                                upEvent.pointerId
-                            )
-                        ) {
-                            appState.canvas.releasePointerCapture(
-                                upEvent.pointerId
-                            );
-                        }
-                    } catch (err) {
-                        // 無視
-                    }
-
-                    dragIds.forEach(id => getPlacementElement(id)?.classList.remove('dragging'));
-
-                    document.removeEventListener(
-                        'pointermove',
-                        onPointerMove
-                    );
-
-                    document.removeEventListener(
-                        'pointerup',
-                        finish
-                    );
-
-                    document.removeEventListener(
-                        'pointercancel',
-                        finish
-                    );
-
-
-                    if (renderRafId !== null) {
-                        cancelAnimationFrame(renderRafId);
-                        renderRafId = null;
-                    }
-                    if (moved) {
-                        eventBus.emit('canvas:render-links');
-                    }
-                    if (moved) {
-                        markDirty();
-                        scheduleSave({ immediate: true, silent: true });
-                    }
-                    if (moved || dragAborted) {
-                        suppressCanvasClickOnce();
-                    }
-
-                    if (activePlacementDrag === dragSession) activePlacementDrag = null;
-                    dragIds = [];
-                    startPositions.clear();
-                    dragStarted = false;
-                };
+                if (activePlacementDrag === dragSession) activePlacementDrag = null;
+                dragIds = [];
+                startPositions.clear();
+                dragStarted = false;
+            };
 
             const refreshTargets = () => {
                 if (dragIds.some(id => !appState.placements.some(item => Number(item.id) === id &&
@@ -531,6 +527,7 @@ export function makePlacementDraggable(
                 return true;
             };
             const dragSession = {
+                pointerId,
                 remap(maps) {
                     primaryId = mappedResourceId(maps.placements, primaryId);
                     dragIds = dragIds.map(id => mappedResourceId(maps.placements, id));

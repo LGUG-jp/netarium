@@ -75,6 +75,13 @@ import {
 import { renderCanvasNotes, createCanvasNote, finishCanvasNotes } from './canvas-notes.js';
 import { renderRackView } from './rack-view.js';
 import { renderFloorRacks, getCurrentFloorRackPlacements, clearFloorRackSelection } from './floor-racks.js';
+import { syncSelectedPlacementClasses } from './selection.js';
+
+function isDeviceDetailSelectionMode() {
+    return !appState.linkMode && !appState.noteMode && appState.selectedCanvasNoteId == null &&
+        !isPlacementModeActive() && !appState.floorPlanAdjustMode && !appState.isRangeSelecting &&
+        !appState.canvas?.classList.contains('panning') && appState.editingLinkId == null;
+}
 
 // 現在ビューの有効な端点だけを使い、無向の1ホップを描画ごとに求める。
 function getConnectionHighlight() {
@@ -502,14 +509,17 @@ export function createDeviceElement(
     el.appendChild(ip);
     el.appendChild(meta);
 
+    // 選択クリックで要素を交換しないため、ブラウザーのdblclickとフォーカス復帰を維持できる。
+    el.tabIndex = -1;
+    let detailClickAllowed = true;
     el.addEventListener(
         'click',
-        event =>
-            onPlacementClick(
-                event,
-                placement,
-                device
-            )
+        event => {
+            if (!(event.detail > 1)) {
+                detailClickAllowed = isDeviceDetailSelectionMode() && !appState.suppressNextClick;
+            }
+            return onPlacementClick(event, placement, device);
+        }
     );
 
     if (appState.linkMode) {
@@ -529,19 +539,14 @@ export function createDeviceElement(
         'dblclick',
         async event => {
             event.stopPropagation();
-            if (appState.linkMode) return;
-
-            if (!await openPanel(device)) {
-                return;
-            }
-
-            clearFloorRackSelection();
-            appState.selectedPlacementIds.clear();
-            appState.selectedPlacementIds.add(
-                Number(placement.id)
-            );
-
-            render();
+            if (!detailClickAllowed || !isDeviceDetailSelectionMode() || appState.suppressNextClick ||
+                event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
+                el.classList.contains('dragging') || !el.isConnected ||
+                !getCurrentPlacements().includes(placement)) return;
+            el.focus({ preventScroll: true });
+            const { openLedgerDetail } = await import('../modals/ledger-modal.js');
+            if (!el.isConnected || !isDeviceDetailSelectionMode()) return;
+            await openLedgerDetail(device.id);
         }
     );
 
@@ -610,7 +615,13 @@ export async function onPlacementClick(
             placementId
         );
     }
-    render();
+    // 全再描画でクリック元を破棄すると、続くネイティブdblclickが届かない。
+    syncSelectedPlacementClasses();
+    renderLinks();
+    appState.deviceLayer?.querySelectorAll('.floor-rack.selected').forEach(element => {
+        element.classList.remove('selected');
+    });
+    eventBus.emit('canvas:selection-changed');
 }
 
 
@@ -926,10 +937,10 @@ export function showDeviceInPlacement(
         Number(appState.currentViewId) !==
         targetViewId
     ) {
-        eventBus.emit(
-            'view:switch',
-            targetViewId
-        );
+        return import('../modals/view-manager-modal.js').then(async ({ switchView }) => {
+            if (!await switchView(targetViewId) || Number(appState.currentViewId) !== targetViewId) return false;
+            return showDeviceInPlacement(device, placement);
+        });
     }
 
     const currentPlacement =

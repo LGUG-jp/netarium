@@ -188,7 +188,7 @@
 
             <div class="toolbar-menu-popup">
                 <div class="toolbar-menu-heading">
-                    構成・表示
+                    構成管理
                 </div>
 
                 <button
@@ -199,6 +199,12 @@
                     ビュー管理
                 </button>
 
+
+                <button id="ip-management-btn" type="button">IPアドレス管理</button>
+                <button id="change-history-btn" class="admin-only" type="button">変更履歴</button>
+
+                <div class="toolbar-menu-separator"></div>
+                <div class="toolbar-menu-heading">設定</div>
 
                 <button
                     id="link-display-settings-btn"
@@ -230,6 +236,7 @@
                     id="backup-export-btn"
                     class="admin-only"
                     type="button"
+                    title="Configは各機器の直近1世代のみ。全世代の保管にはサーバー側の停止型完全バックアップを利用してください"
                 >
                     構成情報の出力
                 </button>

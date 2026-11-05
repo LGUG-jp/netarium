@@ -217,6 +217,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 }
 }
+// A revoked authenticated session can be destroyed during refreshAuthenticatedUser().
+// Prepare the anonymous session and CSRF token before writing any HTML.
+$formCsrfToken = getCsrfToken();
 ?>
 <!DOCTYPE html>
 <html lang="ja">
@@ -248,7 +251,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <input
                 type="hidden"
                 name="csrf_token"
-                value="<?= htmlspecialchars(getCsrfToken(), ENT_QUOTES, 'UTF-8') ?>"
+                value="<?= htmlspecialchars($formCsrfToken, ENT_QUOTES, 'UTF-8') ?>"
             >
 
             <label>

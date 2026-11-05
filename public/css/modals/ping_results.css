@@ -3,7 +3,7 @@
 }
 
 .ping-results-dialog {
-    max-height: calc(100dvh - var(--status-bar-height) - var(--space-6));
+    max-height: calc(100dvh - var(--modal-edge-space) - var(--status-bar-height) - var(--space-3));
 }
 
 .ping-results-summary-area {

@@ -267,11 +267,12 @@ class PasswordPolicyTest extends TestCase
         \migrateDatabase($db);
         $after = $db->query('SELECT * FROM users')->fetch();
         $this->assertSame(0, $after['must_change_password']);
-        unset($after['must_change_password']);
+        $this->assertNull($after['deleted_at']);
+        unset($after['must_change_password'], $after['deleted_at']);
         $this->assertSame($before, $after);
         // 古いuser_versionを読んだ後続workerも同じ移行関数へ到達し得る。
         \migrateDatabaseToVersion10($db);
-        $this->assertSame($before, array_diff_key($db->query('SELECT * FROM users')->fetch(), ['must_change_password' => true]));
+        $this->assertSame($before, array_diff_key($db->query('SELECT * FROM users')->fetch(), ['must_change_password' => true, 'deleted_at' => true]));
         \migrateDatabase($db);
         $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $db->exec('PRAGMA user_version = ' . (APP_DATABASE_SCHEMA_VERSION + 1));
@@ -315,7 +316,8 @@ class PasswordPolicyTest extends TestCase
         $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $after = $db->query('SELECT * FROM users ORDER BY id')->fetchAll();
         $this->assertSame(0, $after[0]['must_change_password']);
-        unset($after[0]['must_change_password']);
+        $this->assertNull($after[0]['deleted_at']);
+        unset($after[0]['must_change_password'], $after[0]['deleted_at']);
         $this->assertSame($usersBefore, $after);
         $this->assertSame(0, (int)$db->query('SELECT COUNT(*) FROM reauthentication_limits')->fetchColumn());
     }

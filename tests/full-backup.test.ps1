@@ -520,7 +520,7 @@ if ($action === 'init' || $action === 'init-legacy') {
                 if ($legacySource -ne $repoRoot) { Copy-Item -LiteralPath (Join-Path $legacySource 'version.php') -Destination (Join-Path $legacyRoot 'version.php') -Force }
                 if ($legacySource -eq $repoRoot) {
                     $legacySchema = Join-Path $legacyRoot 'src/Core/DatabaseSchema.php'
-                    $schemaCode = [IO.File]::ReadAllText($legacySchema).Replace('const APP_DATABASE_SCHEMA_VERSION = 16;', 'const APP_DATABASE_SCHEMA_VERSION = 11;')
+                    $schemaCode = [IO.File]::ReadAllText($legacySchema) -replace 'const APP_DATABASE_SCHEMA_VERSION = \d+;', 'const APP_DATABASE_SCHEMA_VERSION = 11;'
                     [IO.File]::WriteAllText($legacySchema, $schemaCode, (New-Object System.Text.UTF8Encoding($false)))
                 }
                 # A historical helper needs its own genuine schema11 data, not the current live DB.

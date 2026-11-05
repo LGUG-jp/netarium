@@ -53,7 +53,7 @@ import {
 } from '../modals/dashboard-modal.js';
 import { getSelectedFloorRackPlacement, clearFloorRackSelection } from './floor-racks.js';
 import { isPlacementModeActive, exitPlacementMode } from '../ui/placement-mode.js';
-import { hasResourceConflict } from '../core/save-queue.js';
+import { flushSaveQueue, hasResourceConflict } from '../core/save-queue.js';
 
 let rangeSelectionInitialIds = new Set();
 
@@ -793,12 +793,14 @@ export async function onKeyDown(event) {
         if (event.key === 'Delete' && !event.isComposing) {
             if (appState.editingDeviceId != null && isCurrentUserAdmin()) {
                 const deviceId = Number(appState.editingDeviceId);
+                const viewId = Number(appState.currentViewId);
                 event.preventDefault();
                 event.stopImmediatePropagation();
                 const { shelfForDevice, removeShelfDevice } = await import('./rack-shelves.js');
+                if (Number(appState.currentViewId) !== viewId || Number(appState.editingDeviceId) !== deviceId) return;
                 const shelf = shelfForDevice(deviceId);
-                const isMounted = (shelf && Number(shelf.view_id) === Number(appState.currentViewId)) ||
-                    appState.rackMounts.some(row => Number(row.device_id) === deviceId && Number(row.view_id) === Number(appState.currentViewId));
+                const isMounted = (shelf && Number(shelf.view_id) === viewId) ||
+                    appState.rackMounts.some(row => Number(row.device_id) === deviceId && Number(row.view_id) === viewId);
                 if (isMounted) {
                     event.preventDefault();
                     event.stopImmediatePropagation();
@@ -808,11 +810,19 @@ export async function onKeyDown(event) {
                         return;
                     }
                     const { removeRackMount } = await import('./rack-view.js');
-                    if (shelf ? removeShelfDevice(deviceId) : removeRackMount(deviceId)) {
-                        await closePanel();
-                        appState.editingDeviceId = null;
-                        eventBus.emit('rack:changed');
-                    }
+                    if (Number(appState.currentViewId) !== viewId || Number(appState.editingDeviceId) !== deviceId) return;
+                    if (!await closePanel()) return;
+                    // 「適用」が開始した保存を待ち、保存中ガードによる取り外しの失敗を防ぐ。
+                    if (!await flushSaveQueue({ silent: true })) return;
+                    if (Number(appState.currentViewId) !== viewId || appState.editingDeviceId !== null ||
+                        hasResourceConflict('devices', deviceId)) return;
+                    const currentShelf = shelfForDevice(deviceId);
+                    const stillMounted = shelf
+                        ? Number(currentShelf?.id) === Number(shelf.id) && Number(currentShelf?.view_id) === viewId
+                        : !currentShelf && appState.rackMounts.some(row => Number(row.device_id) === deviceId && Number(row.view_id) === viewId);
+                    if (!stillMounted) return;
+                    if (shelf) removeShelfDevice(deviceId);
+                    else removeRackMount(deviceId);
                 }
             }
         }

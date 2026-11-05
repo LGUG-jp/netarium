@@ -8,6 +8,8 @@ function initializeHelp(doc = document, win = window) {
     const content = doc.getElementById('help-content');
     if (!toc || !content) return;
 
+    const headerBar = doc.querySelector('.help-header-bar');
+    const getSectionOffset = () => (headerBar ? headerBar.getBoundingClientRect().height + 16 : SECTION_OFFSET);
     const chapters = Array.from(toc.querySelectorAll('a[href]'), link => ({
         link,
         heading: doc.getElementById(link.getAttribute('href').slice(1)),
@@ -38,8 +40,9 @@ function initializeHelp(doc = document, win = window) {
     };
     const updateChapter = () => {
         let chapter = chapters[0];
+        const offset = getSectionOffset();
         for (const candidate of chapters) {
-            if (candidate.heading.getBoundingClientRect().top > SECTION_OFFSET + SCROLL_ROUNDING_TOLERANCE) break;
+            if (candidate.heading.getBoundingClientRect().top > offset + SCROLL_ROUNDING_TOLERANCE) break;
             chapter = candidate;
         }
         const scrollRoot = doc.scrollingElement || doc.documentElement;
@@ -59,6 +62,7 @@ function initializeHelp(doc = document, win = window) {
         });
     };
     const updateHash = () => {
+        handleLegacyAnchorRedirect(win);
         markCurrent(chapters.find(chapter => `#${chapter.heading.id}` === win.location.hash));
         scheduleUpdate();
     };
@@ -135,7 +139,58 @@ function initializeHelp(doc = document, win = window) {
     });
 }
 
+const LEGACY_ANCHORS = {
+    // 構成図 (help-canvas.html)
+    'canvas': 'help-canvas.html#canvas',
+    'modes': 'help-canvas.html#modes',
+    'connections': 'help-canvas.html#connections',
+    'link-systems': 'help-canvas.html#link-systems',
+    'direct-links': 'help-canvas.html#direct-links',
+    'view-links': 'help-canvas.html#view-links',
+    'link-route': 'help-canvas.html#link-route',
+    'link-crossings': 'help-canvas.html#link-crossings',
+    'canvas-notes': 'help-canvas.html#canvas-notes',
+    'printing': 'help-canvas.html#printing',
+    // 機器・台帳 (help-devices.html)
+    'devices': 'help-devices.html#devices',
+    'device-sheet': 'help-devices.html#device-sheet',
+    'management-ssh': 'help-devices.html#management-ssh',
+    'ledger': 'help-devices.html#ledger',
+    'ip-management': 'help-devices.html#ip-management',
+    'change-history': 'help-devices.html#change-history',
+    'device-config': 'help-devices.html#device-config',
+    'ledger-columns': 'help-devices.html#ledger-columns',
+    'ledger-filters': 'help-devices.html#ledger-filters',
+    'maintenance-outlook': 'help-devices.html#maintenance-outlook',
+    'ledger-ping': 'help-devices.html#ledger-ping',
+    'device-bulk': 'help-devices.html#device-bulk',
+    // ビュー・ラック (help-views.html)
+    'views': 'help-views.html#views',
+    'floor-plans': 'help-views.html#floor-plans',
+    'rack-views': 'help-views.html#rack-views',
+    // 保存・管理 (help-admin.html)
+    'saving': 'help-admin.html#saving',
+    'csv-backup': 'help-admin.html#csv-backup',
+    'accounts': 'help-admin.html#accounts',
+    'first-password': 'help-admin.html#first-password',
+};
+
+function handleLegacyAnchorRedirect(win = window) {
+    if (!win.location) return;
+    const path = win.location.pathname || '';
+    if (!/(^|\/)help\.html$/i.test(path)) return;
+    const hash = (win.location.hash || '').replace(/^#/, '');
+    if (hash && LEGACY_ANCHORS[hash]) {
+        try {
+            win.location.replace(LEGACY_ANCHORS[hash]);
+        } catch (_) {
+            win.location.href = LEGACY_ANCHORS[hash];
+        }
+    }
+}
+
 if (typeof document !== 'undefined') {
+    handleLegacyAnchorRedirect();
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => initializeHelp(), { once: true });
     } else {

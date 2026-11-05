@@ -11,18 +11,17 @@
             tabindex="-1"
         >
             <header class="placement-manager-header">
-                <div>
-                    <h2 id="dashboard-title">
-                        ダッシュボード
-                    </h2>
-                </div>
+                <h2 id="dashboard-title">
+                    ダッシュボード
+                </h2>
 
                 <div class="dashboard-header-actions">
                     <button
                         id="dashboard-refresh-btn"
                         type="button"
                     >
-                        更新
+                        <img src="assets/icons/app/refresh.svg" width="16" height="16" alt="" aria-hidden="true">
+                        <span id="dashboard-refresh-label">更新</span>
                     </button>
                     <button
                         type="button"
@@ -189,10 +188,10 @@
                                     <h4 id="dashboard-monitoring-visual-title">
                                         監視状態
                                     </h4>
-                                    <p>疎通確認の最新集計と構成比</p>
+                                    <p>未確認には未実行・Ping対象外・IP重複によるスキップを含みます</p>
                                 </div>
                                 <div class="dashboard-monitoring-rates">
-                                    <span id="dashboard-monitoring-coverage" class="dashboard-visual-badge">
+                                    <span id="dashboard-monitoring-coverage" class="dashboard-visual-badge" title="OK率は全登録機器が分母です。到達不可の機器も含みます">
                                         OK率 0.0%
                                     </span>
                                 </div>
@@ -247,7 +246,7 @@
                                     type="button"
                                     class="dashboard-status-row is-unknown"
                                     data-dashboard-action="ledger-unknown"
-                                    title="未確認・確認中の機器を機器台帳で表示"
+                                    title="未実行・Ping対象外・IP重複によるスキップを含む、未確認・確認中の機器を機器台帳で表示"
                                 >
                                     <div class="dashboard-status-row-info">
                                         <span class="dashboard-status-badge is-unknown" aria-hidden="true">?</span>
@@ -388,8 +387,8 @@
                                 <span class="dashboard-kpi-value-wrap"><strong id="dashboard-assets-devices-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">台</small></span>
                             </div>
                             <div class="dashboard-asset-metric">
-                                <span class="dashboard-kpi-label">機器種別</span>
-                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-assets-types-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">分類</small></span>
+                                <span class="dashboard-kpi-label">施設数</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-assets-facilities-count" class="dashboard-kpi-value">0</strong><small class="dashboard-kpi-unit">施設</small></span>
                             </div>
                         </div>
                         <div id="dashboard-breakdown-details" class="dashboard-breakdown-grid dashboard-asset-details" hidden>
@@ -497,6 +496,31 @@
                             </div>
                         </div>
                         <div id="dashboard-rack-list" class="dashboard-rack-list dashboard-asset-details" hidden></div>
+                    </section>
+                    <section class="dashboard-section dashboard-asset-card dashboard-assets-ip" aria-labelledby="dashboard-ip-title">
+                        <div class="dashboard-section-header">
+                            <h3 id="dashboard-ip-title">IPアドレス管理</h3>
+                            <button type="button" class="dashboard-details-toggle" data-dashboard-action="ip-management">IP管理を開く →</button>
+                        </div>
+                        <div class="dashboard-asset-summary">
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">ネットワーク区分数</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-ip-address_spaces-count" class="dashboard-kpi-value">—</strong><small class="dashboard-kpi-unit">区分</small></span>
+                            </div>
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">セグメント数</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-ip-ip_segments-count" class="dashboard-kpi-value">—</strong><small class="dashboard-kpi-unit">セグメント</small></span>
+                            </div>
+                            <div class="dashboard-asset-metric">
+                                <span class="dashboard-kpi-label">登録IP件数</span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-ip-registered_ips-count" class="dashboard-kpi-value">—</strong><small class="dashboard-kpi-unit">件</small></span>
+                            </div>
+                            <button type="button" id="dashboard-ip-unclassified" class="dashboard-asset-metric dashboard-ip-link" data-dashboard-action="ip-unclassified" disabled title="未分類IP一覧を開く">
+                                <span class="dashboard-kpi-label">未分類IP件数 <span aria-hidden="true">→</span></span>
+                                <span class="dashboard-kpi-value-wrap"><strong id="dashboard-ip-unclassified_ips-count" class="dashboard-kpi-value">—</strong><small class="dashboard-kpi-unit">件</small></span>
+                            </button>
+                        </div>
+                        <p id="dashboard-ip-status" class="dashboard-ip-status" role="status" aria-live="polite">未取得</p>
                     </section>
                     </div>
                 </div>

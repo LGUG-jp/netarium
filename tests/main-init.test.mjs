@@ -57,8 +57,13 @@ test('起動時に直接リンクのビューを読み込み、追加したビ�
     });
     const errors = [];
     t.mock.method(console, 'error', (...args) => errors.push(args));
+    const browserStorage = new Map([['netarium.lastViewId', '1']]);
     globalThis.window = {
         addEventListener() {}, location: { search: '?view=12', reload() {} },
+        localStorage: {
+            getItem: key => browserStorage.get(key) ?? null,
+            setItem: (key, value) => browserStorage.set(key, value)
+        },
         clearTimeout() {}, setTimeout() { return 0; },
         APP_CONFIG: { user: { isAdmin: true }, csrfToken: 'test-only-token' }
     };
@@ -96,6 +101,23 @@ test('起動時に直接リンクのビューを読み込み、追加したビ�
     assert.deepEqual(state.views, [view, linkedView]);
     assert.equal(startupRequests.length, 1);
     assert.ok(startupRequests[0].includes('action=load'), 'リンクを開くだけでは保存やPingを実行しない');
+    assert.equal(browserStorage.get('netarium.lastViewId'), '12', '明示URLの表示先を最後のビューとして記録する');
+    assert.equal(await window.switchView(1), true);
+    assert.equal(browserStorage.get('netarium.lastViewId'), '1');
+    assert.equal(await window.switchView(12), true);
+    assert.equal(browserStorage.get('netarium.lastViewId'), '12');
+    state.currentViewId = null;
+    assert.equal(await window.loadData({ initialSearch: '' }), true, 'F5相当の初期ロード');
+    assert.equal(state.currentViewId, 12);
+    assert.equal(state.appStatus.dirty, false);
+    assert.ok(startupRequests.every(url => url.includes('action=load')), '切替と復元で保存やPingを実行しない');
+    state.currentViewId = null;
+    browserStorage.set('netarium.lastViewId', '999');
+    assert.equal(await window.loadData({ initialSearch: '' }), true);
+    assert.equal(state.currentViewId, 1, '削除済みの保存先は先頭へ戻す');
+    state.currentViewId = null;
+    assert.equal(await window.loadData({ initialSearch: '?view=12' }), true);
+    assert.equal(state.currentViewId, 12);
 
     const addedView = { ...view, id: 2, name: '追加ビュー', sort_order: 20 };
     state.views.push(addedView);
@@ -410,4 +432,48 @@ test('削除中の二端機器の片方を再読込しても他方へのリン�
     assert.deepEqual(buildResourceSave(), {
         devices: [{ operation: 'delete', id: 2, expected_revision: 7 }], views: []
     });
+});
+
+test('#374: 保存待ちの機器編集を残して監視リセットを取り込み、未保存の管理IPに旧応答を移さない', t => {
+    const previous = { ...appState };
+    t.after(() => { Object.assign(appState, previous); resetResourceBaseline(appState); });
+    for (const changeManagementIp of [false, true]) {
+        const fixture = resourceFixture();
+        Object.assign(fixture.devices[0], { ip: '192.0.2.81', status: 'green',
+            last_checked_at: '2026-01-01 00:00:00', last_response_ms: 5, last_error: null });
+        fixture.devices[1].additional_ips = [{ id: 91, ip: '192.0.2.81', label: '比較', sort_order: 0, segment_id: 2 }];
+        Object.assign(appState, fixture, {
+            canvasNotes: [], floorPlans: [], deviceImages: [], currentViewId: 1,
+            selectedPlacementIds: new Set(), viewStates: new Map(), floorPlanAutoFittedViews: new Set(),
+            resourceConflicts: { devices: new Map(), views: new Map() }
+        });
+        resetResourceBaseline(appState);
+        appState.devices[1].additional_ips[0].segment_id = null;
+        const pending = createPendingResourceSave(buildResourceSave());
+        const savedA = { ...appState.devices[0] };
+        const savedB = { ...appState.devices[1], resource_revision: 8 };
+        appState.devices[0].name = '保存待ちに入力した名前';
+        if (changeManagementIp) {
+            Object.assign(appState.devices[0], { ip: '192.0.2.82', status: 'unknown',
+                last_checked_at: null, last_response_ms: null, last_error: null });
+        } else {
+            Object.assign(savedA, { status: 'unknown', last_checked_at: null, last_response_ms: null,
+                last_error: '同じIPに到達性が未設定・未分類の登録があるため、通信先を特定できずPingをスキップしました' });
+        }
+        applyResourceSaveResult({
+            revision: 2, monitor_revision: 2, id_maps: {}, devices: [savedA, savedB],
+            views: [], placements: [], links: [], canvas_notes: [],
+            deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: []
+        }, pending);
+        const localA = appState.devices.find(row => row.id === 1);
+        assert.equal(localA.name, '保存待ちに入力した名前');
+        assert.equal(localA.status, 'unknown');
+        assert.equal(localA.last_checked_at, null);
+        assert.equal(localA.last_response_ms, null);
+        assert.equal(localA.last_error, changeManagementIp ? null : savedA.last_error);
+        assert.equal(localA.ip, changeManagementIp ? '192.0.2.82' : '192.0.2.81');
+        const next = buildResourceSave();
+        assert.deepEqual(next.devices.map(row => [row.id, row.expected_revision]), [[1, 3]]);
+        assert.deepEqual(next.views, []);
+    }
 });

@@ -4,7 +4,7 @@ body {
     overflow-y: auto;
     background-color: var(--bg-main);
     color: var(--text-main);
-    padding: 32px 16px 64px;
+    padding: 0;
     margin: 0;
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     line-height: 1.6;
@@ -108,7 +108,174 @@ body {
     background-repeat: no-repeat;
     background-attachment: fixed;
 }
+.help-header-bar {
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border-light);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
 
+.help-header-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: var(--space-2) var(--space-6);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+}
+
+.help-header-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    text-decoration: none;
+    color: var(--text-main);
+}
+
+.help-header-brand img {
+    display: block;
+}
+
+.help-header-brand span {
+    display: inline-block;
+    padding-left: 14px;
+    border-left: 2px solid var(--border-light);
+    font-size: 19px;
+    font-weight: 700;
+    color: var(--text-main);
+    line-height: 26px;
+}
+
+.help-nav-list {
+    display: flex;
+    gap: 4px;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.help-nav-link {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: var(--text-muted);
+    font-size: 15px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.help-nav-link:hover {
+    background: var(--bg-toolbar-hover);
+    color: var(--text-main);
+}
+
+.help-nav-link[aria-current="page"] {
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-weight: 700;
+    border-bottom-color: var(--primary);
+}
+
+.help-grid-nav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--space-4);
+    margin: var(--space-6) 0;
+}
+
+.help-card {
+    display: block;
+    padding: var(--space-4);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.help-card:hover {
+    border-color: var(--primary);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-2px);
+}
+
+.help-card h3 {
+    margin-top: 0;
+    margin-bottom: var(--space-2);
+    color: var(--primary);
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.help-card p {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0 0 var(--space-3);
+    line-height: 1.5;
+}
+
+.help-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.help-tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 6px;
+    background: var(--neutral-bg);
+    border-radius: var(--radius-xs);
+    color: var(--text-muted);
+}
+
+.help-page-footer-nav {
+    margin-top: var(--space-8);
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--border-light);
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-4);
+    flex-wrap: wrap;
+}
+
+.help-page-footer-nav .btn {
+    min-width: 160px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.help-index-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: var(--space-4) 0;
+}
+
+.help-index-table th,
+.help-index-table td {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-light);
+    font-size: 13px;
+}
+
+.help-index-table th {
+    background: var(--neutral-bg);
+    text-align: left;
+}
 .help-layout {
     display: grid;
     grid-template-columns: 220px minmax(0, 860px);
@@ -116,6 +283,7 @@ body {
     gap: var(--space-3);
     max-width: 1200px;
     margin: 0 auto;
+    padding: var(--space-6) 16px var(--space-8);
 }
 
 .help-layout .help-container {
@@ -129,8 +297,8 @@ body {
 
 .help-toc {
     position: sticky;
-    top: var(--space-8);
-    max-height: calc(100vh - 64px);
+    top: 72px;
+    max-height: calc(100vh - 88px);
     overflow-y: auto;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
@@ -190,7 +358,7 @@ body {
 
 .help-container h2[id],
 .help-container h3[id] {
-    scroll-margin-top: 32px;
+    scroll-margin-top: 72px;
 }
 
 .help-figure {
@@ -246,14 +414,27 @@ body {
 
 .footer-close {
     text-align: center;
-    margin-top: var(--space-8);
-    padding-top: var(--space-6);
-    border-top: 1px solid var(--border-light);
+    margin-top: var(--space-6);
+    padding-top: var(--space-4);
+    border-top: 1px dashed var(--border-light);
+}
+
+.footer-close .btn {
+    font-size: 12px;
+    padding: 4px 12px;
+    color: var(--text-muted);
+    border-color: var(--border-light);
+    background: transparent;
+}
+
+.footer-close .btn:hover {
+    background: var(--neutral-bg-hover);
+    color: var(--text-main);
 }
 
 .help-close-notice {
     margin-top: var(--space-2);
-    font-size: 13px;
+    font-size: 12px;
     color: var(--text-muted);
 }
 
@@ -311,12 +492,34 @@ body {
 
 @media (max-width: 900px) {
     body {
-        padding: var(--space-4) var(--space-2) var(--space-8);
+        padding: 0;
+    }
+
+    .help-header-inner {
+        padding: var(--space-2) var(--space-3);
+        gap: var(--space-2);
+    }
+
+    .help-header-brand span {
+        font-size: 16px;
+        line-height: 22px;
+        padding-left: 10px;
+    }
+
+    .help-nav-link {
+        padding: 4px 8px;
+        font-size: 13px;
     }
 
     .help-layout {
         grid-template-columns: minmax(0, 1fr);
         gap: var(--space-4);
+        padding: var(--space-4) var(--space-3) var(--space-8);
+    }
+
+    .help-container h2[id],
+    .help-container h3[id] {
+        scroll-margin-top: 130px;
     }
 
     .help-toc {

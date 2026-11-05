@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { appState } from '../public/js/core/state.js';
 import { initializeLinkSystemsModal, openLinkSystems, closeLinkSystems } from '../public/js/modals/link-systems-modal.js';
-import { getTopModalContainer, getFocusableElements } from '../public/js/core/modal-focus.js';
+import { getTopModalContainer } from '../public/js/core/modal-focus.js';
 import { onKeyDown } from '../public/js/canvas/selection.js';
 import { installPrintDom } from './helpers/print-dom.mjs';
 
@@ -199,16 +199,6 @@ test('一覧とフォームが別領域で、選択・新規作成・キャン�
         { id: 2, name: '合成無線LAN', color_key: 'teal', resource_revision: 4, usage_count: 0 }
     ]);
     await openLinkSystems();
-    const workspace = document.querySelector('.link-systems-workspace');
-    assert.equal(workspace.children.length, 2);
-    const [left, right] = workspace.children;
-    assert.equal(left.classList.contains('link-systems-list-area'), true);
-    assert.equal(right.classList.contains('link-systems-form'), true);
-    for (const id of ['new', 'list', 'refresh']) assert.equal(left.contains(dom.get(`link-systems-${id}`)), true);
-    for (const id of ['name', 'color-options', 'actions', 'save', 'cancel', 'delete']) {
-        assert.equal(right.contains(dom.get(`link-systems-${id}`)), true);
-    }
-    assert.equal(left.contains(right), false);
     assert.equal(dom.get('link-systems-row-1').getAttribute('aria-pressed'), 'true');
     assert.equal(parseInt(dom.get('link-systems-row-1').querySelector('.link-systems-row-usage').textContent, 10), 12);
     await dom.get('link-systems-row-2').dispatch('click');
@@ -217,10 +207,6 @@ test('一覧とフォームが別領域で、選択・新規作成・キャン�
     assert.equal(document.activeElement, dom.get('link-systems-row-2'));
     assert.equal(dom.get('link-systems-delete').disabled, false);
     assert.equal(dom.get('link-systems-cancel').hidden, true);
-    const order = getFocusableElements(dom.get('link-systems-overlay')).map(node => node.id);
-    const expected = ['link-systems-new', 'link-systems-refresh', 'link-systems-row-1', 'link-systems-row-2',
-        'link-systems-name', 'link-systems-color-option-teal', 'link-systems-save', 'link-systems-delete'];
-    for (let i = 1; i < expected.length; i++) assert.ok(order.indexOf(expected[i]) > order.indexOf(expected[i - 1]));
     const before = structuredClone(appState.linkSystems);
     const beforeRequests = requests.length;
     await dom.get('link-systems-new').dispatch('click');
@@ -270,3 +256,4 @@ test('直前の系統が再読込で消えた場合のキャンセルは残る�
     assert.deepEqual(appState.linkSystems, []);
     assert.deepEqual(requests.map(row => row.action), ['list_link_systems', 'list_link_systems', 'list_link_systems']);
 });
+

@@ -11,6 +11,7 @@ use Netarium\Core\ApiException;
 use Netarium\Core\Database;
 use Netarium\Core\Request;
 use Netarium\Repositories\AppMetaRepository;
+use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Repositories\DeviceRepository;
 
 class PingService
@@ -406,6 +407,11 @@ class PingService
             ];
         }
 
+        $decisions = PingReachabilityPolicy::decisions(
+            (new DeviceIpAddressRepository($this->db))->getIpRecords(),
+            $this->db->query('SELECT * FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+        );
+
         /*
          * Ping自体はトランザクション外で実行する。
          * 長時間DBをロックしないため。
@@ -436,11 +442,20 @@ class PingService
                     if ($requestedIp !== '' && $requestedIp !== $ip) {
                         throw new RuntimeException('機器情報が更新されています。画面を再読み込みしてください');
                     }
-                    $pingResult = $this->pingHost(
-                        $ip,
-                        (int)($config['ping_timeout_ms'] ?? 1000),
-                        (bool)($config['restrict_private_ip_only'] ?? true)
-                    );
+                    if (isset($decisions[$id]) && !$decisions[$id]['allowed']) {
+                        $pingResult = [
+                            'status' => 'unknown',
+                            'outcome' => 'skipped',
+                            'response_ms' => null,
+                            'error' => $decisions[$id]['error'],
+                        ];
+                    } else {
+                        $pingResult = $this->pingHost(
+                            $ip,
+                            (int)($config['ping_timeout_ms'] ?? 1000),
+                            (bool)($config['restrict_private_ip_only'] ?? true)
+                        );
+                    }
                 }
             } catch (Throwable $e) {
                 $pingResult = [

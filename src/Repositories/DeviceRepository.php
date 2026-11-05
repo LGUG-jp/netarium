@@ -23,13 +23,14 @@ class DeviceRepository
             return [];
         }
         $where = $ids === null ? '' : 'WHERE d.id IN (' . implode(', ', array_map('intval', $ids)) . ')';
-        return $this->db->query("
+        $devices = $this->db->query("
             SELECT
                 d.id,
                 d.resource_revision,
                 d.name,
                 d.type,
                 d.ip,
+                d.ip_segment_id,
                 d.x,
                 d.y,
                 COALESCE(m.status, 'unknown') AS status,
@@ -57,6 +58,12 @@ class DeviceRepository
             {$where}
             ORDER BY d.id
         ")->fetchAll();
+        $additional = (new DeviceIpAddressRepository($this->db))->getByDeviceIds($ids);
+        foreach ($devices as &$device) {
+            $device['additional_ips'] = $additional[(int)$device['id']] ?? [];
+        }
+        unset($device);
+        return $devices;
     }
 
     /**
@@ -70,6 +77,7 @@ class DeviceRepository
                 name,
                 type,
                 ip,
+                ip_segment_id,
                 facility,
                 floor,
                 location,

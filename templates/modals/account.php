@@ -34,87 +34,109 @@
         ></div>
 
         <div id="user-management-content" class="account-body">
-            <form id="user-create-form" class="account-create-form" aria-labelledby="user-create-title" novalidate>
-                <h3 id="user-create-title">利用者の登録</h3>
+            <section class="account-user-section" aria-labelledby="user-list-title">
+                <div class="account-section-heading">
+                    <div class="account-heading-left">
+                        <h3 id="user-list-title">登録済み利用者</h3>
+                        <div class="account-user-tabs" role="tablist" aria-label="利用者の表示切替">
+                            <button type="button" role="tab" class="account-user-tab" id="account-tab-users" data-account-tab="users" aria-selected="true" aria-controls="account-user-list-wrap">利用者一覧</button>
+                            <button type="button" role="tab" class="account-user-tab" id="account-tab-deleted" data-account-tab="deleted" aria-selected="false" aria-controls="account-deleted-list-wrap" tabindex="-1">削除済み<span id="account-deleted-count" class="account-deleted-count"></span></button>
+                        </div>
+                    </div>
 
-                <div class="account-form-grid">
-                    <label>
-                        ユーザー名
-                        <input
-                            id="user-create-username"
-                            type="text"
-                            data-auth-kind="username"
-                            data-auth-create="true"
-                            required
-                            autocomplete="off"
+                    <div class="account-heading-actions">
+                        <button
+                            id="user-create-toggle-btn"
+                            type="button"
+                            class="btn btn-sm btn-secondary"
+                            aria-expanded="false"
+                            aria-controls="user-create-form"
                         >
-                        <span id="user-create-username-error" class="account-field-error" hidden aria-live="polite"></span>
-                    </label>
+                            ＋ 利用者を登録
+                        </button>
+                        <button
+                            id="user-list-refresh-btn"
+                            type="button"
+                            class="btn btn-sm btn-secondary"
+                        >
+                            <img src="assets/icons/app/refresh.svg" width="16" height="16" alt="" aria-hidden="true">
+                            <span>更新</span>
+                        </button>
+                    </div>
+                </div>
 
-                    <label>
-                        権限
-                        <select id="user-create-role">
-                            <option value="viewer">viewer（閲覧者）</option>
-                            <option value="admin">admin（管理者）</option>
-                        </select>
-                    </label>
+                <form id="user-create-form" class="account-create-form" aria-labelledby="user-create-title" novalidate hidden>
+                    <h3 id="user-create-title">利用者の登録</h3>
 
-                    <div class="account-password-field">
+                    <div class="account-form-grid">
                         <label>
-                            初期パスワード
+                            ユーザー名
                             <input
-                                id="user-create-password"
+                                id="user-create-username"
+                                type="text"
+                                data-auth-kind="username"
+                                data-auth-create="true"
+                                required
+                                autocomplete="off"
+                            >
+                            <span id="user-create-username-error" class="account-field-error" hidden aria-live="polite"></span>
+                        </label>
+
+                        <label>
+                            権限
+                            <select id="user-create-role">
+                                <option value="viewer">viewer（閲覧者）</option>
+                                <option value="admin">admin（管理者）</option>
+                            </select>
+                        </label>
+
+                        <div class="account-password-field">
+                            <label>
+                                初期パスワード
+                                <input
+                                    id="user-create-password"
+                                    type="password"
+                                    data-auth-kind="password"
+                                    data-auth-create="true"
+                                    aria-describedby="user-create-password-hint"
+                                    required
+                                    autocomplete="new-password"
+                                >
+                                <span id="user-create-password-error" class="account-field-error" hidden aria-live="polite"></span>
+                            </label>
+                            <?php
+                            $passwordRequirementsId = 'user-create-password-hint';
+                            require __DIR__ . '/../components/password_requirements.php';
+                            ?>
+                        </div>
+                        <label>
+                            初期パスワード（確認）
+                            <input
+                                id="user-create-password-confirm"
                                 type="password"
                                 data-auth-kind="password"
                                 data-auth-create="true"
-                                aria-describedby="user-create-password-hint"
+                                data-auth-match="user-create-password"
+                                aria-describedby="user-create-password-confirm-hint"
                                 required
                                 autocomplete="new-password"
                             >
-                            <span id="user-create-password-error" class="account-field-error" hidden aria-live="polite"></span>
+                            <span id="user-create-password-confirm-hint" class="account-field-hint">初期パスワードと同じ値を入力</span>
+                            <span id="user-create-password-confirm-error" class="account-field-error" hidden aria-live="polite"></span>
                         </label>
-                        <?php
-                        $passwordRequirementsId = 'user-create-password-hint';
-                        require __DIR__ . '/../components/password_requirements.php';
-                        ?>
                     </div>
-                    <label>
-                        初期パスワード（確認）
-                        <input
-                            id="user-create-password-confirm"
-                            type="password"
-                            data-auth-kind="password"
-                            data-auth-create="true"
-                            data-auth-match="user-create-password"
-                            aria-describedby="user-create-password-confirm-hint"
-                            required
-                            autocomplete="new-password"
-                        >
-                        <span id="user-create-password-confirm-hint" class="account-field-hint">初期パスワードと同じ値を入力</span>
-                        <span id="user-create-password-confirm-error" class="account-field-error" hidden aria-live="polite"></span>
-                    </label>
-                </div>
 
-                <div class="account-form-actions">
-                    <button type="submit" class="btn btn-primary btn-sm">
-                        利用者を登録
-                    </button>
-                </div>
-            </form>
+                    <div class="account-form-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" id="user-create-cancel-btn">
+                            閉じる
+                        </button>
+                        <button type="submit" class="btn btn-primary btn-sm">
+                            利用者を登録
+                        </button>
+                    </div>
+                </form>
 
-            <section class="account-user-section" aria-labelledby="user-list-title">
-                <div class="account-section-heading">
-                    <h3 id="user-list-title">登録済み利用者</h3>
-                    <button
-                        id="user-list-refresh-btn"
-                        type="button"
-                        class="btn btn-sm btn-secondary"
-                    >
-                        更新
-                    </button>
-                </div>
-
-                <div class="account-user-list-wrap">
+                <div class="account-user-list-wrap" id="account-user-list-wrap" role="tabpanel" aria-labelledby="account-tab-users">
                     <table class="account-user-list">
                         <thead>
                             <tr>
@@ -126,6 +148,20 @@
                             </tr>
                         </thead>
                         <tbody id="account-user-list-body"></tbody>
+                    </table>
+                </div>
+
+                <div class="account-user-list-wrap" id="account-deleted-list-wrap" role="tabpanel" aria-labelledby="account-tab-deleted" hidden>
+                    <table class="account-user-list account-deleted-list">
+                        <thead>
+                            <tr>
+                                <th>ユーザー名</th>
+                                <th>元の権限</th>
+                                <th>削除日時</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="account-deleted-list-body"></tbody>
                     </table>
                 </div>
             </section>

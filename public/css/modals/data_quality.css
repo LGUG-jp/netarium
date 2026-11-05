@@ -1,10 +1,15 @@
 /*
  * データ品質診断。
  */
+
 .data-quality-dialog {
+    display: flex;
+    flex-direction: column;
     width: min(1180px, 96vw);
-    height: min(840px, 92vh);
+    height: min(840px, calc(100dvh - 2 * var(--modal-edge-space)));
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     border-radius: var(--radius-md);
+    overflow: hidden;
 }
 
 .data-quality-body {

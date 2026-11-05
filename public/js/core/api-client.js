@@ -47,7 +47,10 @@ function isMaintenanceRejection(res, data, url) {
  */
 export async function apiFetch(action, options = {}) {
     const isImageUpload = action === 'upload_floor_plan' || action === 'upload_device_image';
-    const url = `${isImageUpload ? 'image_upload.php' : API_URL}?action=${encodeURIComponent(action)}`;
+    const rawQuery = options.query instanceof URLSearchParams
+        ? options.query.toString()
+        : String(options.query || '').replace(/^&+/, '');
+    const url = `${isImageUpload ? 'image_upload.php' : API_URL}?action=${encodeURIComponent(action)}${rawQuery ? `&${rawQuery}` : ''}`;
     const method = String(options.method || 'GET').toUpperCase();
 
     const headers = new Headers(options.headers || {});

@@ -39,6 +39,7 @@ import {
 import {
     enterPlacementMode
 } from '../ui/placement-mode.js';
+import { openIpManagement } from './ip-management-modal.js';
 let isDataQualityLoading = false;
 
 /**
@@ -228,6 +229,17 @@ export function getDataQualityDetailLines(
             '対象機器: ' +
             devicesText
         );
+    }
+
+    if (issue?.code === 'ambiguous_ping_target' && Array.isArray(details.ip_records)) {
+        const reachabilityLabels = { unset: '未設定', reachable: '到達可能', unreachable: '到達不可' };
+        for (const record of details.ip_records) {
+            const space = record.address_space_id == null
+                ? '未分類'
+                : record.address_space_name || `区分ID ${record.address_space_id}`;
+            const kind = record.kind === 'management' ? '管理IP' : `追加IP${record.label ? `（${record.label}）` : ''}`;
+            lines.push(`${record.ip} / ID ${record.device_id}: ${record.device_name || '名称未設定'} / ${kind} / ${space} / ${reachabilityLabels[record.ping_reachability] || '未設定'}`);
+        }
     }
 
     if (details.view_name) {
@@ -1123,6 +1135,22 @@ export function getDataQualityTargetField(issue) {
     return null;
 }
 
+function getDataQualityUnclassifiedIpRecords(issue) {
+    return (Array.isArray(issue?.details?.ip_records) ? issue.details.ip_records : [])
+        .map(record => ({
+            device_id: Number(record.device_id),
+            kind: record.kind,
+            id: record.kind === 'management' ? null : Number(record.id),
+            ip: String(record.ip || '')
+        }));
+}
+
+async function openDataQualityIpMembership(record, allowClassified = false) {
+    if (!confirmDataQualityNavigation()) return;
+    hideDataQualityForNavigation();
+    await openIpManagement(record ? { target: record, allowClassified } : undefined);
+}
+
 /**
  * 診断結果ごとの主操作（Primary Action）を決定する（Phase 2.7E）
  */
@@ -1133,6 +1161,20 @@ export function getDataQualityPrimaryAction(issue) {
     const viewIds = getDataQualityViewIds(issue);
     const isAdmin = isCurrentUserAdmin();
 
+    if (code === 'ambiguous_ping_target') {
+        return {
+            label: 'IPアドレス管理で確認',
+            action: () => openDataQualityIpMembership(getDataQualityUnclassifiedIpRecords(issue)[0], true),
+            title: 'IPアドレス管理で対象IPの所属区分と到達性を確認します'
+        };
+    }
+    if (code === 'unclassified_ip') {
+        return {
+            label: 'IPアドレス管理で確認',
+            action: () => openDataQualityIpMembership(getDataQualityUnclassifiedIpRecords(issue)[0]),
+            title: 'IPアドレス管理の未分類一覧で所属を確認します'
+        };
+    }
     // 1. 未配置機器
     if (code === DASHBOARD_QUALITY_CODES.unplacedDevice || code === 'unplaced_device') {
         if (isAdmin) {
@@ -1578,9 +1620,14 @@ export function createDataQualityIssueActions(
             issue
         );
 
+    const ipRecords = issue?.code === 'unclassified_ip'
+        ? getDataQualityUnclassifiedIpRecords(issue)
+        : [];
+
     if (
         deviceIds.length === 0 &&
-        viewIds.length === 0
+        viewIds.length === 0 &&
+        ipRecords.length === 0
     ) {
         return null;
     }
@@ -1600,7 +1647,7 @@ export function createDataQualityIssueActions(
 
     heading.textContent =
         (
-            deviceIds.length +
+            (ipRecords.length || deviceIds.length) +
             viewIds.length
         ) > 1
             ? '対象ごとの操作'
@@ -1618,26 +1665,45 @@ export function createDataQualityIssueActions(
     list.className =
         'data-quality-target-list';
 
-    deviceIds.forEach(
-        deviceId => {
-            list.appendChild(
-                createDataQualityDeviceActionRow(
-                    deviceId,
-                    issue
-                )
-            );
-        }
-    );
+    if (ipRecords.length > 0) {
+        ipRecords.forEach(record => {
+            const row = document.createElement('div');
+            row.className = 'data-quality-target-row';
+            const label = document.createElement('strong');
+            label.className = 'data-quality-target-label';
+            label.textContent = `${getDataQualityDeviceName(record.device_id)} / ${record.kind === 'management' ? '管理IPv4アドレス' : `追加IPv4アドレス #${record.id}`}: ${record.ip}`;
+            const buttons = document.createElement('div');
+            buttons.className = 'data-quality-target-actions';
+            buttons.appendChild(createDataQualityActionButton(
+                '所属を確認',
+                () => openDataQualityIpMembership(record),
+                'data-quality-action-primary'
+            ));
+            row.append(label, buttons);
+            list.appendChild(row);
+        });
+    } else {
+        deviceIds.forEach(
+            deviceId => {
+                list.appendChild(
+                    createDataQualityDeviceActionRow(
+                        deviceId,
+                        issue
+                    )
+                );
+            }
+        );
 
-    viewIds.forEach(
-        viewId => {
-            list.appendChild(
-                createDataQualityViewActionRow(
-                    viewId
-                )
-            );
-        }
-    );
+        viewIds.forEach(
+            viewId => {
+                list.appendChild(
+                    createDataQualityViewActionRow(
+                        viewId
+                    )
+                );
+            }
+        );
+    }
 
     section.appendChild(list);
 

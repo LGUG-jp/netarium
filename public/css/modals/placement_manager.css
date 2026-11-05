@@ -10,3 +10,10 @@
     background: #f8fafc;
     font-size: 13px;
 }
+
+.placement-manager-rack-option { cursor: default; grid-template-columns: 18px minmax(0, 1fr) auto; }
+.placement-manager-rack-option > input:disabled { opacity: 1; cursor: default; }
+.placement-manager-rack-option .placement-manager-option-main strong { white-space: nowrap; }
+.placement-manager-rack-option .placement-manager-option-main > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.placement-manager-rack-option .placement-manager-option-badge { margin-left: 6px; padding: 1px 6px; font-size: 11px; }
+.placement-manager-rack-action { grid-column: 3; grid-row: 1; justify-self: end; max-width: 100%; white-space: nowrap; }

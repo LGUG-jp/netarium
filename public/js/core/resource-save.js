@@ -6,6 +6,7 @@ import { normalizeCanvasNote, toSaveCanvasNote } from './canvas-note-data.js';
 import { resetLinkCreationState } from './link-mode.js';
 import { toSaveRackSettings, toSaveRackMount, toSaveRackShelf as copyShelf, toSaveRackShelfDevice as copyShelfDevice } from './rack-layout.js';
 import { floorRackPlacements, toSaveFloorRackPlacement } from './floor-rack-data.js';
+import { eventBus } from './event-bus.js';
 
 const rackSettings = data => data.rackSettings || (Array.isArray(data.rack_settings) ? data.rack_settings : data.rack_settings ? [data.rack_settings] : []);
 const rackMounts = data => data.rackMounts || data.rack_mounts || [];
@@ -34,7 +35,9 @@ const resourceFields = row => ({
 });
 
 const sorted = rows => rows.sort((a, b) => Number(a.id) - Number(b.id));
-const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// 重複確認は送信時だけの承認。保存成否の照合・差分・競合判定には含めない。
+const persistentJson = value => JSON.stringify(value, (key, item) => key === 'ip_conflicts_confirmed' ? undefined : item);
+const equal = (a, b) => persistentJson(a) === persistentJson(b);
 const byId = rows => new Map(rows.map(row => [Number(row.id), row]));
 const stateKey = kind => ({ canvas_notes: 'canvasNotes', rack_shelves: 'rackShelves' })[kind] || kind;
 const viewChildKinds = ['placements', 'links', 'canvas_notes'];
@@ -290,6 +293,10 @@ export function createPendingResourceSave(payload, baseline = savedBaseline, dat
         rackShelfDevices: shelfDevices(data).map(copyShelfDevice)
     };
     return {
+        addressIdentities: (data.devices || []).map(device => ({
+            device_id: Number(device.id),
+            keys: (device.additional_ips || []).map(row => row._client_key || null)
+        })),
         payload, affectedViewIds: [...affectedViewIds], snapshot, newIds,
         hasNewViewChildIds: [...viewChildKinds, 'rack_shelves'].some(kind => newIds[kind].length > 0)
     };
@@ -481,6 +488,31 @@ export function applyResourceSaveResult(result, pending) {
     }
     remapResourceState(appState, maps);
     if (snapshot) remapResourceState(snapshot, maps);
+    // 応答待ちの並べ替え・追加編集もサーバー採番した同じ子レコードを引き継ぐ。
+    const addressIds = [];
+    for (const identity of pending?.addressIdentities || []) {
+        const deviceId = mappedResourceId(maps.devices, identity.device_id);
+        const sent = snapshot?.devices.find(row => Number(row.id) === deviceId);
+        const remote = result.devices.find(row => Number(row.id) === deviceId);
+        if (!sent || !remote) continue;
+        const canonical = remote.additional_ips || [];
+        const ids = {};
+        for (let index = 0; index < (sent.additional_ips || []).length; index++) {
+            if (sent.additional_ips[index].id != null || !identity.keys[index]) continue;
+            const savedAddress = canonical.find(row => Number(row.sort_order) === index);
+            if (!savedAddress) continue;
+            ids[identity.keys[index]] = Number(savedAddress.id);
+            sent.additional_ips[index].id = Number(savedAddress.id);
+        }
+        const local = appState.devices.find(row => Number(row.id) === deviceId);
+        for (const address of local?.additional_ips || []) {
+            if (address.id == null && ids[address._client_key]) {
+                address.id = ids[address._client_key];
+                delete address._client_key;
+            }
+        }
+        addressIds.push({ deviceId, localDeviceId: identity.device_id, ids });
+    }
     const changedDevices = new Set();
     const changedViews = new Set();
     const removedDevices = new Set();
@@ -533,23 +565,32 @@ export function applyResourceSaveResult(result, pending) {
         }
     }
     remapResourceUiState(maps);
+    eventBus.emit('device-addresses:identified', addressIds);
 
     const deletedDevices = new Set((result.deleted_device_ids || []).map(Number));
     const deletedViews = new Set((result.deleted_view_ids || []).map(Number));
     const deviceRows = byId((result.devices || []).map(normalizeDevice));
     const viewRows = byId((result.views || []).map(normalizeView));
-    const merge = (rows, replacements, deleted, changed, removed) => {
+    const merge = (rows, replacements, deleted, changed, removed, monitoring = false) => {
         const merged = rows.filter(row => !deleted.has(Number(row.id))).map(row => {
             const replacement = replacements.get(Number(row.id));
             replacements.delete(Number(row.id));
             if (replacement && changed.has(Number(row.id))) {
-                return { ...row, resource_revision: replacement.resource_revision };
+                const kept = { ...row, resource_revision: replacement.resource_revision };
+                // 構成の追加入力は保持するが、同じ管理IPの監視結果はサーバーを正本とする。
+                if (monitoring && row.ip === replacement.ip) {
+                    kept.status = replacement.status;
+                    kept.last_checked_at = replacement.last_checked_at;
+                    kept.last_response_ms = replacement.last_response_ms;
+                    kept.last_error = replacement.last_error;
+                }
+                return kept;
             }
             return replacement || row;
         });
         return [...merged, ...[...replacements.values()].filter(row => !removed.has(Number(row.id)))];
     };
-    appState.devices = merge(appState.devices, deviceRows, deletedDevices, changedDevices, removedDevices);
+    appState.devices = merge(appState.devices, deviceRows, deletedDevices, changedDevices, removedDevices, true);
     appState.views = merge(appState.views, viewRows, deletedViews, changedViews, removedViews);
     const affectedViews = new Set([...(result.affected_view_ids || []), ...deletedViews, ...(result.views || []).map(row => row.id)].map(Number));
     const replaceTopology = new Set([...affectedViews].filter(id => deletedViews.has(id) || !changedViews.has(id)));

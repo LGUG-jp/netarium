@@ -364,6 +364,13 @@
     box-shadow: var(--shadow-lg);
 }
 
+#toolbar-manage-menu .toolbar-menu-popup {
+    box-sizing: border-box;
+    max-height: calc(100dvh - var(--toolbar-height) - 12px);
+    overflow-y: auto;
+    align-content: start;
+}
+
 .toolbar-user-popup {
     width: 200px;
 }

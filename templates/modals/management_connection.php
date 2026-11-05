@@ -21,9 +21,6 @@
                     <h2 id="management-connection-title">
                         機器へ接続
                     </h2>
-                    <p id="management-connection-description">
-                        接続先を確認してから開いてください。
-                    </p>
                 </div>
 
                 <button
@@ -37,6 +34,10 @@
             </header>
 
             <div class="management-connection-content">
+                <p id="management-connection-description" class="management-connection-description">
+                    接続先を確認してから開いてください。
+                </p>
+
                 <dl class="management-connection-summary">
                     <fieldset class="management-connection-scheme-field">
                         <legend>接続方式</legend>

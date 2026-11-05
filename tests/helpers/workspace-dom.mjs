@@ -78,9 +78,31 @@ export class WorkspaceElement {
         return this.attributes.get(name) ?? null;
     }
     removeAttribute(name) { this.attributes.delete(name); }
-    appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
-    prepend(child) { child.parentElement = this; this.children.unshift(child); }
+    prepend(child) { child.remove(); child.parentElement = this; this.children.unshift(child); }
+    get nextSibling() {
+        return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null;
+    }
+    get previousSibling() {
+        return this.parentElement?.children[this.parentElement.children.indexOf(this) - 1] ?? null;
+    }
+    get nextElementSibling() { return this.nextSibling; }
+    get previousElementSibling() { return this.previousSibling; }
+    after(...children) {
+        const parent = this.parentElement;
+        if (!parent) return;
+        children = children.filter((child, index) => children.lastIndexOf(child) === index);
+        let next = this.nextSibling;
+        while (next && children.includes(next)) next = next.nextSibling;
+        children.forEach(child => child.remove());
+        let index = next ? parent.children.indexOf(next) : parent.children.length;
+        for (const child of children) {
+            child.remove();
+            child.parentElement = parent;
+            parent.children.splice(index++, 0, child);
+        }
+    }
     insertAdjacentElement(position, child) {
         const where = position.toLowerCase();
         if (!['beforebegin', 'afterbegin', 'beforeend', 'afterend'].includes(where)) throw new SyntaxError('Invalid position');
@@ -110,7 +132,7 @@ export class WorkspaceElement {
             query = query.replace(/:not\([^)]+\)/g, '');
             if (excluded.some(part => this.matches(part))) return false;
             if (query.includes(':checked')) { if (!this.checked) return false; query = query.replace(':checked', ''); }
-            const tag = query.match(/^[a-z]+/i)?.[0];
+            const tag = query.match(/^[a-z][a-z0-9-]*/i)?.[0];
             if (tag && this.tagName !== tag.toUpperCase()) return false;
             const id = query.match(/#([\w-]+)/)?.[1];
             if (id && this.id !== id) return false;

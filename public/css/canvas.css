@@ -842,16 +842,19 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 .rack-position-section .panel-group-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .rack-position-section .panel-group-summary-text { flex: 1 1 auto; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; font-size: 12px; color: var(--text-muted); }
 .rack-position-section .rack-mount-full-position { margin: 4px 0 8px; font-size: 13px; color: var(--text-main); }
-.view-manager-dialog.rack-mount-dialog { max-width: 580px; padding: 20px 0 0; max-height: calc(100dvh - 48px); overflow: hidden; }
-.rack-mount-dialog h2 { margin: 0 20px 16px; font-size: 20px; flex-shrink: 0; }
+.view-manager-dialog.rack-mount-dialog { max-width: 760px; padding: 16px 0 0; max-height: calc(100dvh - 2 * var(--modal-edge-space)); overflow: hidden; }
+.rack-mount-heading { margin: 0 20px 12px; flex: 0 0 auto; }
 .rack-mount-form { display: flex; flex-direction: column; min-height: 0; }
-.rack-mount-body { overflow-y: auto; min-height: 0; padding: 0 20px 12px; display: grid; gap: 12px; }
+.rack-mount-body { overflow-y: auto; min-height: 0; padding: 0 20px 12px; display: grid; gap: 10px; }
 .rack-mount-field { display: grid; gap: 4px; min-width: 0; align-content: start; }
 .rack-mount-field label { font-size: 12px; font-weight: 700; margin: 0; }
 .rack-mount-form input, .rack-mount-form select { box-sizing: border-box; width: 100%; height: 38px; min-width: 0; padding: 6px 8px; }
-.rack-mount-position { display: grid; gap: 12px; }
-.rack-mount-row-primary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.rack-mount-row-secondary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rack-mount-position { min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border-light); border-radius: var(--radius-xs); }
+.rack-mount-position legend { padding: 0 4px; font-size: 12px; font-weight: 700; }
+.rack-mount-position-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; }
+.rack-mount-position-grid + .rack-mount-position-grid { margin-top: 8px; }
+.rack-mount-position > .rack-mount-field { margin-bottom: 8px; }
+.rack-mount-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .rack-mount-device-area { display: grid; gap: 8px; }
 .rack-mount-device-area > .btn { justify-self: start; }
 .rack-mount-candidates { max-height: 180px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); }
@@ -860,8 +863,6 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 .rack-mount-option:hover, .rack-mount-option[aria-selected="true"] { background: var(--primary-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
 .rack-mount-body p { margin: 0; overflow-wrap: anywhere; }
 .rack-mount-candidates p { padding: 8px; }
-.rack-mount-current { font-size: 13px; }
-.rack-mount-summary { font-size: 13px; font-weight: 700; }
 .rack-mount-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--border-light); flex-shrink: 0; }
 .rack-mount-dialog [hidden] { display: none; }
 .rack-transfer-confirmation { padding: 8px 20px 16px; gap: 14px; }
@@ -872,7 +873,7 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 .rack-transfer-card.rack-transfer-to { border-left: 4px solid var(--primary); background: var(--primary-soft); }
 .rack-transfer-badge { font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.05em; }
 .rack-transfer-to .rack-transfer-badge { color: var(--primary); }
-.rack-transfer-rack { font-size: 15px; font-weight: 700; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rack-transfer-rack { font-size: 15px; font-weight: 700; color: var(--text-main); overflow-wrap: anywhere; }
 .rack-transfer-detail { font-size: 12px; color: var(--text-muted); line-height: 1.4; overflow-wrap: anywhere; }
 .rack-transfer-arrow { font-size: 20px; font-weight: 700; color: var(--primary); user-select: none; text-align: center; }
 .rack-transfer-notice { font-size: 12px; line-height: 1.5; color: var(--text-muted); }
@@ -905,8 +906,7 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 @media (max-width: 480px) {
     .rack-mount-overlay { padding: 12px; }
     .view-manager-dialog.rack-mount-dialog { max-height: calc(100dvh - 24px); }
-    .rack-mount-row-primary,
-    .rack-mount-row-secondary { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .rack-mount-comparison { grid-template-columns: minmax(0, 1fr); }
     .rack-transfer-flow { grid-template-columns: minmax(0, 1fr); gap: 6px; }
     .rack-transfer-arrow { transform: rotate(90deg); line-height: 1; margin: 2px 0; }
 }

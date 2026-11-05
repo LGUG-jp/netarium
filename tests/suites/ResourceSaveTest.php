@@ -63,6 +63,135 @@ class ResourceSaveTest extends TestCase
         $this->fail("対象ID {$id} が見つかりません");
     }
 
+    public function testAdditionalIpv4LifecycleOwnershipAndRollback(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $created = $this->save([[
+                'operation' => 'create', 'id' => 980001,
+                'device' => ['name' => 'IPv4 owner', 'ip' => '', 'ip_conflicts_confirmed' => true, 'additional_ips' => [
+                    ['ip' => '192.0.2.41', 'label' => '業務用', 'sort_order' => 0],
+                    ['id' => null, 'ip' => '192.0.2.42', 'label' => str_repeat('あ', 100), 'sort_order' => 1],
+                ]],
+            ], [
+                'operation' => 'create', 'id' => 980002,
+                'device' => ['name' => 'IPv4 other', 'ip' => '192.0.2.41', 'ip_conflicts_confirmed' => true],
+            ]], [], $client);
+            $id = (int)$created['id_maps']['devices'][980001];
+            $db = new PDO('sqlite:' . $server->getDbPath());
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->exec("UPDATE device_monitor_status SET status = 'green', last_checked_at = '2026-01-01 00:00:00' WHERE device_id = {$id}");
+            $otherId = (int)$created['id_maps']['devices'][980002];
+            $data = $this->load($client);
+            $device = $this->find($data['devices'], $id);
+            $this->assertSame(2, count($device['additional_ips']));
+            $originalIds = array_column($device['additional_ips'], 'id');
+            $stale = $this->deviceOperation($device);
+            $device['additional_ips'] = array_reverse($device['additional_ips']);
+            $device['additional_ips'][0]['sort_order'] = 0;
+            $device['additional_ips'][1]['sort_order'] = 1;
+            $device['additional_ips'][0]['label'] = '更新';
+            $this->save([$this->deviceOperation($device)], [], $client);
+            $client->postJson('/api.php?action=save_resources', ['devices' => [$stale], 'views' => []])->assertStatus(409);
+            $data = $this->load($client);
+            $device = $this->find($data['devices'], $id);
+            $this->assertSame('green', $db->query("SELECT status FROM device_monitor_status WHERE device_id = {$id}")->fetchColumn());
+            $this->assertSame(array_reverse($originalIds), array_column($device['additional_ips'], 'id'));
+            foreach ([
+                array_replace($device, ['ip' => '192.0.2.41']),
+                array_replace($device, ['additional_ips' => [['ip' => '2001:db8::1']]]),
+                array_replace($device, ['additional_ips' => [['ip' => '192.0.2.43', 'label' => str_repeat('あ', 101)]]]),
+                array_replace($device, ['additional_ips' => [['ip' => '192.0.2.43'], ['ip' => '192.0.2.43']]]),
+            ] as $bad) {
+                $client->postJson('/api.php?action=save_resources', ['devices' => [$this->deviceOperation($bad)], 'views' => []])->assertStatus(400);
+                $this->assertSame($device, $this->find($this->load($client)['devices'], $id));
+            }
+            $other = $this->find($data['devices'], $otherId);
+            $bad = $other;
+            $bad['additional_ips'] = [$device['additional_ips'][0]];
+            $changed = $device;
+            $changed['name'] = 'Must roll back';
+            $client->postJson('/api.php?action=save_resources', [
+                'devices' => [$this->deviceOperation($changed), $this->deviceOperation($bad)], 'views' => [],
+            ])->assertStatus(400);
+            $this->assertSame($device, $this->find($this->load($client)['devices'], $id));
+            $viewer = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($viewer->login('viewer', 'viewer123'));
+            $viewer->postJson('/api.php?action=save_resources', ['devices' => [$this->deviceOperation($device)], 'views' => []])->assertStatus(403);
+            $legacy = $device;
+            unset($legacy['additional_ips']);
+            $legacy['memo'] = 'Legacy client';
+            $this->save([$this->deviceOperation($legacy)], [], $client);
+            $data = $this->load($client);
+            $preserved = $this->find($data['devices'], $id)['additional_ips'];
+            $this->assertSame($device['additional_ips'], $preserved);
+            foreach ($data['devices'] as &$row) { unset($row['additional_ips']); }
+            unset($row);
+            $client->postJson('/api.php?action=save', $data)->assertOk();
+            $data = $this->load($client);
+            $device = $this->find($data['devices'], $id);
+            $this->assertSame($preserved, $device['additional_ips']);
+            foreach ($data['devices'] as &$row) {
+                if ((int)$row['id'] === $id) {
+                    $row['additional_ips'][] = ['ip' => '192.0.2.44', 'label' => '全体保存', 'sort_order' => 2];
+                }
+            }
+            unset($row);
+            $client->postJson('/api.php?action=save', $data)->assertOk();
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->assertSame(3, count($device['additional_ips']));
+            $this->assertSame($preserved[0]['id'], $device['additional_ips'][0]['id']);
+            $device['additional_ips'] = [$device['additional_ips'][0]];
+            $this->save([$this->deviceOperation($device)], [], $client);
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->assertSame(1, count($device['additional_ips']));
+            $device['ip'] = '192.0.2.45';
+            $this->save([$this->deviceOperation($device)], [], $client);
+            $this->assertSame('unknown', $db->query("SELECT status FROM device_monitor_status WHERE device_id = {$id}")->fetchColumn());
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->save([['operation' => 'delete', 'id' => $id, 'expected_revision' => (int)$device['resource_revision']]], [], $client);
+            $this->assertFalse(in_array($id, array_map('intval', array_column($this->load($client)['devices'], 'id')), true));
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testIpv4MigrationPreservesDevicesAndEnumeratesEveryRecord(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        $db = new PDO('sqlite::memory:');
+        \Netarium\Core\Database::configure($db);
+        foreach (range(1, 16) as $version) { ('migrateDatabaseToVersion' . $version)($db); }
+        $db->exec("INSERT INTO devices(id,name,type,ip) VALUES (1,'Owner','other','192.0.2.1'),(2,'Other','other','192.0.2.1')");
+        $before = $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+        migrateDatabase($db);
+        $columns = implode(',', array_keys($before[0]));
+        $this->assertSame($before, $db->query("SELECT $columns FROM devices ORDER BY id")->fetchAll(PDO::FETCH_ASSOC));
+        $this->assertSame([null, null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $repo = new \Netarium\Repositories\DeviceIpAddressRepository($db);
+        $this->assertSame([], $repo->getByDeviceIds());
+        $db->beginTransaction();
+        $repo->saveForDevice(1, [['ip' => '192.0.2.2']], '192.0.2.1');
+        $db->commit();
+        $records = $repo->getIpRecords();
+        $this->assertSame(3, count($records));
+        $this->assertSame(2, count(array_filter($records, static fn(array $row): bool => $row['ip'] === '192.0.2.1')));
+        $this->assertTrue((int)$db->query('SELECT resource_revision FROM devices WHERE id = 1')->fetchColumn() > (int)$before[0]['resource_revision']);
+        $this->assertSame((int)$before[1]['resource_revision'], (int)$db->query('SELECT resource_revision FROM devices WHERE id = 2')->fetchColumn());
+        $db->exec("UPDATE devices SET ip = '192.0.2.2' WHERE id = 2");
+        $diagnosis = (new \Netarium\Services\Quality\QualityDiagnosticService($db))->diagnoseDataQuality([]);
+        $duplicates = array_values(array_filter($diagnosis, static fn(array $issue): bool => $issue['code'] === 'duplicate_ip'));
+        $this->assertSame(1, count($duplicates));
+        $this->assertSame('warning', $duplicates[0]['severity']);
+        $this->assertSame(2, count($duplicates[0]['details']['ip_records']));
+        $this->assertTrue(in_array('additional', array_column($duplicates[0]['details']['ip_records'], 'kind'), true));
+        $db->exec('DELETE FROM devices WHERE id = 1');
+        $this->assertSame([], $repo->getByDeviceIds());
+    }
+
     public function testFloorRackPlacementLifecycleAndDeleteConflict(): void
     {
         $server = new \Netarium\Tests\TestServer();
@@ -230,8 +359,10 @@ class ResourceSaveTest extends TestCase
         migrateDatabase($db);
         foreach ($before as $table => $rows) {
             $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-            $this->assertSame($rows, $db->query("SELECT * FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+            $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
+            $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
         }
+        $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
         $db->exec("INSERT INTO rack_shelves VALUES (7,1,'Shelf','front',1,1,'half')");
         $db->exec('INSERT INTO rack_shelf_devices VALUES (1,7,0)');
         $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
@@ -400,9 +531,11 @@ class ResourceSaveTest extends TestCase
         migrateDatabase($db);
         foreach ($before as $table => $rows) {
             $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-            $this->assertSame($rows, $db->query("SELECT * FROM {$table}{$where}")->fetchAll(PDO::FETCH_ASSOC));
+            $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
+            $this->assertSame($rows, $db->query("SELECT {$columns} FROM {$table}{$where}")->fetchAll(PDO::FETCH_ASSOC));
         }
-        $this->assertSame(16, (int)$db->query('PRAGMA user_version')->fetchColumn());
+        $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $this->assertSame(1, (int)$db->query('PRAGMA foreign_keys')->fetchColumn());
         $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
         $db->exec("INSERT INTO views(id,name,view_type) VALUES (2,'Rack','rack')");
@@ -514,9 +647,11 @@ class ResourceSaveTest extends TestCase
                     $rows = array_map(static fn($row) => $row + ['depth' => 'half'], $rows);
                 }
                 $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-                $this->assertSame($rows, $db->query("SELECT * FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+                $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
+                $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
             }
-            $this->assertSame(16, (int)$db->query('PRAGMA user_version')->fetchColumn());
+            $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+            $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
             $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
             $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
             $db->exec("UPDATE rack_mounts SET depth='full' WHERE device_id=1");

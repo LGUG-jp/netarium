@@ -11,12 +11,12 @@
             aria-labelledby="placement-manager-title"
         >
             <header class="placement-manager-header">
-                <div>
+                <div class="modal-header-heading">
                     <h2 id="placement-manager-title">
                         表示するビューを選択
                     </h2>
 
-                    <p id="placement-manager-device">
+                    <p id="placement-manager-device" class="modal-header-target">
                         -
                     </p>
                 </div>

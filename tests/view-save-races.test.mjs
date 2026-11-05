@@ -40,16 +40,34 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         async dispatch(type, event = {}) {
             for (const fn of [...(this.listeners.get(type) || [])]) await fn(event);
         }
-        appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+        appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
         append(...children) { children.forEach(child => this.appendChild(child)); }
         prepend(child) { child.parentElement = this; this.children.unshift(child); }
+        after(...children) {
+            const parent = this.parentElement;
+            if (!parent) return;
+            children = children.filter((child, index) => children.lastIndexOf(child) === index && child !== this);
+            const siblings = parent.children;
+            let next = siblings[siblings.indexOf(this) + 1];
+            while (next && children.includes(next)) next = siblings[siblings.indexOf(next) + 1];
+            children.forEach(child => child.remove());
+            let index = next ? parent.children.indexOf(next) : parent.children.length;
+            for (const child of children) {
+                child.parentElement = parent;
+                parent.children.splice(index++, 0, child);
+            }
+        }
         remove() {
             if (this.parentElement) {
                 this.parentElement.children = this.parentElement.children.filter(child => child !== this);
                 this.parentElement = null;
             }
         }
-        replaceChildren(...children) { this.children = children; }
+        replaceChildren(...children) {
+            this.children.forEach(child => { child.parentElement = null; });
+            this.children = [];
+            this.append(...children);
+        }
         setAttribute(name, value) { this.attributes.set(name, String(value)); }
         getAttribute(name) { return this.attributes.get(name) ?? null; }
         removeAttribute(name) { this.attributes.delete(name); }
@@ -72,7 +90,11 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     }
     const elements = new Map();
     const el = id => {
-        if (!elements.has(id)) elements.set(id, new DomElement(id));
+        if (!elements.has(id)) {
+            const element = new DomElement(id);
+            elements.set(id, element);
+            document.body.appendChild(element);
+        }
         return elements.get(id);
     };
     const findElement = (root, id) => {
@@ -185,6 +207,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     const reset = async (name = '本館') => {
         eventBus.emit('resources:reloaded');
         queue.clearPendingSave();
+        for (const element of elements.values()) element.remove();
         elements.clear(); confirmations = []; answers = []; calls = []; failStatus = 0;
         el('lp-system').setAttribute('aria-controls', 'lp-system-options');
         for (const [id, className] of [['lp-system-name', 'link-system-option-name'], ['lp-system-swatch', 'link-system-swatch']]) {
@@ -276,6 +299,28 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(appState.currentViewId, 2);
         assert.equal(appState.editingDeviceId, 10);
         assert.deepEqual([...appState.selectedPlacementIds], [291]);
+        assert.equal(appState.devices[0].name, 'SW');
+        assert.equal(calls.length, 0);
+    });
+    await t.test('配置先表示は非同期のビュー切替確認を待ち、拒否時は選択せず承認後に対象を選択する', async t => {
+        await reset();
+        const { showDeviceInPlacement } = await import('../public/js/canvas/renderer.js');
+        const originalCanvas = appState.canvas;
+        appState.canvas = el('canvas');
+        t.after(() => { appState.canvas = originalCanvas; });
+        const destination = { id: 292, view_id: 2, device_id: 10, x: 400, y: 300 };
+        appState.placements.push(destination);
+        resource.resetResourceBaseline(appState);
+        assert.equal(await panels.openPanel(appState.devices[0]), true);
+        el('p-name').value = '配置先表示前の下書き';
+        assert.equal(await choose(showDeviceInPlacement(appState.devices[0], destination), 'cancel'), false);
+        assert.equal(appState.currentViewId, 1);
+        assert.equal(el('p-name').value, '配置先表示前の下書き');
+        assert.deepEqual([...appState.selectedPlacementIds], []);
+        assert.equal(await choose(showDeviceInPlacement(appState.devices[0], destination), 'discard'), true);
+        assert.equal(appState.currentViewId, 2);
+        assert.equal(appState.editingDeviceId, 10);
+        assert.deepEqual([...appState.selectedPlacementIds], [292]);
         assert.equal(appState.devices[0].name, 'SW');
         assert.equal(calls.length, 0);
     });

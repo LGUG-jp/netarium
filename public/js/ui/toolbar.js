@@ -1,3 +1,5 @@
+import { confirmDeviceIpChanges } from '../core/device-ip-addresses.js';
+import { segmentCandidates } from '../core/ip-management.js';
 /**
  * Netarium - ui/toolbar.js
  */
@@ -10,6 +12,7 @@ import {
 } from '../core/constants.js';
 
 import { appState } from '../core/state.js';
+import { resolveInitialViewId } from '../core/last-view.js';
 import {
     resetResourceBaseline
 } from '../core/resource-save.js';
@@ -124,7 +127,7 @@ export function applyRoleBasedUi() {
 /**
  * データ読み込み
  */
-export async function loadData() {
+export async function loadData({ initialSearch = null } = {}) {
     try {
         if (
             appState.isRangeSelecting
@@ -169,6 +172,8 @@ export async function loadData() {
                 : [];
 
         appState.linkSystems = Array.isArray(data.link_systems) ? data.link_systems : [];
+        appState.addressSpaces = Array.isArray(data.address_spaces) ? data.address_spaces : [];
+        appState.ipSegments = Array.isArray(data.ip_segments) ? data.ip_segments : [];
 
         appState.links = Array.isArray(data.links)
             ? data.links
@@ -223,7 +228,9 @@ export async function loadData() {
                 Number(appState.currentViewId)
         );
 
-        if (!currentViewExists) {
+        if (initialSearch !== null) {
+            appState.currentViewId = resolveInitialViewId(appState, initialSearch);
+        } else if (!currentViewExists) {
             appState.currentViewId = appState.views.length > 0
                 ? Number(appState.views[0].id)
                 : null;
@@ -941,6 +948,9 @@ export async function addDevice(type = 'switch', { rackMount = null, rackShelfId
         if (shelfDeviceValues) {
             device.name = shelfDeviceValues.name || device.name;
             device.ip = shelfDeviceValues.ip || '';
+            const candidates = segmentCandidates(device.ip, appState.ipSegments || []);
+            device.ip_segment_id = candidates.length === 1 ? Number(candidates[0].id) : null;
+            if (!confirmDeviceIpChanges(appState.devices, [...appState.devices, device])) return false;
         }
         const assignment = { device_id: deviceId, shelf_id: Number(rackShelfId),
             sort_order: Math.max(-1, ...(appState.rackShelfDevices || []).filter(row => Number(row.shelf_id) === Number(rackShelfId)).map(row => row.sort_order)) + 1 };

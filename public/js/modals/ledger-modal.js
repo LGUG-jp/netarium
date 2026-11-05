@@ -1,3 +1,6 @@
+import { createDeviceIpEditor } from '../ui/device-ip-editor.js';
+import { createIpDuplicateNotice } from '../ui/ip-duplicate-notice.js';
+import { segmentCandidates } from '../core/ip-management.js';
 /**
  * Netarium - modals/ledger-modal.js
  */
@@ -28,12 +31,19 @@ import {
 import { getDeviceImageBlockReason, uploadDeviceImage } from '../core/device-image-api.js';
 import { handleAuthExpired } from '../core/api-client.js';
 eventBus.on('resources:saved', () => {
-    const button = document.getElementById('ledger-sheet-image-add-btn');
-    if (!button) return;
-    const reason = getDeviceImageBlockReason(activeLedgerDeviceId);
-    const count = (appState.deviceImages || []).filter(image => Number(image.device_id) === activeLedgerDeviceId).length;
-    button.disabled = !isCurrentUserAdmin() || Boolean(reason) || count >= 3;
-    button.title = reason || (count >= 3 ? '登録できる画像は最大3枚までです' : '画像ファイルを選択して登録');
+    const body = document.getElementById('ledger-sheet-body');
+    if (!body) return;
+    const reason = !isCurrentUserAdmin() ? '閲覧専用のため画像を登録できません' : getDeviceImageBlockReason(activeLedgerDeviceId);
+    for (const button of body.querySelectorAll('.ledger-sheet-image-slot-add')) {
+        button.disabled = Boolean(reason);
+        button.title = reason || '画像ファイルを選択して登録';
+        const notice = button.parentElement.querySelector('.ledger-sheet-image-block-reason');
+        notice.textContent = reason;
+        notice.hidden = !reason;
+    }
+    for (const button of body.querySelectorAll('.ledger-sheet-image-move')) {
+        button.disabled = Boolean(reason);
+    }
 });
 eventBus.on('device-images:changed', deviceId => {
     if (Number(deviceId) !== activeLedgerDeviceId) return;
@@ -67,14 +77,14 @@ import {
     normalizeStatus
 } from '../core/state.js';
 import {
-    render
+    render, focusDevicePlacement
 } from '../canvas/renderer.js';
 import {
     openPanel,
     deleteDeviceCompletely
 } from '../ui/property-panel.js';
 import {
-    openDeviceImageZoom, bindDeviceImageCaptionInput, updateImageCaption
+    openDeviceImageZoom, bindDeviceImageCaptionInput, updateImageCaption, reorderDeviceImages
 } from '../ui/device-images.js';
 import {
     showToast, showStatusMessage
@@ -84,7 +94,8 @@ import {
 } from '../ui/status-bar.js';
 import {
     flushSaveQueue, scheduleSave, updateSaveButtonState,
-    hasResourceConflict, reloadConflictedResource, hasResourceChanges, isSaveInFlight
+    hasResourceConflict, reloadConflictedResource, hasResourceChanges, isSaveInFlight,
+    waitForActiveResourceSave
 } from '../core/save-queue.js';
 import {
     getDeviceDraft, hasDeviceDraftChanges, commitDeviceDraft, commitDeviceDrafts, discardDeviceDraft
@@ -92,6 +103,8 @@ import {
 import {
     openPlacementManager
 } from './placement-modal.js';
+import { openChangeHistory } from './change-history-modal.js';
+import { openDeviceConfig } from './device-config-modal.js';
 import {
     confirmDataQualityNavigation,
     findDataQualityDevice,
@@ -109,6 +122,7 @@ export const LEDGER_COLUMNS = [
     { key: 'name', label: '名称', stickyClass: 'ledger-sticky-name' },
     { key: 'type', label: '種別' },
     { key: 'ip', label: 'IPアドレス' },
+    { key: 'additional_ips', label: '追加IP' },
     { key: 'facility', label: '施設' },
     { key: 'floor', label: 'フロア' },
     { key: 'location', label: '設置場所' },
@@ -132,7 +146,7 @@ export const LEDGER_COLUMNS = [
 ];
 
 export const LEDGER_PRESETS = {
-    standard: ['select', 'id', 'name', 'type', 'ip', 'facility', 'floor', 'location', 'status', 'actions'],
+    standard: ['select', 'id', 'name', 'type', 'ip', 'additional_ips', 'facility', 'floor', 'location', 'status', 'actions'],
     placement: ['select', 'id', 'name', 'facility', 'floor', 'location', 'actions'],
     asset: ['select', 'id', 'name', 'manufacturer', 'model', 'asset_number', 'serial_number', 'mac_address', 'install_date', 'actions'],
     maintenance: ['select', 'id', 'name', 'department', 'maintenance_vendor', 'maintenance_expiry', 'management_scheme', 'management_port', 'actions'],
@@ -211,6 +225,11 @@ function updateDraft(scope, id, field, value) {
     if (!isCurrentUserAdmin() || appState.isPinging) return;
     const draft = getDeviceDraft(scope, id);
     if (!draft) return;
+    if (field === 'ip' && draft.ip !== value) {
+        const candidates = segmentCandidates(value, appState.ipSegments || []);
+        draft.ip_segment_id = candidates.length === 1 ? Number(candidates[0].id) : null;
+        delete draft.ip_conflicts_confirmed;
+    }
     draft[field] = value;
     eventBus.emit('device-drafts:changed');
 }
@@ -232,7 +251,7 @@ function bindLedgerDraftInput(input, device, field) {
 function showLedgerFieldErrors(id, focus = false) {
     const draft = getDeviceDraft('ledger', id);
     if (!draft) return true;
-    const { errors } = validateDeviceValues(draft, appState.devices);
+    const { errors } = validateDeviceValues(draft);
     let first = null;
     document.querySelectorAll('#ledger-table-body [data-field]').forEach(input => {
         if (Number(input.dataset.deviceId) !== Number(id)) return;
@@ -259,7 +278,7 @@ function commitLedgerRow(id) {
         if (!showLedgerFieldErrors(id, true)) {
             const draft = getDeviceDraft('ledger', id);
             if (draft) {
-                const { errors } = validateDeviceValues(draft, appState.devices);
+                const { errors } = validateDeviceValues(draft);
                 const hidden = [];
                 for (const [field, message] of Object.entries(errors)) {
                     if (!document.querySelector(`#ledger-table-body [data-device-id="${id}"][data-field="${field}"]`)) {
@@ -324,11 +343,21 @@ function commitLedgerDrafts() {
     }
 }
 
-async function confirmSheetNavigation() {
+async function confirmSheetNavigation({ saveBeforeLeaving = false } = {}) {
     const id = activeLedgerDeviceId;
     if (id === null || !hasDeviceDraftChanges('sheet', id)) return true;
     const choice = await chooseUnsavedChanges('個票に未適用の変更があります。どうしますか？');
-    if (choice === 'save') return commitSheetDraft();
+    if (choice === 'save') {
+        if (!commitSheetDraft()) return false;
+        if (saveBeforeLeaving) {
+            const saved = await flushSaveQueue({ silent: true, resumeMaintenance: false });
+            if (!saved || hasResourceConflict('devices', id) || hasResourceChanges('devices', id)) {
+                showToast('機器の保存が完了していません。個票で保存状態を確認してください', 'warning');
+                return false;
+            }
+        }
+        return true;
+    }
     if (choice !== 'discard') return false;
     discardDeviceDraft('sheet', id);
     return true;
@@ -340,7 +369,7 @@ function commitSheetDraft() {
             throw new Error('この機器は競合しています。「競合を再読込」で確認してください');
         }
         if (activeLedgerDeviceId !== null) {
-            const { errors } = validateDeviceValues(getDeviceDraft('sheet', activeLedgerDeviceId), appState.devices);
+            const { errors } = validateDeviceValues(getDeviceDraft('sheet', activeLedgerDeviceId));
             showSheetFieldErrors(errors, true);
             if (Object.keys(errors).length) return false;
         }
@@ -356,8 +385,31 @@ function commitSheetDraft() {
     }
 }
 
+function isConfirmedLedgerDevice(id) {
+    if (id === null || id === undefined) return false;
+    const device = getDeviceById(id);
+    return Boolean(device) && Number.isSafeInteger(Number(device.id)) && Number(device.id) > 0 &&
+        Number.isSafeInteger(Number(device.resource_revision)) && Number(device.resource_revision) > 0;
+}
+
 function syncLedgerDraftButtons() {
     updateSaveButtonState();
+    const historyBtn = document.getElementById('ledger-sheet-history-btn');
+    if (historyBtn) {
+        const confirmed = isConfirmedLedgerDevice(activeLedgerDeviceId);
+        historyBtn.hidden = !isCurrentUserAdmin();
+        historyBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || !confirmed;
+        historyBtn.title = confirmed
+            ? 'この機器の変更履歴を表示します'
+            : '保存が完了してから変更履歴を表示できます';
+    }
+    const configBtn = document.getElementById('ledger-sheet-config-btn');
+    if (configBtn) {
+        const confirmed = isConfirmedLedgerDevice(activeLedgerDeviceId);
+        configBtn.hidden = !isCurrentUserAdmin();
+        configBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || !confirmed;
+        configBtn.title = confirmed ? 'この機器のConfigを表示します' : '機器の保存が完了してからConfigを利用できます';
+    }
     const button = document.getElementById('ledger-sheet-save-btn');
     if (!button) return;
     button.dataset.deviceId = activeLedgerDeviceId === null ? '' : String(activeLedgerDeviceId);
@@ -375,6 +427,11 @@ function syncLedgerDraftButtons() {
 
 eventBus.on('device-drafts:changed', syncLedgerDraftButtons);
 eventBus.on('save-state:changed', syncLedgerDraftButtons);
+eventBus.on('ip-management:changed', () => {
+    if (typeof document === 'undefined' || activeLedgerDeviceId == null) return;
+    const device = getDeviceById(activeLedgerDeviceId);
+    if (device) renderLedgerDeviceSheet(device);
+});
 
 export function getLedgerSelectedDeviceIds() {
     return Array.from(ledgerSelectedDeviceIds);
@@ -430,7 +487,7 @@ export function renderLedgerTableHeader() {
         if (presetKey !== 'all') {
             // 桁数の決まった項目と操作列は必要幅を確保し、残りを項目別の比率で配分する。
             const fixedWidths = {
-                select: '44px', id: '64px', type: '193px', ip: 'calc(15ch + 31px)',
+                select: '44px', id: '64px', type: '193px', ip: 'calc(15ch + 31px)', additional_ips: '64px',
                 mac_address: 'calc(17ch + 31px)', install_date: 'calc(10ch + 31px)',
                 maintenance_expiry: 'calc(10ch + 31px)', management_scheme: '125px',
                 management_port: '95px', status: '100px', last_response_ms: '107px',
@@ -699,6 +756,7 @@ export function getFilteredLedgerDevices() {
                 device.type
             ),
             device.ip,
+            ...(device.additional_ips || []).flatMap(row => [row.ip, row.label]),
             device.facility,
             device.floor,
             device.location,
@@ -911,6 +969,8 @@ export function renderLedgerTable() {
 export function createLedgerSelectCell(device) {
     const td = document.createElement('td');
     td.className = 'ledger-sticky-check';
+    const label = document.createElement('label');
+    label.className = 'ledger-select-cell-label';
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'ledger-row-checkbox';
@@ -920,24 +980,35 @@ export function createLedgerSelectCell(device) {
         'aria-label',
         `${device.name || `ID ${device.id}`}を選択`
     );
-    checkbox.addEventListener('click', event => {
-        event.stopPropagation();
-    });
-    checkbox.addEventListener('change', event => {
-        event.stopPropagation();
+    const syncSelection = () => {
         const id = Number(checkbox.dataset.deviceId);
         if (checkbox.checked) {
             ledgerSelectedDeviceIds.add(id);
         } else {
             ledgerSelectedDeviceIds.delete(id);
         }
-        const row = checkbox.closest('tr');
+        const row = td.closest('tr');
         if (row) {
             row.classList.toggle('ledger-row-selected', checkbox.checked);
         }
         updateLedgerSelectionUI();
+    };
+    checkbox.addEventListener('change', event => {
+        event.stopPropagation();
+        syncSelection();
     });
-    td.appendChild(checkbox);
+    td.addEventListener('click', event => {
+        event.stopPropagation();
+        if (event.target === td || !event.target.closest('label')) {
+            checkbox.checked = !checkbox.checked;
+            syncSelection();
+        }
+    });
+    td.addEventListener('dblclick', event => {
+        event.stopPropagation();
+    });
+    label.appendChild(checkbox);
+    td.appendChild(label);
     return td;
 }
 
@@ -1038,6 +1109,12 @@ export function createLedgerRow(device) {
             case 'ip':
                 cell = createLedgerInputCell(device, 'ip', 45);
                 break;
+            case 'additional_ips': {
+                const count = device.additional_ips?.length || 0;
+                cell = document.createElement('td');
+                cell.textContent = count ? `${count}件` : '—';
+                break;
+            }
             case 'facility':
                 cell = createLedgerInputCell(device, 'facility', 100);
                 break;
@@ -1115,7 +1192,8 @@ export function createLedgerRow(device) {
             event.target.closest('input') ||
             event.target.closest('select') ||
             event.target.closest('textarea') ||
-            event.target.closest('details')
+            event.target.closest('details') ||
+            event.target.closest('.ledger-sticky-check')
         ) {
             return;
         }
@@ -1128,7 +1206,8 @@ export function createLedgerRow(device) {
             event.target instanceof HTMLSelectElement ||
             event.target instanceof HTMLTextAreaElement ||
             event.target.closest('button') ||
-            event.target.closest('details')
+            event.target.closest('details') ||
+            event.target.closest('.ledger-sticky-check')
         ) {
             return;
         }
@@ -1632,20 +1711,7 @@ export async function openDataQualityDeviceInLedger(
 
             if (resolvedOptions?.field) {
                 window.requestAnimationFrame(() => {
-                    const inputEl =
-                        document.querySelector(
-                            `#ledger-device-sheet-overlay [data-field="${resolvedOptions.field}"]`
-                        );
-                    if (
-                        inputEl instanceof
-                        HTMLElement
-                    ) {
-                        inputEl.focus();
-                        inputEl.scrollIntoView({
-                            block: 'center',
-                            inline: 'nearest'
-                        });
-                    }
+                    focusLedgerSheetField(resolvedOptions.field);
                 });
             }
         });
@@ -2099,6 +2165,8 @@ async function navigateLedgerDevice(direction) {
 export async function closeLedgerDetailPane() {
     if (!await confirmSheetNavigation()) return false;
     closeDeviceTypePicker();
+    const body = document.getElementById('ledger-sheet-body');
+    if (body) body.dataset.activeTab = 'primary';
     activeLedgerDeviceId = null;
     const rows = document.querySelectorAll('#ledger-table-body tr');
     rows.forEach(tr => tr.classList.remove('ledger-row-active'));
@@ -2117,17 +2185,32 @@ export async function closeLedgerDetailPane() {
     syncLedgerDraftButtons();
     return true;
 }
+
+export function focusLedgerSheetField(field) {
+    const input = Array.from(document.getElementById('ledger-device-sheet-overlay')?.querySelectorAll('[data-field]') || [])
+        .find(element => element.dataset.field === field);
+    if (!input) return;
+    const panel = input.closest('[role="tabpanel"]');
+    if (panel) document.getElementById(panel.getAttribute('aria-labelledby'))?.click();
+    input.focus();
+    input.scrollIntoView({ block: 'center', inline: 'nearest' });
+}
 function showSheetFieldErrors(errors, focus = false) {
     let first = null;
-    document.querySelectorAll('#ledger-sheet-body [data-field]').forEach(input => {
+    (document.getElementById('ledger-sheet-body')?.querySelectorAll('[data-field]') || []).forEach(input => {
         const field = input.dataset.field;
+        if (field === 'additional_ips') {
+            const addressInput = input.validateIps({ reveal: focus });
+            if (errors[field] && !first) first = addressInput;
+            return;
+        }
         const error = document.getElementById(`ledger-sheet-${field}-error`);
         setInputError(input, error, errors[field]);
         if (errors[field] && !first) first = input;
     });
     if (focus && first) {
-        const section = first.closest('details');
-        if (section) section.open = true;
+        const panel = first.closest('[role="tabpanel"]');
+        if (panel) document.getElementById(panel.getAttribute('aria-labelledby'))?.click();
         first.focus();
     }
 }
@@ -2140,7 +2223,7 @@ function bindSheetDraftInput(input, field) {
         updateDraft('sheet', activeLedgerDeviceId, field, field === 'management_port'
             ? (input.value === '' ? null : (/^\d+$/.test(input.value) ? Number(input.value) : input.value)) : input.value);
         const draft = getDeviceDraft('sheet', activeLedgerDeviceId);
-        showSheetFieldErrors(validateDeviceValues(draft, appState.devices).errors);
+        showSheetFieldErrors(validateDeviceValues(draft).errors);
         const title = document.getElementById('ledger-sheet-title');
         if (field === 'name' && title) {
             title.textContent = input.value ? `機器台帳 個票: ${input.value}` : `機器台帳 個票 (ID: ${activeLedgerDeviceId})`;
@@ -2167,14 +2250,7 @@ export function renderLedgerDeviceSheet(device) {
     }
 
 
-    const currentPlacement = getPlacementForDeviceInCurrentView(device.id);
-    const canvasBtn = document.getElementById('ledger-sheet-canvas-btn');
-    if (canvasBtn) {
-        canvasBtn.disabled = !currentPlacement;
-        canvasBtn.title = currentPlacement
-            ? '台帳を閉じて現在のビューで該当機器を選択表示します'
-            : 'この機器は現在のビューに配置されていません';
-    }
+    const destinations = getDeviceDestinations(device.id, appState.placements, getRackDeviceMounts(appState), appState.views);
 
 
     const viewManageBtn = document.getElementById('ledger-sheet-view-manage-btn');
@@ -2188,23 +2264,78 @@ export function renderLedgerDeviceSheet(device) {
     const focused = body.contains(document.activeElement) ? document.activeElement : null;
     const focusedField = focused?.dataset?.field;
     const focusedImageId = focused?.dataset?.imageId;
+    const focusedIpIndex = focused?.dataset?.ipIndex;
+    const focusedIpField = focused?.dataset?.ipField;
+    const ipsExpanded = body.dataset.deviceId === String(device.id) &&
+        body.querySelector('.device-ip-editor')?.dataset.expanded === 'true';
     const selectionStart = typeof focused?.selectionStart === 'number' ? focused.selectionStart : null;
     const selectionEnd = typeof focused?.selectionEnd === 'number' ? focused.selectionEnd : null;
     closeDeviceTypePicker();
     body.replaceChildren();
+    const tabs = document.getElementById('ledger-sheet-tabs');
+    const previousTab = body.dataset.deviceId === String(device.id) ? body.dataset.activeTab : 'primary';
+    body.dataset.deviceId = String(device.id);
+    tabs?.replaceChildren();
+    const panels = [];
+    const tabButtons = [];
+    function activateTab(index) {
+        body.dataset.activeTab = index === 0 ? 'primary' : 'secondary';
+        panels.forEach((panel, i) => { panel.hidden = i !== index; });
+        tabButtons.forEach((button, i) => {
+            button.setAttribute('aria-selected', String(i === index));
+            button.tabIndex = i === index ? 0 : -1;
+        });
+    }
+    ['機器・設置・資産', '管理・保守・状態'].forEach((label, index) => {
+        const panel = document.createElement('div');
+        panel.id = `ledger-sheet-panel-${index}`;
+        panel.className = 'ledger-sheet-panel';
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-labelledby', `ledger-sheet-tab-${index}`);
+        panels.push(panel);
+        body.appendChild(panel);
+        const button = document.createElement('button');
+        button.id = `ledger-sheet-tab-${index}`;
+        button.type = 'button';
+        button.textContent = label;
+        button.setAttribute('role', 'tab');
+        button.setAttribute('aria-controls', panel.id);
+        button.addEventListener('click', () => activateTab(index));
+        button.addEventListener('keydown', event => {
+            let next;
+            if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') next = 1 - index;
+            else if (event.key === 'Home') next = 0;
+            else if (event.key === 'End') next = 1;
+            else return;
+            event.preventDefault();
+            activateTab(next);
+            tabButtons[next].focus();
+        });
+        tabButtons.push(button);
+        tabs?.appendChild(button);
+    });
+    activateTab(previousTab === 'secondary' ? 1 : 0);
 
     const isAdmin = isCurrentUserAdmin();
 
     function createSheetRow(label, inputEl) {
-        const tr = document.createElement('tr');
-        const th = document.createElement('th');
+        const tr = document.createElement('div');
+        tr.className = 'ledger-sheet-field';
+        const th = document.createElement('label');
         th.textContent = label;
-        const td = document.createElement('td');
+        const td = document.createElement('div');
+        if (typeof inputEl !== 'string') {
+            const control = ['INPUT', 'SELECT', 'TEXTAREA'].includes(inputEl.tagName) ? inputEl : null;
+            if (control) {
+                if (!control.id) control.id = `ledger-sheet-field-${control.dataset.field}`;
+                th.setAttribute('for', control.id);
+            }
+        }
         if (typeof inputEl === 'string') {
             td.textContent = inputEl;
         } else {
             td.appendChild(inputEl);
-            if (inputEl.dataset?.field) {
+            if (inputEl.dataset?.field && inputEl.dataset.field !== 'additional_ips') {
                 const error = document.createElement('div');
                 error.id = `ledger-sheet-${inputEl.dataset.field}-error`;
                 error.className = 'form-error';
@@ -2238,26 +2369,13 @@ export function renderLedgerDeviceSheet(device) {
     }
 
     function createSheetSection(titleText, contentEl, rightElement = null) {
-        const details = document.createElement('details');
+        const details = document.createElement('section');
         details.className = 'ledger-sheet-section';
-        details.open = true;
-
-        const summary = document.createElement('summary');
+        const summary = document.createElement('div');
         summary.className = 'ledger-sheet-section-summary';
-
-        const leftWrap = document.createElement('div');
-        leftWrap.className = 'ledger-sheet-summary-left';
-
-        const icon = document.createElement('span');
-        icon.className = 'ledger-sheet-summary-icon';
-        icon.textContent = '▶';
-
-        const title = document.createElement('span');
+        const title = document.createElement('h4');
         title.textContent = titleText;
-
-        leftWrap.appendChild(icon);
-        leftWrap.appendChild(title);
-        summary.appendChild(leftWrap);
+        summary.appendChild(title);
 
         if (rightElement) {
             const rightWrap = document.createElement('div');
@@ -2276,9 +2394,8 @@ export function renderLedgerDeviceSheet(device) {
     }
 
     // ① 基本情報セクション
-    const basicTable = document.createElement('table');
+    const basicTable = document.createElement('div');
     basicTable.className = 'ledger-sheet-table';
-    basicTable.appendChild(createSheetRow('機器ID', String(device.id)));
     basicTable.appendChild(createSheetRow('機器名称', createSheetInput('name', 100)));
 
     const typePicker = createDeviceTypePicker({
@@ -2291,26 +2408,47 @@ export function renderLedgerDeviceSheet(device) {
     basicTable.appendChild(createSheetRow('機器種別', typePicker.element));
 
     const ipInput = createSheetInput('ip', 45);
-    basicTable.appendChild(createSheetRow('IPアドレス', ipInput));
-    body.appendChild(createSheetSection('基本情報', basicTable));
+    const ipRow = createSheetRow('管理IPv4アドレス', ipInput);
+    ipInput.parentElement.appendChild(createIpDuplicateNotice({
+        getRecord: () => getDeviceDraft('sheet', activeLedgerDeviceId),
+        field: 'ip_segment_id', ipInput,
+        canEdit: () => activeLedgerDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+            !hasResourceConflict('devices', activeLedgerDeviceId),
+        onChange: () => eventBus.emit('device-drafts:changed')
+    }));
+    basicTable.appendChild(ipRow);
+    basicTable.appendChild(createSheetRow('追加IPv4アドレス', createDeviceIpEditor({
+        compact: true, expanded: ipsExpanded,
+        getDevice: () => getDeviceDraft('sheet', activeLedgerDeviceId),
+        canEdit: () => activeLedgerDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+            !hasResourceConflict('devices', activeLedgerDeviceId),
+        onChange: () => eventBus.emit('device-drafts:changed')
+    })));
+    const deviceIdLabel = document.createElement('span');
+    deviceIdLabel.className = 'form-support';
+    deviceIdLabel.textContent = `機器ID: ${device.id}`;
+    panels[0].appendChild(createSheetSection('基本情報・IPアドレス', basicTable, deviceIdLabel));
 
     // ② 設置・配置情報セクション
-    const placeTable = document.createElement('table');
+    const placeTable = document.createElement('div');
     placeTable.className = 'ledger-sheet-table';
     placeTable.appendChild(createSheetRow('施設名', createSheetInput('facility', 100)));
     placeTable.appendChild(createSheetRow('フロア', createSheetInput('floor', 50)));
     placeTable.appendChild(createSheetRow('設置場所詳細', createSheetInput('location', 150)));
 
-    const destinations = getDeviceDestinations(device.id, appState.placements, getRackDeviceMounts(appState), appState.views);
     const viewsWrap = document.createElement('div');
     viewsWrap.className = 'ledger-sheet-view-pills';
     if (destinations.length === 0) {
         viewsWrap.innerHTML = '<span class="form-support">未配置（どのビューにも配置されていません）</span>';
     } else {
         destinations.forEach(item => {
-            const pill = document.createElement(item.kind === 'rack' ? 'button' : 'span');
+            const pill = document.createElement('button');
             pill.className = 'ledger-sheet-view-pill';
             pill.textContent = item.view.name;
+            pill.type = 'button';
+            pill.title = [item.view.facility, item.view.floor, 'クリックしてこのビューで表示'].filter(Boolean).join(' / ');
+            pill.setAttribute('aria-label', `${item.view.name}でこの機器を表示`);
+            pill.addEventListener('click', () => showLedgerDestination(Number(device.id), Number(item.view.id)));
             if (item.kind === 'rack') {
                 pill.type = 'button';
                 const mount = item.mount;
@@ -2318,30 +2456,26 @@ export function renderLedgerDeviceSheet(device) {
                 pill.title = [item.view.facility, item.view.floor,
                     (appState.rackSettings || []).find(row => Number(row.view_id) === Number(item.view.id))?.location,
                     '搭載しても台帳の施設・フロア・設置場所は変更しません'].filter(Boolean).join(' / ');
-                pill.addEventListener('click', async () => {
-                    if (!await closeLedger()) return;
-                    eventBus.emit('rack:show-device', { deviceId: Number(device.id), viewId: Number(item.view.id) });
-                });
             }
             viewsWrap.appendChild(pill);
         });
     }
     placeTable.appendChild(createSheetRow('配置済みビュー', viewsWrap));
-    body.appendChild(createSheetSection('設置・配置情報', placeTable));
+    panels[0].appendChild(createSheetSection('設置・配置情報', placeTable));
 
     // ③ 資産情報セクション
-    const assetTable = document.createElement('table');
-    assetTable.className = 'ledger-sheet-table';
+    const assetTable = document.createElement('div');
+    assetTable.className = 'ledger-sheet-table ledger-sheet-asset-fields';
     assetTable.appendChild(createSheetRow('メーカー', createSheetInput('manufacturer', 100)));
     assetTable.appendChild(createSheetRow('型番', createSheetInput('model', 100)));
     assetTable.appendChild(createSheetRow('管理番号', createSheetInput('asset_number', 100)));
     assetTable.appendChild(createSheetRow('シリアル番号', createSheetInput('serial_number', 100)));
     assetTable.appendChild(createSheetRow('MACアドレス', createSheetInput('mac_address', 50)));
     assetTable.appendChild(createSheetRow('導入年月', createSheetInput('install_date', 10)));
-    body.appendChild(createSheetSection('資産情報', assetTable));
+    panels[0].appendChild(createSheetSection('機器・資産情報', assetTable));
 
     // ④ 管理・保守情報セクション
-    const maintTable = document.createElement('table');
+    const maintTable = document.createElement('div');
     maintTable.className = 'ledger-sheet-table';
     maintTable.appendChild(createSheetRow('担当部署', createSheetInput('department', 100)));
     maintTable.appendChild(createSheetRow('保守ベンダー', createSheetInput('maintenance_vendor', 100)));
@@ -2374,10 +2508,12 @@ export function renderLedgerDeviceSheet(device) {
     portInput.readOnly = !isAdmin;
     bindSheetDraftInput(portInput, 'management_port');
     maintTable.appendChild(createSheetRow('接続ポート', portInput));
-    body.appendChild(createSheetSection('管理・保守情報', maintTable));
+    const maintenanceSection = createSheetSection('管理・保守情報', maintTable);
+    maintenanceSection.classList.add('ledger-sheet-maintenance');
+    panels[1].appendChild(maintenanceSection);
 
     // ⑤ 監視・Ping疎通セクション
-    const monTable = document.createElement('table');
+    const monTable = document.createElement('div');
     monTable.className = 'ledger-sheet-table';
     const statusPill = document.createElement('span');
     const normStatus = normalizeStatus(device.status);
@@ -2401,11 +2537,10 @@ export function renderLedgerDeviceSheet(device) {
     pingHelpButton.setAttribute('aria-haspopup', 'dialog');
     pingHelpButton.setAttribute('aria-controls', 'ping-help-dialog');
     pingHelpButton.addEventListener('click', openPingHelpDialog);
-    monTable.appendChild(createSheetRow('結果の見方', pingHelpButton));
-    body.appendChild(createSheetSection('監視・疎通状態', monTable));
+    panels[1].appendChild(createSheetSection('監視・疎通状態', monTable, pingHelpButton));
 
     // ⑥ 備考セクション
-    const memoTable = document.createElement('table');
+    const memoTable = document.createElement('div');
     memoTable.className = 'ledger-sheet-table';
     const memoTextarea = document.createElement('textarea');
     memoTextarea.dataset.field = 'memo';
@@ -2421,67 +2556,43 @@ export function renderLedgerDeviceSheet(device) {
     }
     bindSheetDraftInput(memoTextarea, 'memo');
     memoTable.appendChild(createSheetRow('備考内容', memoTextarea));
-    body.appendChild(createSheetSection('備考', memoTable));
+    panels[1].appendChild(createSheetSection('備考', memoTable));
 
     // ⑦ 登録画像セクション
     const images = (appState.deviceImages || [])
         .filter(img => Number(img.device_id) === Number(device.id))
         .sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
 
-    const imgHeaderRight = document.createElement('div');
-    imgHeaderRight.style.display = 'inline-flex';
-    imgHeaderRight.style.alignItems = 'center';
-    imgHeaderRight.style.gap = '8px';
-
-    const countBadge = document.createElement('span');
-    countBadge.className = 'ledger-sheet-badge';
-    countBadge.textContent = `${images.length}/3枚`;
-    imgHeaderRight.appendChild(countBadge);
-
-    if (isAdmin) {
-        const addImgBtn = document.createElement('button');
-        addImgBtn.id = 'ledger-sheet-image-add-btn';
-        addImgBtn.type = 'button';
-        addImgBtn.className = 'btn btn-primary btn-sm ledger-sheet-image-add-btn';
-        addImgBtn.textContent = '画像を登録';
-        const reason = getDeviceImageBlockReason(device.id);
-        addImgBtn.disabled = Boolean(reason) || images.length >= 3;
-        addImgBtn.title = reason || (images.length >= 3 ? '登録できる画像は最大3枚までです' : '画像ファイルを選択して登録');
-        addImgBtn.addEventListener('click', e => {
-            e.stopPropagation();
-            triggerSheetImageUpload();
-        });
-        imgHeaderRight.appendChild(addImgBtn);
-    }
+    const imageBlockReason = !isAdmin ? '閲覧専用のため画像を登録できません' : getDeviceImageBlockReason(device.id);
 
     const imagesWrap = document.createElement('div');
     const imageSupport = document.createElement('p');
-    imageSupport.className = 'form-support';
+    imageSupport.className = 'form-support ledger-sheet-image-support';
     const imageCapacity = window.APP_CONFIG?.capacity;
     const maxImageMiB = Math.floor((Number(imageCapacity?.deviceImageMaxBytes) || 10 * 1024 * 1024) / (1024 * 1024));
     const maxImageWidth = Number(imageCapacity?.deviceImageMaxWidth) || 4000;
     const maxImageHeight = Number(imageCapacity?.deviceImageMaxHeight) || 4000;
     const textSpan = document.createElement('span');
-    textSpan.textContent = `PNGまたはJPEG、入力は${maxImageMiB}MiB以下・最大${maxImageWidth}×${maxImageHeight}px。詳細は`;
+    textSpan.className = 'ledger-sheet-image-limits';
+    textSpan.textContent = `PNGまたはJPEG／最大${maxImageMiB}MiB／最大${maxImageWidth}×${maxImageHeight}px`;
+    const helpLine = document.createElement('span');
+    helpLine.className = 'ledger-sheet-image-help';
+    const helpIntro = document.createElement('span');
+    helpIntro.textContent = '画像の登録・操作方法は';
     const helpLink = document.createElement('a');
-    helpLink.href = 'help.html#devices';
+    helpLink.href = 'help-devices.html#devices';
     helpLink.target = '_blank';
     helpLink.rel = 'noopener';
     helpLink.textContent = 'ヘルプ';
     const textAfter = document.createElement('span');
     textAfter.textContent = 'を参照してください。';
     imageSupport.appendChild(textSpan);
-    imageSupport.appendChild(helpLink);
-    imageSupport.appendChild(textAfter);
-    imagesWrap.appendChild(imageSupport);
-    if (images.length === 0) {
-        const emptyEl = document.createElement('div');
-        emptyEl.className = 'ledger-sheet-images-empty';
-        emptyEl.textContent = '登録されている画像はありません。';
-        imagesWrap.appendChild(emptyEl);
-    } else {
-        const grid = document.createElement('div');
-        grid.className = 'ledger-sheet-images-grid';
+    helpLine.appendChild(helpIntro);
+    helpLine.appendChild(helpLink);
+    helpLine.appendChild(textAfter);
+    imageSupport.appendChild(helpLine);
+    const grid = document.createElement('div');
+    grid.className = 'ledger-sheet-images-grid';
 
         images.forEach((img, idx) => {
             const card = document.createElement('div');
@@ -2535,12 +2646,29 @@ export function renderLedgerDeviceSheet(device) {
             if (isAdmin) {
                 const actionsWrap = document.createElement('div');
                 actionsWrap.className = 'ledger-sheet-image-actions';
+                for (const [offset, label] of [[-1, '前へ'], [1, '次へ']]) {
+                    if (!images[idx + offset]) continue;
+                    const move = document.createElement('button');
+                    move.type = 'button';
+                    move.className = 'btn btn-secondary btn-sm ledger-sheet-image-move ledger-sheet-image-icon-action';
+                    move.textContent = offset < 0 ? '←' : '→';
+                    move.setAttribute('aria-label', `画像${idx + 1}を${label}移動`);
+                    move.title = `画像${idx + 1}を${label}移動`;
+                    move.disabled = Boolean(imageBlockReason);
+                    move.addEventListener('click', () => {
+                        const reordered = [...images];
+                        [reordered[idx], reordered[idx + offset]] = [reordered[idx + offset], reordered[idx]];
+                        reorderDeviceImages(Number(device.id), reordered);
+                    });
+                    actionsWrap.appendChild(move);
+                }
 
                 const replaceBtn = document.createElement('button');
                 replaceBtn.type = 'button';
-                replaceBtn.className = 'btn btn-secondary btn-sm';
+                replaceBtn.className = 'btn btn-secondary btn-sm ledger-sheet-image-replace';
                 replaceBtn.textContent = '差替え';
                 replaceBtn.title = '別の画像に差替えます';
+                replaceBtn.disabled = Boolean(imageBlockReason);
                 replaceBtn.addEventListener('click', () => {
                     triggerSheetImageUpload(Number(img.id));
                 });
@@ -2548,8 +2676,9 @@ export function renderLedgerDeviceSheet(device) {
 
                 const deleteBtn = document.createElement('button');
                 deleteBtn.type = 'button';
-                deleteBtn.className = 'btn btn-secondary btn-sm btn-danger';
-                deleteBtn.textContent = '削除';
+                deleteBtn.className = 'btn btn-secondary btn-sm btn-danger ledger-sheet-image-delete ledger-sheet-image-icon-action';
+                deleteBtn.setAttribute('aria-label', `画像${idx + 1}を削除`);
+                deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
                 deleteBtn.title = 'この画像を削除します';
                 deleteBtn.addEventListener('click', () => {
                     deleteSheetDeviceImage(Number(device.id), Number(img.id));
@@ -2561,13 +2690,37 @@ export function renderLedgerDeviceSheet(device) {
 
             grid.appendChild(card);
         });
-
-        imagesWrap.appendChild(grid);
+    for (let index = images.length; index < 3; index++) {
+        const slot = document.createElement('div');
+        slot.className = 'ledger-sheet-image-card ledger-sheet-image-empty';
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'ledger-sheet-image-slot-add';
+        add.textContent = '＋ 画像を追加';
+        add.setAttribute('aria-label', `画像枠${index + 1}に画像を追加`);
+        add.disabled = Boolean(imageBlockReason);
+        add.title = imageBlockReason || '画像ファイルを選択して登録';
+        add.addEventListener('click', () => triggerSheetImageUpload());
+        slot.appendChild(add);
+        const reason = document.createElement('span');
+        reason.className = 'form-support ledger-sheet-image-block-reason';
+        reason.textContent = imageBlockReason;
+        reason.hidden = !imageBlockReason;
+        slot.appendChild(reason);
+        grid.appendChild(slot);
     }
+    imagesWrap.appendChild(grid);
 
-    body.appendChild(createSheetSection('登録画像', imagesWrap, imgHeaderRight));
-    if (hasDeviceDraftChanges('sheet', device.id)) showSheetFieldErrors(validateDeviceValues(device, appState.devices).errors);
-    if (focusedField) {
+    imagesWrap.appendChild(imageSupport);
+    panels[0].appendChild(createSheetSection('登録画像', imagesWrap));
+    if (hasDeviceDraftChanges('sheet', device.id)) showSheetFieldErrors(validateDeviceValues(device).errors);
+    if (focusedIpIndex !== undefined) {
+        const input = body.querySelector(`[data-ip-index="${focusedIpIndex}"][data-ip-field="${focusedIpField}"]`);
+        if (input) {
+            input.focus();
+            if (selectionStart !== null) input.setSelectionRange(selectionStart, selectionEnd);
+        }
+    } else if (focusedField) {
         const input = body.querySelector(`[data-field="${focusedField}"]`);
         if (input) {
             input.focus();
@@ -2586,9 +2739,23 @@ export function renderLedgerDeviceSheet(device) {
     }
 }
 
-export async function focusActiveDeviceOnCanvas() {
-    if (!activeLedgerDeviceId) return;
-    await selectDeviceFromLedger(activeLedgerDeviceId);
+async function showLedgerDestination(deviceId, viewId) {
+    if (!await confirmSheetNavigation({ saveBeforeLeaving: true }) || !commitLedgerDrafts()) return;
+    const destination = getDeviceDestinations(deviceId, appState.placements, getRackDeviceMounts(appState), appState.views)
+        .find(item => Number(item.view.id) === viewId);
+    if (!destination) return;
+    const { switchView } = await import('./view-manager-modal.js');
+    if (!await switchView(viewId) || Number(appState.currentViewId) !== viewId) {
+        if (activeLedgerDeviceId === deviceId) renderLedgerDeviceSheet(getDeviceById(deviceId));
+        return;
+    }
+    if (!await closeLedger()) return;
+    if (destination.kind === 'rack') {
+        const { showRackDevice } = await import('../canvas/rack-view.js');
+        await showRackDevice({ deviceId, viewId });
+    } else {
+        await focusDevicePlacement(getDeviceById(deviceId), destination.placement);
+    }
 }
 
 export async function manageActiveDevicePlacements() {
@@ -2596,6 +2763,40 @@ export async function manageActiveDevicePlacements() {
     if (!activeLedgerDeviceId) return;
     if (!await confirmSheetNavigation()) return;
     await openPlacementManager(activeLedgerDeviceId);
+}
+
+async function openActiveDeviceRecordPanel(openPanel, label) {
+    if (!requireAdminUiAction()) return false;
+    if (!isConfirmedLedgerDevice(activeLedgerDeviceId)) {
+        showToast(`保存が完了してから${label}を表示できます`, 'warning');
+        return false;
+    }
+    const targetDeviceId = Number(activeLedgerDeviceId);
+    const hadDraft = hasDeviceDraftChanges('sheet', targetDeviceId);
+    if (!await confirmSheetNavigation({ saveBeforeLeaving: true })) return false;
+    await waitForActiveResourceSave();
+    if (Number(activeLedgerDeviceId) !== targetDeviceId) return false;
+    if (appState.authExpired || hasResourceConflict('devices', targetDeviceId) ||
+        hasResourceChanges('devices', targetDeviceId) || hasDeviceDraftChanges('sheet', targetDeviceId)) {
+        showToast('機器の保存が完了していません。個票で保存状態を確認してください', 'warning');
+        return false;
+    }
+    const latestDevice = getDeviceById(targetDeviceId);
+    if (!isConfirmedLedgerDevice(latestDevice?.id)) return false;
+    if (hadDraft && !hasDeviceDraftChanges('sheet', latestDevice.id)) {
+        renderLedgerDeviceSheet(latestDevice);
+    }
+    return openPanel(latestDevice);
+}
+
+export async function openActiveDeviceHistory() {
+    return openActiveDeviceRecordPanel(device => openChangeHistory({
+        targetType: 'device', targetId: Number(device.id), targetName: device.name || ''
+    }), '変更履歴');
+}
+
+export async function openActiveDeviceConfig() {
+    return openActiveDeviceRecordPanel(openDeviceConfig, 'Config');
 }
 
 export function openLedgerPlaceViewModal() {
@@ -2708,7 +2909,6 @@ export async function confirmPlaceDevicesToView() {
 if (typeof window !== 'undefined') {
     window.navigateLedgerDevice = navigateLedgerDevice;
     window.closeLedgerDetailPane = closeLedgerDetailPane;
-    window.focusActiveDeviceOnCanvas = focusActiveDeviceOnCanvas;
     window.manageActiveDevicePlacements = manageActiveDevicePlacements;
     window.openLedgerPlaceViewModal = openLedgerPlaceViewModal;
     window.closeLedgerPlaceViewModal = closeLedgerPlaceViewModal;

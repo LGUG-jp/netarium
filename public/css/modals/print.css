@@ -4,7 +4,10 @@
     padding-top: var(--space-2);
 }
 
-.print-dialog { width: min(1280px, 100%); height: calc(100vh - 48px); }
+/* 印刷プレビューは従来の中央配置と編集面積を維持する。 */
+#print-overlay { place-items: center; padding: var(--space-3); }
+
+.print-dialog { width: min(1280px, 100%); height: calc(100dvh - 48px); max-height: calc(100dvh - 24px); }
 .print-dialog .placement-manager-footer { justify-content: flex-end; flex-wrap: wrap; }
 .print-workspace {
     display: grid;

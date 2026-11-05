@@ -171,7 +171,7 @@ test('開始は一覧を閉じて補助パネルを開き、固定OFFでは1本�
     assert.equal(dom.get('wiring-source-fixed').checked, false);
     assert.equal(panel().querySelector('select'), null);
     const help = panel().querySelector('a');
-    assert.match(help.getAttribute('href'), /help\.html#connections$/);
+    assert.match(help.getAttribute('href'), /help-canvas\.html#connections$/);
     assert.equal(help.getAttribute('target'), '_blank');
     const source = sourceElement(1);
     assert.equal(source.tabIndex, 0);
