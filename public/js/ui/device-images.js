@@ -345,6 +345,7 @@ export async function reorderDeviceImages(deviceId, newImages) {
         appState.dataRevision = Number(data.revision);
         replaceDeviceImagesInState(deviceId, data.images);
         renderDeviceImages(deviceId);
+        eventBus.emit('device-images:changed', deviceId);
 
     } catch (err) {
         showToast(err.message, 'error');

@@ -156,9 +156,10 @@ class PingTest extends TestCase
         \Netarium\Core\Database::initialize($db);
         $externalDb = new PDO('sqlite:' . $dbPath);
 
-        // Seed 1 device, monitor status, and app_meta
-        $db->exec("INSERT INTO devices (id, name, type, ip) VALUES (1, 'テスト機器', 'server', '10.0.0.1')");
-        $db->exec("INSERT INTO device_monitor_status (device_id, status) VALUES (1, 'unknown')");
+        // 重複によるスキップと通常Pingが混在しても、409では全件を反映しない。
+        $db->exec("INSERT INTO devices (id, name, type, ip) VALUES (1, 'テスト機器', 'server', '10.0.0.1'), (2, '重複対象', 'server', '10.0.0.2'), (3, '未選択の重複元', 'server', '10.0.0.2')");
+        $db->exec("INSERT INTO device_monitor_status (device_id, status) VALUES (1, 'unknown'), (2, 'green'), (3, 'green')");
+        $before = $db->query("SELECT * FROM device_monitor_status ORDER BY device_id")->fetchAll(PDO::FETCH_ASSOC);
         $db->exec("INSERT OR REPLACE INTO app_meta (meta_key, meta_value) VALUES ('data_revision', '1'), ('monitor_revision', '1')");
 
         $subclass = new class($db, $externalDb) extends PingService {
@@ -177,16 +178,13 @@ class PingTest extends TestCase
 
         $config = Config::create();
         try {
-            $subclass->executePing([['id' => 1, 'ip' => '10.0.0.1']], 1, $config);
+            $subclass->executePing([['id' => 2], ['id' => 1, 'ip' => '10.0.0.1']], 1, $config);
             $this->fail('executePing must fail with 409 when data_revision changed during execution');
         } catch (ApiException $e) {
             $this->assertSame(409, $e->getHttpStatus());
         }
 
-        // Verify device 1 status was NOT updated to 'red' in DB
-        $stmt = $db->query("SELECT status FROM device_monitor_status WHERE device_id = 1");
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        $this->assertSame('unknown', $row['status']);
+        $this->assertSame($before, $db->query("SELECT * FROM device_monitor_status ORDER BY device_id")->fetchAll(PDO::FETCH_ASSOC));
 
         // Verify monitor_revision was NOT incremented
         $metaStmt = $db->query("SELECT meta_value FROM app_meta WHERE meta_key = 'monitor_revision'");
@@ -337,6 +335,147 @@ class PingTest extends TestCase
         $this->assertSame(['green', 'red', 'red', 'unknown', 'unknown', 'unknown'], $storedStatuses);
         $this->assertSame($before, $db->query("SELECT * FROM device_monitor_status WHERE device_id = 7")->fetch(PDO::FETCH_ASSOC));
         $this->assertSame(6, (int)$db->query("SELECT COUNT(*) FROM device_monitor_status WHERE device_id <> 7")->fetchColumn());
+    }
+
+    public function testReachabilityPolicyCoversAllStatesAndManagementAdditionalPairs(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        foreach (['unset', 'reachable', 'unreachable'] as $a) {
+            foreach (['unset', 'reachable', 'unreachable', null] as $b) {
+                foreach ([false, true] as $additional) {
+                    $db = new PDO('sqlite::memory:');
+                    \Netarium\Core\Database::initialize($db);
+                    $space = $db->prepare('INSERT INTO address_spaces (id, name, ping_reachability) VALUES (?, ?, ?)');
+                    $space->execute([1, 'A', $a]);
+                    $space->execute([2, 'B', $b ?? 'unset']);
+                    $db->exec("INSERT INTO ip_segments (id, address_space_id, cidr) VALUES (1, 1, '10.0.0.0/24'), (2, 2, '10.0.0.0/24')");
+                    $insert = $db->prepare("INSERT INTO devices (id, name, type, ip, ip_segment_id) VALUES (?, ?, 'server', ?, ?)");
+                    $insert->execute([1, 'A', '10.0.0.1', 1]);
+                    $insert->execute([2, 'B', $additional ? '10.0.0.2' : '10.0.0.1', $b === null ? null : 2]);
+                    $insert->execute([3, 'unrelated', '10.0.0.3', null]);
+                    if ($additional) {
+                        $db->prepare("INSERT INTO device_ip_addresses (device_id, ip, segment_id) VALUES (2, '10.0.0.1', ?)")->execute([$b === null ? null : 2]);
+                    }
+                    $db->exec("INSERT INTO device_monitor_status (device_id, status, last_response_ms) VALUES (1, 'green', 10), (2, 'red', 20), (3, 'green', 30)");
+                    $before = $db->query('SELECT * FROM device_monitor_status WHERE device_id IN (2,3) ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC);
+                    $service = new class($db) extends PingService {
+                        public array $calls = [];
+                        public function pingHost(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
+                            $this->calls[] = $ip;
+                            return ['status' => 'green', 'outcome' => 'success', 'response_ms' => 2, 'error' => null];
+                        }
+                    };
+                    $revision = (new \Netarium\Repositories\AppMetaRepository($db))->getDataRevision();
+                    $result = $service->executePing([['id' => 1]], $revision, Config::create());
+                    $allowed = $a === 'reachable' && $b === 'unreachable';
+                    $this->assertSame($allowed ? ['10.0.0.1'] : [], $service->calls);
+                    $this->assertSame($allowed ? 'success' : 'skipped', $result['results'][0]['outcome']);
+                    $this->assertSame($allowed ? 2 : null, $result['results'][0]['response_ms']);
+                    $this->assertSame($before, $db->query('SELECT * FROM device_monitor_status WHERE device_id IN (2,3) ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC));
+                    if (!$allowed) { $this->assertTrue($result['results'][0]['error'] !== ''); }
+                    $policy = \Netarium\Services\Monitoring\PingReachabilityPolicy::decisions(
+                        (new \Netarium\Repositories\DeviceIpAddressRepository($db))->getIpRecords(),
+                        $db->query('SELECT * FROM address_spaces')->fetchAll(PDO::FETCH_ASSOC)
+                    );
+                    $expectedReason = $a === 'unreachable' ? 'unreachable'
+                        : ($a === 'reachable' && $b === 'reachable' ? 'multiple_reachable'
+                        : (($a === 'reachable' && ($b === 'unset' || $b === null)) || ($a === 'unset' && $b === 'reachable') ? 'unresolved'
+                        : ($allowed ? null : 'duplicate')));
+                    $this->assertSame($expectedReason, $policy[1]['reason_code']);
+                    $this->assertCount(2, $policy[1]['records']);
+                    // Reverse selection also protects management-vs-additional conflicts.
+                    $other = $service->executePing([['id' => 2]], $revision, Config::create());
+                    $otherAllowed = $b !== 'unreachable' && ($additional || ($b === 'reachable' && $a === 'unreachable'));
+                    $this->assertSame($otherAllowed ? 'success' : 'skipped', $other['results'][0]['outcome']);
+                }
+            }
+        }
+    }
+
+    public function testUniqueReachabilityDefaultsAndSameDeviceRegistrations(): void
+    {
+        $record = ['device_id' => 1, 'device_name' => 'A', 'kind' => 'management', 'ip' => '10.0.0.1',
+            'segment_id' => 1, 'address_space_id' => 1];
+        foreach (['unset', 'reachable', 'unreachable'] as $state) {
+            $spaces = [['id' => 1, 'name' => 'A', 'ping_reachability' => $state]];
+            $policy = \Netarium\Services\Monitoring\PingReachabilityPolicy::decisions([$record], $spaces);
+            $this->assertSame($state !== 'unreachable', $policy[1]['allowed']);
+            $sameDevice = $record;
+            $sameDevice['kind'] = 'additional';
+            $sameDevice['address_space_id'] = null;
+            $policy = \Netarium\Services\Monitoring\PingReachabilityPolicy::decisions([$record, $sameDevice], $spaces);
+            $this->assertSame($state !== 'unreachable', $policy[1]['allowed']);
+        }
+        $record['address_space_id'] = null;
+        $policy = \Netarium\Services\Monitoring\PingReachabilityPolicy::decisions([$record], []);
+        $this->assertTrue($policy[1]['allowed']);
+        $this->assertSame('unset', $policy[1]['records'][0]['ping_reachability']);
+    }
+
+    public function testDuplicateManagementIpsAreSkippedAcrossAllRegisteredAddresses(): void
+    {
+        $cases = [
+            // master設定なし／未分類、別空間、分類済み対未分類、他機器の追加IP。
+            [null, null, false, false],
+            [null, null, false, true],
+            [1, 2, false, true],
+            [1, null, false, false],
+            [null, null, true, false],
+            [1, 2, true, true],
+        ];
+        foreach ($cases as [$firstSegment, $otherSegment, $additional, $selectOther]) {
+            $db = new PDO('sqlite::memory:');
+            \Netarium\Core\Database::initialize($db);
+            if ($firstSegment !== null) {
+                $db->exec("INSERT INTO address_spaces (id, name) VALUES (1, 'A'), (2, 'B')");
+                $db->exec("INSERT INTO ip_segments (id, address_space_id, cidr) VALUES (1, 1, '10.0.0.0/24'), (2, 2, '10.0.0.0/24')");
+            }
+            $insert = $db->prepare("INSERT INTO devices (id, name, type, ip, ip_segment_id) VALUES (?, ?, 'server', ?, ?)");
+            $insert->execute([1, '重複対象', '10.0.0.1', $firstSegment]);
+            $insert->execute([2, '重複元', $additional ? '10.0.0.2' : '10.0.0.1', $otherSegment]);
+            $insert->execute([3, '未分類の一意IP', '10.0.0.3', null]);
+            $insert->execute([4, '一意IP', '10.0.0.4', $firstSegment]);
+            if ($additional) {
+                $db->prepare("INSERT INTO device_ip_addresses (device_id, ip, segment_id) VALUES (2, '10.0.0.1', ?)")->execute([$otherSegment]);
+            }
+            $db->exec("INSERT INTO device_monitor_status (device_id, status, last_checked_at, last_response_ms) VALUES (1, 'green', '2020-01-01 00:00:00', 5), (2, 'green', '2020-01-01 00:00:00', 6)");
+            $db->exec("INSERT OR REPLACE INTO app_meta (meta_key, meta_value) VALUES ('data_revision', '1'), ('monitor_revision', '1')");
+            $service = new class($db) extends PingService {
+                public array $calledIps = [];
+                public function pingHost(string $ip, int $timeoutMs, bool $restrictPrivateOnly): array {
+                    $this->calledIps[] = $ip;
+                    return ['status' => 'green', 'outcome' => 'success', 'response_ms' => 2, 'error' => null];
+                }
+            };
+            $otherBefore = $db->query("SELECT * FROM device_monitor_status WHERE device_id = 2")->fetch(PDO::FETCH_ASSOC);
+            $ids = $selectOther ? [1, 2, 3, 4] : [1, 3, 4];
+            $result = $service->executePing(array_map(static fn(int $id): array => ['id' => $id], $ids), 1, Config::create());
+            $expectedCalls = $selectOther && $additional ? ['10.0.0.2', '10.0.0.3', '10.0.0.4'] : ['10.0.0.3', '10.0.0.4'];
+            $this->assertSame($expectedCalls, $service->calledIps);
+            $this->assertSame($ids, array_column($result['results'], 'id'));
+            foreach ($result['results'] as $row) {
+                $duplicate = $row['id'] === 1 || ($row['id'] === 2 && !$additional);
+                $this->assertSame($duplicate ? 'skipped' : 'success', $row['outcome']);
+                $this->assertSame($duplicate ? 'unknown' : 'green', $row['status']);
+                $this->assertSame($duplicate ? null : 2, $row['response_ms']);
+                $stored = $db->query("SELECT status, last_checked_at, last_response_ms, last_error FROM device_monitor_status WHERE device_id = " . $row['id'])->fetch(PDO::FETCH_ASSOC);
+                $this->assertSame([$row['status'], $row['checked_at'], $row['response_ms'], $row['error']], array_values($stored));
+            }
+            $this->assertSame($selectOther && !$additional ? 2 : 1, $result['summary']['skipped']);
+            $this->assertSame(count($expectedCalls), $result['summary']['success']);
+            $this->assertSame(2, $result['monitor_revision']);
+            if (!$selectOther) {
+                $this->assertSame($otherBefore, $db->query("SELECT * FROM device_monitor_status WHERE device_id = 2")->fetch(PDO::FETCH_ASSOC));
+            }
+
+            // 次の要求では正本を再確認し、重複解消後の管理IPは実行できる。
+            $db->exec("UPDATE devices SET ip = '10.0.0.2' WHERE id = 2");
+            $db->exec("DELETE FROM device_ip_addresses");
+            $db->exec("UPDATE app_meta SET meta_value = '2' WHERE meta_key = 'data_revision'");
+            $resolved = $service->executePing([['id' => 1]], 2, Config::create());
+            $this->assertSame('success', $resolved['results'][0]['outcome']);
+            $this->assertSame('10.0.0.1', $service->calledIps[count($service->calledIps) - 1]);
+        }
     }
 
     public function testPingHundredTargetLimitHasNoSideEffectsOnRejection(): void

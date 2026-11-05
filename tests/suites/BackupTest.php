@@ -318,7 +318,10 @@ class BackupTest extends TestCase
             foreach (['views' => 'views', 'devices' => 'devices', 'placements' => 'device_placements',
                 'links' => 'links', 'link_systems' => 'link_systems', 'canvas_notes' => 'canvas_notes',
                 'floor_plans' => 'view_floor_plans', 'device_images' => 'device_images',
-                'rack_settings' => 'rack_settings', 'rack_mounts' => 'rack_mounts'] as $key => $table) {
+                'rack_settings' => 'rack_settings', 'rack_mounts' => 'rack_mounts',
+                'device_ip_addresses' => 'device_ip_addresses', 'address_spaces' => 'address_spaces',
+                'ip_segments' => 'ip_segments', 'change_history' => 'change_history',
+                'device_configs' => 'device_configs', 'device_config_states' => 'device_config_states'] as $key => $table) {
                 if (isset($manifest['summary'][$key]) && is_array($document['tables'][$table] ?? null)) {
                     $manifest['summary'][$key] = count($document['tables'][$table]);
                 }
@@ -339,6 +342,327 @@ class BackupTest extends TestCase
             $zip->addFromString('manifest.json', json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         } finally {
             $zip->close();
+        }
+    }
+
+    private static function removeIpManagementContract(array &$doc, array &$manifest): void
+    {
+        self::removeChangeHistoryContract($doc, $manifest);
+        unset($manifest['summary']['address_spaces'], $manifest['summary']['ip_segments'],
+            $doc['tables']['address_spaces'], $doc['tables']['ip_segments']);
+        foreach ($doc['tables']['devices'] as &$row) { unset($row['ip_segment_id']); }
+        unset($row);
+        foreach ($doc['tables']['device_ip_addresses'] ?? [] as $index => $row) {
+            unset($doc['tables']['device_ip_addresses'][$index]['segment_id']);
+        }
+    }
+
+    private static function removeChangeHistoryContract(array &$doc, array &$manifest): void
+    {
+        foreach ($doc['tables']['address_spaces'] ?? [] as $index => $space) {
+            unset($doc['tables']['address_spaces'][$index]['ping_reachability']);
+        }
+        unset($manifest['summary']['device_configs'], $manifest['summary']['device_config_states'],
+            $doc['tables']['device_configs'], $doc['tables']['device_config_states']);
+        unset($manifest['summary']['change_history'], $doc['tables']['change_history']);
+    }
+
+    public function testReachabilityMigrationAndWebBackupCompatibility(): void
+    {
+        $db = new \PDO('sqlite::memory:', null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        for ($v = 1; $v <= 20; $v++) { ('migrateDatabaseToVersion' . $v)($db); }
+        $db->exec("INSERT INTO address_spaces (id,name,memo) VALUES (1,'Legacy','keep')");
+        migrateDatabase($db);
+        $this->assertSame('unset', $db->query('SELECT ping_reachability FROM address_spaces')->fetchColumn());
+        $this->assertSame('keep', $db->query('SELECT memo FROM address_spaces')->fetchColumn());
+        try {
+            $db->exec("UPDATE address_spaces SET ping_reachability='invalid'");
+            $this->fail('The three-state database contract must reject unknown values');
+        } catch (\PDOException) {}
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $db->exec("INSERT INTO address_spaces (id,name,ping_reachability) VALUES (41,'A','reachable'),(42,'B','unreachable'),(43,'C','unset')");
+            $deviceId = (int)$db->query('SELECT id FROM devices ORDER BY id LIMIT 1')->fetchColumn();
+            $db->exec("INSERT INTO ip_segments(id,address_space_id,cidr) VALUES(51,42,'192.0.2.0/24')");
+            $db->prepare("UPDATE devices SET ip='192.0.2.10',ip_segment_id=51 WHERE id=?")->execute([$deviceId]);
+            $db->prepare("UPDATE device_monitor_status SET status='green',last_response_ms=8,last_error=NULL WHERE device_id=?")->execute([$deviceId]);
+            $archive = $path . '.reachability.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            $this->assertSame(['reachable','unreachable','unset'], $db->query('SELECT ping_reachability FROM address_spaces ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+            $restored = $db->query('SELECT * FROM device_monitor_status WHERE device_id=' . $deviceId)->fetch(\PDO::FETCH_ASSOC);
+            $this->assertSame('unknown', $restored['status']);
+            $this->assertNull($restored['last_response_ms']);
+            $this->assertStringContains('到達不可', $restored['last_error']);
+            foreach (['invalid', null] as $value) {
+                $bad = $archive . '.' . ($value ?? 'missing');
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($value): void {
+                    if ($value === null) { unset($doc['tables']['address_spaces'][0]['ping_reachability']); }
+                    else { $doc['tables']['address_spaces'][0]['ping_reachability'] = $value; }
+                });
+                $this->previewIdBackup($bad, 400);
+            }
+            $legacy = $archive . '.schema20';
+            copy($archive, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 20;
+                foreach ($doc['tables']['address_spaces'] as &$space) { unset($space['ping_reachability']); }
+                unset($space);
+            });
+            $this->commitIdBackup($this->previewIdBackup($legacy));
+            $this->assertSame(['unset','unset','unset'], $db->query('SELECT ping_reachability FROM address_spaces ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+        });
+    }
+
+    public function testIpManagementBackupRoundTripAndContractBoundaries(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $ids = $db->query('SELECT id FROM devices ORDER BY id LIMIT 2')->fetchAll(\PDO::FETCH_COLUMN);
+            $db->exec("INSERT INTO address_spaces(id,name,memo) VALUES(41,'本番','空間メモ'),(42,'隔離','')");
+            $db->exec("INSERT INTO ip_segments(id,address_space_id,cidr,name,purpose,facility,vlan_id,memo)
+                VALUES(51,41,'198.51.100.0/24','業務','用途','拠点',4094,'セグメントメモ'),
+                (52,42,'198.51.100.0/24','隔離','','',NULL,'')");
+            $stmt = $db->prepare("UPDATE devices SET ip='198.51.100.1',ip_segment_id=51 WHERE id=?");
+            foreach ($ids as $id) { $stmt->execute([$id]); }
+            $db->prepare("INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order,segment_id)
+                VALUES(71,?,'198.51.100.255',' ブロードキャスト ',4,51)")->execute([$ids[0]]);
+            $kept = [];
+            foreach (['address_spaces', 'ip_segments', 'device_ip_addresses'] as $table) {
+                $kept[$table] = $db->query("SELECT * FROM $table ORDER BY id")->fetchAll(\PDO::FETCH_ASSOC);
+            }
+            $archive = $path . '.ipam.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $db->exec('DELETE FROM device_ip_addresses; UPDATE devices SET ip_segment_id=NULL; DELETE FROM ip_segments; DELETE FROM address_spaces');
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            foreach ($kept as $table => $rows) {
+                $this->assertSame($rows, $db->query("SELECT * FROM $table ORDER BY id")->fetchAll(\PDO::FETCH_ASSOC));
+            }
+            $this->assertSame(2, (int)$db->query('SELECT COUNT(*) FROM devices WHERE ip_segment_id=51')->fetchColumn());
+            $before = $this->idBoundaryState($db);
+            foreach (['cidr', 'host-bits', 'overlap', 'space', 'segment', 'range', 'empty-ip', 'vlan', 'unknown', 'missing', 'duplicate-space', 'duplicate-segment', 'newer'] as $fault) {
+                $bad = $archive . '.' . $fault;
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    $segment = &$doc['tables']['ip_segments'][0];
+                    if ($fault === 'cidr') { $segment['cidr'] = '198.51.100.0/33'; }
+                    if ($fault === 'host-bits') { $segment['cidr'] = '198.51.100.1/24'; }
+                    if ($fault === 'overlap') { $doc['tables']['ip_segments'][1]['address_space_id'] = 41; }
+                    if ($fault === 'space') { $segment['address_space_id'] = 999999; }
+                    if ($fault === 'segment') { $doc['tables']['devices'][0]['ip_segment_id'] = 999999; }
+                    if ($fault === 'range') { $doc['tables']['device_ip_addresses'][0]['ip'] = '203.0.113.1'; }
+                    if ($fault === 'empty-ip') { $doc['tables']['devices'][0]['ip'] = ''; }
+                    if ($fault === 'vlan') { $segment['vlan_id'] = 4095; }
+                    if ($fault === 'unknown') { $segment['extra'] = ''; }
+                    if ($fault === 'missing') { unset($doc['tables']['devices'][0]['ip_segment_id']); }
+                    if ($fault === 'duplicate-space') { $doc['tables']['address_spaces'][] = $doc['tables']['address_spaces'][0]; }
+                    if ($fault === 'duplicate-segment') { $doc['tables']['ip_segments'][] = $segment; }
+                    if ($fault === 'newer') { $manifest['schema_version'] = APP_DATABASE_SCHEMA_VERSION + 1; }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $beforeLoad = $this->client->get('/api.php?action=load')->assertOk()->getJson();
+            foreach ([17, 18] as $schema) {
+                foreach (['legacy invalid IP', '2001:db8::1'] as $index => $invalidIp) {
+                    $bad = $archive . '.management-ip.' . $schema . '.' . $index;
+                    copy($archive, $bad);
+                    $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($schema, $invalidIp): void {
+                        $manifest['schema_version'] = $schema;
+                        self::removeChangeHistoryContract($doc, $manifest);
+                        if ($schema === 17) {
+                            self::removeIpManagementContract($doc, $manifest);
+                        } else {
+                            $doc['tables']['devices'][0]['ip_segment_id'] = null;
+                        }
+                        $doc['tables']['devices'][0]['ip'] = $invalidIp;
+                        $doc['tables']['devices'][0]['memo'] = '拒否時に反映してはいけない';
+                    });
+                    $result = $this->previewIdBackup($bad, 400);
+                    $this->assertFalse(isset($result['restore_token']));
+                    $this->assertStringContains('devices.ip', $result['error']);
+                    $this->assertStringContains('IPv4', $result['error']);
+                    $this->assertSame($before, $this->idBoundaryState($db));
+                    $this->assertSame($beforeLoad, $this->client->get('/api.php?action=load')->assertOk()->getJson());
+                }
+            }
+            $legacy = $archive . '.schema17';
+            copy($archive, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 17;
+                self::removeChangeHistoryContract($doc, $manifest);
+                self::removeIpManagementContract($doc, $manifest);
+                $doc['tables']['devices'][1]['ip'] = '';
+            });
+            $this->commitIdBackup($this->previewIdBackup($legacy));
+            $this->assertSame([], $db->query('SELECT * FROM address_spaces')->fetchAll());
+            $this->assertSame([], $db->query('SELECT * FROM ip_segments')->fetchAll());
+            $this->assertSame(0, (int)$db->query('SELECT COUNT(*) FROM devices WHERE ip_segment_id IS NOT NULL')->fetchColumn());
+            $this->assertSame(71, (int)$db->query('SELECT id FROM device_ip_addresses')->fetchColumn());
+            $this->assertSame(null, $db->query('SELECT segment_id FROM device_ip_addresses')->fetchColumn());
+            $this->assertSame('', $db->query('SELECT ip FROM devices ORDER BY id LIMIT 1 OFFSET 1')->fetchColumn());
+            $devices = $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $addresses = $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $current = $archive . '.schema18-roundtrip.zip';
+            file_put_contents($current, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $db->exec("DELETE FROM device_ip_addresses; UPDATE devices SET memo='復元前の変更'");
+            $this->commitIdBackup($this->previewIdBackup($current));
+            $restoredDevices = $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            foreach ($devices as $index => &$device) {
+                $this->assertTrue($restoredDevices[$index]['resource_revision'] > $device['resource_revision']);
+                $device['resource_revision'] = $restoredDevices[$index]['resource_revision'];
+            }
+            unset($device);
+            $this->assertSame($devices, $restoredDevices);
+            $this->assertSame($addresses, $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame([], $db->query('SELECT * FROM address_spaces')->fetchAll());
+            $this->assertSame([], $db->query('SELECT * FROM ip_segments')->fetchAll());
+        });
+    }
+
+    public function testChangeHistoryBackupRoundTripRetentionAndSchema18Migration(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $recentAt = gmdate('Y-m-d\TH:i:s\Z', time() - 5 * 86400);
+            $expiredAt = gmdate('Y-m-d\TH:i:s\Z', time() - 95 * 86400);
+            $changesJson = json_encode([
+                'source' => 'save_resources',
+                'items' => [['label' => '管理IP', 'before' => '192.0.2.10', 'after' => '192.0.2.11']],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            $ins = $db->prepare("INSERT INTO change_history (
+                id, event_id, request_id, occurred_at, actor_user_id, actor_name,
+                target_type, target_id, target_name, operation, summary, changes_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $ins->execute([10, 10, 'req-expired', $expiredAt, 1, 'admin', 'device', 1, '旧変更機器', 'update', '期限切れ変更', $changesJson]);
+            $ins->execute([25, 25, 'req-recent', $recentAt, 1, 'admin', 'device', 1, '直近変更機器', 'update', '管理IPを変更', $changesJson]);
+            $recentRow = $db->query('SELECT * FROM change_history WHERE id=25')->fetchAll(\PDO::FETCH_ASSOC);
+            $sourceHistory = $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+
+            $archive = $path . '.history19.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($archive) === true);
+            try {
+                $document = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+                $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+                $this->assertSame($recentRow, $document['tables']['change_history']);
+                $this->assertSame(1, $manifest['summary']['change_history']);
+            } finally {
+                $zip->close();
+            }
+            $this->assertSame($sourceHistory, $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $db->exec('DELETE FROM change_history');
+            $this->commitIdBackup($this->previewIdBackup($archive));
+
+            // 90日以内は保持し、復元自体の大量履歴は生成しない
+            $this->assertSame($recentRow, $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $seq = (int)$db->query("SELECT seq FROM sqlite_sequence WHERE name='change_history'")->fetchColumn();
+            $this->assertTrue($seq >= 25);
+
+            // 旧ZIPや保存後に期限を迎えた履歴も復元時に整理する。
+            $expiredArchive = $archive . '.expired';
+            copy($archive, $expiredArchive);
+            $this->rewriteBackupZip($expiredArchive, static function (array &$doc, array &$manifest) use ($sourceHistory): void {
+                $doc['tables']['change_history'] = $sourceHistory;
+            });
+            $this->commitIdBackup($this->previewIdBackup($expiredArchive));
+            $this->assertSame($recentRow, $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+
+            // スキーマ18 ZIPからの復元では空履歴へ移行
+            $schema18Zip = $archive . '.schema18';
+            copy($archive, $schema18Zip);
+            $this->rewriteBackupZip($schema18Zip, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 18;
+                self::removeChangeHistoryContract($doc, $manifest);
+            });
+            $this->commitIdBackup($this->previewIdBackup($schema18Zip));
+            $this->assertSame([], $db->query('SELECT * FROM change_history')->fetchAll(\PDO::FETCH_ASSOC));
+
+            // 不正なchange_historyデータの拒否
+            foreach (['bad-date', 'bad-type', 'bad-op', 'bad-json', 'extra-key', 'schema18-with-history'] as $fault) {
+                $bad = $archive . '.' . $fault;
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    $row = &$doc['tables']['change_history'][0];
+                    if ($fault === 'bad-date') { $row['occurred_at'] = '2026-10-30 12:00:00'; }
+                    if ($fault === 'bad-type') { $row['target_type'] = 'subnet'; }
+                    if ($fault === 'bad-op') { $row['operation'] = 'merge'; }
+                    if ($fault === 'bad-json') { $row['changes_json'] = '{"items":"invalid"}'; }
+                    if ($fault === 'extra-key') { $row['secret'] = 'x'; }
+                    if ($fault === 'schema18-with-history') {
+                        $manifest['schema_version'] = 18;
+                        unset($manifest['summary']['change_history']);
+                    }
+                });
+                $this->previewIdBackup($bad, 400);
+            }
+        });
+    }
+
+    public function testSchema17MigrationPreservesAdditionalIdsAndUnclassifiesAllRecords(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/DatabaseSchema.php';
+        $db = new \PDO('sqlite::memory:', null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+        $db->exec('PRAGMA foreign_keys=ON');
+        foreach (range(1, 17) as $version) { ('migrateDatabaseToVersion' . $version)($db); }
+        $db->exec("INSERT INTO devices(id,name,type,ip) VALUES(1,'旧機器','other','legacy invalid IP'),(2,'重複','other','198.51.100.1')");
+        $db->exec("INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order)
+            VALUES(71,1,'198.51.100.1','旧用途',4),(72,2,'203.0.113.1','',0)");
+        $devices = $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+        $addresses = $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+        migrateDatabase($db);
+        foreach ($devices as &$row) { $row['ip_segment_id'] = null; }
+        unset($row);
+        foreach ($addresses as &$row) { $row['segment_id'] = null; }
+        unset($row);
+        $this->assertSame($devices, $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+        $this->assertSame($addresses, $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+        $this->assertSame([], $db->query('SELECT * FROM address_spaces')->fetchAll());
+        $this->assertSame([], $db->query('SELECT * FROM ip_segments')->fetchAll());
+        $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+    }
+
+    public function testBackupCidrMembershipIncludesNetworkAndBroadcastBoundaries(): void
+    {
+        $db = new \PDO('sqlite::memory:');
+        $service = new \Netarium\Services\Backup\BackupService($db);
+        foreach ([
+            ['0.0.0.0/0', ['0.0.0.0', '255.255.255.255']],
+            ['192.0.2.0/31', ['192.0.2.0', '192.0.2.1']],
+            ['192.0.2.1/32', ['192.0.2.1']],
+        ] as [$cidr, $ips]) {
+            $spaces = [['id' => 41, 'name' => '境界', 'memo' => '', 'ping_reachability' => 'unset']];
+            $segments = [['id' => 51, 'address_space_id' => 41, 'cidr' => $cidr,
+                'name' => '', 'purpose' => '', 'facility' => '', 'vlan_id' => null, 'memo' => '']];
+            $devices = array_map(static fn($ip) => ['ip' => $ip, 'ip_segment_id' => 51], $ips);
+            $this->assertSame(['address_spaces' => $spaces, 'ip_segments' => $segments],
+                $service->validateBackupIpManagement($spaces, $segments, $devices, []));
+        }
+    }
+
+    public function testAutomaticBackupRetentionProtectsCurrentSnapshotWhenTimestampsTie(): void
+    {
+        require_once dirname(__DIR__, 2) . '/bootstrap.php';
+        $directory = sys_get_temp_dir() . '/netarium_backup_retention_' . bin2hex(random_bytes(6));
+        $this->assertTrue(mkdir($directory, 0700, true));
+        try {
+            $service = new \Netarium\Services\Backup\BackupService(new \PDO('sqlite::memory:'));
+            $timestamp = time() - 60;
+            $current = $directory . '/pre-restore_20261028_120000_ffffffff.zip';
+            $contents = 'current pre-restore snapshot';
+            foreach ([
+                'pre-restore_20261028_120000_00000000.zip' => 'older snapshot one',
+                'pre-restore_20261028_120000_11111111.zip' => 'older snapshot two',
+                basename($current) => $contents,
+            ] as $filename => $bytes) {
+                $path = $directory . '/' . $filename;
+                $this->assertSame(strlen($bytes), file_put_contents($path, $bytes));
+                $this->assertTrue(touch($path, $timestamp));
+            }
+            $this->assertTrue($service->cleanupAutomaticBackups($directory, 1, 7, $current));
+            $this->assertSame([$current], glob($directory . '/pre-restore_*.zip'));
+            $this->assertSame($contents, file_get_contents($current));
+        } finally {
+            $this->removeTreeRecursive($directory);
         }
     }
 
@@ -538,12 +862,15 @@ class BackupTest extends TestCase
         }
         $objects = $db->query("SELECT type,name,sql FROM sqlite_master WHERE type IN ('trigger','index') ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
         migrateDatabase($db);
-        $this->assertSame(16, (int)$db->query('PRAGMA user_version')->fetchColumn());
+        $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $this->assertSame(1, (int)$db->query('PRAGMA foreign_keys')->fetchColumn());
         $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
         foreach ($before as $table => $rows) {
             if ($table === 'rack_mounts') {
                 $rows = array_map(static fn($row) => $row + ['depth' => 'half'], $rows);
+            }
+            if ($table === 'devices') {
+                $rows = array_map(static fn($row) => $row + ['ip_segment_id' => null], $rows);
             }
             $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
             $this->assertSame($rows, $db->query("SELECT * FROM \"$table\"$where ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC));
@@ -567,6 +894,52 @@ class BackupTest extends TestCase
         migrateDatabase($fresh);
         $fresh->exec("INSERT INTO devices(id,name,type) VALUES (1,'New PC','pc')");
         $this->assertSame('pc', $fresh->query('SELECT type FROM devices')->fetchColumn());
+    }
+
+    public function testAdditionalIpBackupRoundTripAndStrictSourceContract(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $ids = $db->query('SELECT id FROM devices ORDER BY id LIMIT 2')->fetchAll(\PDO::FETCH_COLUMN);
+            $insert = $db->prepare('INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order) VALUES(?,?,?,?,?)');
+            $insert->execute([71, $ids[0], '198.51.100.71', 'service', 1]);
+            $insert->execute([72, $ids[0], '203.0.113.71', 'backup', 0]);
+            $insert->execute([73, $ids[1], '198.51.100.71', 'isolated', 0]);
+            $addresses = $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $archive = $path . '.addresses.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $db->exec('DELETE FROM device_ip_addresses');
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            $this->assertSame($addresses, $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $before = $this->idBoundaryState($db);
+            foreach (['invalid-ip', 'same-device', 'management', 'foreign-device', 'duplicate-id', 'label', 'sort', 'unknown', 'missing', 'old-schema'] as $fault) {
+                $bad = $archive . '.' . $fault;
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    $row = &$doc['tables']['device_ip_addresses'][0];
+                    if ($fault === 'invalid-ip') { $row['ip'] = '999.1.1.1'; }
+                    if ($fault === 'same-device') { $row['ip'] = $doc['tables']['device_ip_addresses'][1]['ip']; }
+                    if ($fault === 'management') { $doc['tables']['devices'][0]['ip'] = $row['ip']; }
+                    if ($fault === 'foreign-device') { $row['device_id'] = 999999; }
+                    if ($fault === 'duplicate-id') { $doc['tables']['device_ip_addresses'][1]['id'] = $row['id']; }
+                    if ($fault === 'label') { $row['label'] = str_repeat('𠀀', 101); }
+                    if ($fault === 'sort') { $row['sort_order'] = -1; }
+                    if ($fault === 'unknown') { $row['unknown'] = null; }
+                    if ($fault === 'missing') { unset($doc['tables']['device_ip_addresses']); }
+                    if ($fault === 'old-schema') { $manifest['schema_version'] = 16; }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $legacy = $archive . '.schema16';
+            copy($archive, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 16;
+                self::removeIpManagementContract($doc, $manifest);
+                unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
+            });
+            $this->commitIdBackup($this->previewIdBackup($legacy));
+            $this->assertSame([], $db->query('SELECT * FROM device_ip_addresses')->fetchAll(\PDO::FETCH_ASSOC));
+        });
     }
 
     public function testFloorRackBackupRoundTripAndLegacyConversion(): void
@@ -596,6 +969,8 @@ class BackupTest extends TestCase
                 copy($path, $bad);
                 $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($schema): void {
                     $manifest['schema_version'] = $schema;
+                    self::removeIpManagementContract($doc, $manifest);
+                    unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                     unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                     if ($schema < 15) {
                         unset($manifest['summary']['rack_shelves'], $manifest['summary']['rack_shelf_devices']);
@@ -644,6 +1019,8 @@ class BackupTest extends TestCase
                 copy($path, $bad);
                 $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($schema): void {
                     $manifest['schema_version'] = $schema;
+                    self::removeIpManagementContract($doc, $manifest);
+                    unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                     unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                     unset($manifest['summary']['rack_shelves'], $manifest['summary']['rack_shelf_devices']);
                     unset($doc['tables']['rack_shelves'], $doc['tables']['rack_shelf_devices']);
@@ -670,6 +1047,8 @@ class BackupTest extends TestCase
                 file_put_contents($path, $original);
                 $this->rewriteBackupZip($path, static function (array &$doc, array &$manifest) use ($schema): void {
                     $manifest['schema_version'] = $schema;
+                    self::removeIpManagementContract($doc, $manifest);
+                    unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                     unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                     $doc['tables']['devices'][0]['type'] = 'pc';
                     if ($schema < 15) {
@@ -699,6 +1078,8 @@ class BackupTest extends TestCase
                 file_put_contents($path, $original);
                 $this->rewriteBackupZip($path, static function (array &$doc, array &$manifest) use ($schema): void {
                     $manifest['schema_version'] = $schema;
+                    self::removeIpManagementContract($doc, $manifest);
+                    unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                     unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                     unset($manifest['summary']['rack_shelves'], $manifest['summary']['rack_shelf_devices']);
                     unset($doc['tables']['rack_shelves'], $doc['tables']['rack_shelf_devices']);
@@ -739,6 +1120,8 @@ class BackupTest extends TestCase
                 copy($rackPath, $legacyRackPath);
                 $this->rewriteBackupZip($legacyRackPath, static function (array &$doc, array &$manifest) use ($sourceSchema): void {
                     $manifest['schema_version'] = $sourceSchema;
+                    self::removeIpManagementContract($doc, $manifest);
+                    unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                     unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                     unset($manifest['summary']['rack_shelves'], $manifest['summary']['rack_shelf_devices']);
                     unset($doc['tables']['rack_shelves'], $doc['tables']['rack_shelf_devices']);
@@ -764,6 +1147,8 @@ class BackupTest extends TestCase
             // source contract, including its own strict summary/table set.
             $this->rewriteBackupZip($path, static function (array &$doc, array &$manifest): void {
                 $manifest['schema_version'] = 11;
+                self::removeIpManagementContract($doc, $manifest);
+                unset($manifest['summary']['device_ip_addresses'], $doc['tables']['device_ip_addresses']);
                 unset($manifest['summary']['floor_rack_placements'], $doc['tables']['floor_rack_placements']);
                 unset($manifest['summary']['rack_shelves'], $manifest['summary']['rack_shelf_devices']);
                 unset($doc['tables']['rack_shelves'], $doc['tables']['rack_shelf_devices']);
@@ -867,9 +1252,24 @@ class BackupTest extends TestCase
         $state = [];
         foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems',
             'device_images', 'device_monitor_status', 'view_floor_plans', 'app_meta', 'rack_settings', 'rack_mounts',
-            'resource_sequences', 'sqlite_sequence'] as $table) {
+            'resource_sequences', 'sqlite_sequence', 'device_ip_addresses', 'address_spaces', 'ip_segments', 'change_history',
+            'device_configs', 'device_config_states'] as $table) {
             if (in_array($table, ['rack_settings', 'rack_mounts'], true)
                 && (int)$db->query('PRAGMA user_version')->fetchColumn() === 11) {
+                continue;
+            }
+            if ($table === 'device_ip_addresses' && (int)$db->query('PRAGMA user_version')->fetchColumn() < 17) {
+                continue;
+            }
+            if (in_array($table, ['address_spaces', 'ip_segments'], true)
+                && (int)$db->query('PRAGMA user_version')->fetchColumn() < 18) {
+                continue;
+            }
+            if ($table === 'change_history' && (int)$db->query('PRAGMA user_version')->fetchColumn() < 19) {
+                continue;
+            }
+            if (in_array($table, ['device_configs', 'device_config_states'], true)
+                && (int)$db->query('PRAGMA user_version')->fetchColumn() < 20) {
                 continue;
             }
             $rows = $db->query('SELECT * FROM ' . $table)->fetchAll(\PDO::FETCH_ASSOC);
@@ -2224,13 +2624,262 @@ class BackupTest extends TestCase
         @rmdir($dir);
     }
 
+    public function testDeviceConfigWebBackupPreservesDeletedGenerationWatermarksAndRejectsInvalidPayload(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $db->exec("INSERT INTO device_config_states(device_id,revision,next_generation) VALUES(1,12,19),(2,8,22)");
+            $insert = $db->prepare('INSERT INTO device_configs(id,device_id,generation,content,created_at,actor_user_id,actor_name,memo) VALUES(?,?,?,?,?,?,?,?)');
+            $insert->execute([41, 1, 3, "hostname old\n", '2026-01-02T00:00:00Z', null, '退職済み管理者', '旧版']);
+            $insert->execute([49, 1, 17, "hostname kept\n", '2026-01-02T00:00:00Z', 1, 'admin', '保存版']);
+            $kept = [];
+            foreach (['device_configs', 'device_config_states'] as $table) {
+                $kept[$table] = $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . ($table === 'device_configs' ? 'id' : 'device_id'))->fetchAll(\PDO::FETCH_ASSOC);
+            }
+            $archive = $path . '.configs.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($archive) === true);
+            $document = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+            $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $zip->close();
+            $this->assertSame([$kept['device_configs'][1]], $document['tables']['device_configs']);
+            $this->assertSame(1, $manifest['summary']['device_configs']);
+            $this->assertSame($kept['device_config_states'], $document['tables']['device_config_states']);
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            $this->assertSame([$kept['device_configs'][1]], $db->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($kept['device_config_states'], $db->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(\PDO::FETCH_ASSOC));
+
+            // 直近1世代化は新規出力だけに適用し、旧形式1の全世代ZIPも取り込める。
+            $legacyArchive = $archive . '.all-versions';
+            copy($archive, $legacyArchive);
+            $this->rewriteBackupZip($legacyArchive, static function (array &$doc) use ($kept): void {
+                $doc['tables']['device_configs'] = $kept['device_configs'];
+            });
+            $archive = $legacyArchive;
+            $db->exec('DELETE FROM device_configs; DELETE FROM device_config_states');
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            foreach ($kept as $table => $rows) {
+                $this->assertSame($rows, $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . ($table === 'device_configs' ? 'id' : 'device_id'))->fetchAll(\PDO::FETCH_ASSOC));
+            }
+            foreach (['missing-state', 'foreign-device', 'duplicate-id', 'duplicate-generation', 'watermark', 'revision', 'order', 'too-many', 'oversize', 'blank', 'nul', 'control', 'crlf', 'bom', 'memo', 'date', 'unknown',
+                'id-exhausted', 'revision-exhausted', 'generation-exhausted', 'empty-generation-exhausted'] as $fault) {
+                $bad = $archive . '.' . $fault;
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($fault): void {
+                    $rows = &$doc['tables']['device_configs'];
+                    $states = &$doc['tables']['device_config_states'];
+                    if ($fault === 'missing-state') { $states = []; }
+                    if ($fault === 'foreign-device') { $rows[0]['device_id'] = 99999; }
+                    if ($fault === 'duplicate-id') { $rows[1]['id'] = $rows[0]['id']; }
+                    if ($fault === 'duplicate-generation') { $rows[1]['generation'] = $rows[0]['generation']; }
+                    if ($fault === 'watermark') { $states[0]['next_generation'] = 17; }
+                    if ($fault === 'revision') { $states[0]['revision'] = 0; }
+                    if ($fault === 'id-exhausted') { $rows[1]['id'] = \Netarium\Core\ResourceId::MAX; }
+                    if ($fault === 'revision-exhausted') { $states[0]['revision'] = \Netarium\Core\ResourceId::MAX; }
+                    if ($fault === 'generation-exhausted') { $states[0]['next_generation'] = PHP_INT_MAX; }
+                    if ($fault === 'empty-generation-exhausted') { $states[1]['next_generation'] = PHP_INT_MAX; }
+                    if ($fault === 'order') { $rows[1]['created_at'] = '2025-01-01T00:00:00Z'; }
+                    if ($fault === 'too-many') {
+                        for ($i = 0; $i < 4; $i++) {
+                            $row = $rows[1]; $row['id'] = 50 + $i; $row['generation'] = 18 + $i; $rows[] = $row;
+                        }
+                        $states[0]['next_generation'] = 30;
+                    }
+                    if ($fault === 'oversize') { $rows[0]['content'] = str_repeat('x', 262145); }
+                    if ($fault === 'blank') { $rows[0]['content'] = " \t\n"; }
+                    if ($fault === 'nul') { $rows[0]['content'] = "secret-marker\0"; }
+                    if ($fault === 'control') { $rows[0]['content'] = "secret-marker\x01"; }
+                    if ($fault === 'crlf') { $rows[0]['content'] = "secret-marker\r\n"; }
+                    if ($fault === 'bom') { $rows[0]['content'] = "\xEF\xBB\xBFsecret-marker"; }
+                    if ($fault === 'memo') { $rows[0]['memo'] = str_repeat('長', 201); }
+                    if ($fault === 'date') { $rows[0]['created_at'] = '2026-02-30T00:00:00Z'; }
+                    if ($fault === 'unknown') { $rows[0]['filename'] = 'unknown.cfg'; }
+                });
+                $result = $this->previewIdBackup($bad, 400);
+                $this->assertFalse(str_contains(json_encode($result, JSON_THROW_ON_ERROR), 'secret-marker'));
+                foreach ($kept as $table => $rows) {
+                    $this->assertSame($rows, $db->query('SELECT * FROM ' . $table . ' ORDER BY ' . ($table === 'device_configs' ? 'id' : 'device_id'))->fetchAll(\PDO::FETCH_ASSOC));
+                }
+            }
+            $invalidUtf8 = $archive . '.invalid-utf8';
+            copy($archive, $invalidUtf8);
+            $this->rewriteBackupZip($invalidUtf8, static function (array &$doc): void {}, static fn(string $json): string => str_replace('hostname old', "secret-marker\xFF", $json));
+            $result = $this->previewIdBackup($invalidUtf8, 400);
+            $this->assertFalse(str_contains(json_encode($result, JSON_THROW_ON_ERROR), 'secret-marker'));
+            $legacy = $archive . '.schema19';
+            copy($archive, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 19;
+                foreach ($doc['tables']['address_spaces'] ?? [] as $index => $space) {
+                    unset($doc['tables']['address_spaces'][$index]['ping_reachability']);
+                }
+                unset($doc['tables']['device_configs'], $doc['tables']['device_config_states'],
+                    $manifest['summary']['device_configs'], $manifest['summary']['device_config_states']);
+            });
+            $this->commitIdBackup($this->previewIdBackup($legacy));
+            $this->assertSame([], $db->query('SELECT * FROM device_configs')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame([], $db->query('SELECT * FROM device_config_states')->fetchAll(\PDO::FETCH_ASSOC));
+        });
+    }
+
+    public function testRestorePreviewRejectsConcurrentConfigSaveAndDelete(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $deviceRevision = (int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn();
+            $preview = $this->previewIdBackup($path);
+            $saved = $this->client->postJson('/api.php?action=save_device_config', [
+                'device_id' => 1, 'expected_device_revision' => $deviceRevision,
+                'expected_revision' => 0, 'content' => "hostname concurrent\n", 'memo' => '',
+            ])->assertStatus(200)->getJson();
+            $beforeCommit = $this->idBoundaryState($db);
+            $this->commitIdBackup($preview, 409);
+            $this->assertSame($beforeCommit, $this->idBoundaryState($db));
+            $this->assertSame($deviceRevision, (int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn());
+
+            $archive = $path . '.with-config.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $preview = $this->previewIdBackup($archive);
+            $this->client->postJson('/api.php?action=delete_device_configs', [
+                'device_id' => 1, 'expected_device_revision' => $deviceRevision,
+                'expected_revision' => $saved['revision'], 'ids' => [$saved['items'][0]['id']],
+            ])->assertStatus(200);
+            $beforeCommit = $this->idBoundaryState($db);
+            $this->commitIdBackup($preview, 409);
+            $this->assertSame($beforeCommit, $this->idBoundaryState($db));
+            $this->assertSame([], $db->query('SELECT * FROM device_configs')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($deviceRevision, (int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn());
+        });
+    }
+    public function testDeviceConfigMultiDeviceMultiVersionBackupExportAndRestoreRoundTrip(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            // 32機器×5世代×256KiB = 実バイト40MiB。各機器の5世代目は登録APIを通す。
+            $insertDevice = $db->prepare("INSERT INTO devices (id, name, type, ip, resource_revision) VALUES (?, ?, 'switch', ?, 1)");
+            for ($i = 5; $i <= 34; $i++) {
+                $insertDevice->execute([$i, "SW-{$i}", "192.0.2.{$i}"]);
+            }
+            $deviceIds = array_merge([1, 2], range(5, 34));
+            $insertConfig = $db->prepare('INSERT INTO device_configs (device_id, generation, content, created_at, actor_user_id, actor_name, memo) VALUES (?, ?, ?, ?, 1, ?, ?)');
+            $insertState = $db->prepare('INSERT INTO device_config_states (device_id, revision, next_generation) VALUES (?, 4, 11)');
+            $makeContent = static function (int $deviceId, int $generation): string {
+                $prefix = "hostname SW-{$deviceId} generation {$generation}\n";
+                $unit = "あ\n\"\\\t";
+                $content = $prefix . str_repeat($unit, intdiv(262144 - strlen($prefix), strlen($unit)));
+                return str_pad($content, 262144, 'x');
+            };
+            foreach ($deviceIds as $deviceId) {
+                foreach ([2, 4, 6, 8] as $generation) {
+                    $insertConfig->execute([$deviceId, $generation, $makeContent($deviceId, $generation),
+                        sprintf('2026-01-%02dT00:00:00Z', $generation), 'admin', '過去版']);
+                }
+                $insertState->execute([$deviceId]);
+            }
+            $db->exec('INSERT INTO device_config_states(device_id, revision, next_generation) VALUES(3,8,22)');
+            foreach ($deviceIds as $deviceId) {
+                $deviceRevision = (int)$db->query("SELECT resource_revision FROM devices WHERE id={$deviceId}")->fetchColumn();
+                $saved = $this->client->postJson('/api.php?action=save_device_config', [
+                    'device_id' => $deviceId, 'expected_device_revision' => $deviceRevision,
+                    'expected_revision' => 4, 'content' => $makeContent($deviceId, 11), 'memo' => '最新の日本語版',
+                ])->assertStatus(200)->getJson();
+                $this->assertSame(5, count($saved['items']));
+                $this->assertSame(11, $saved['items'][0]['generation']);
+            }
+            unset($saved);
+            $this->assertSame(41943040, (int)$db->query('SELECT SUM(LENGTH(CAST(content AS BLOB))) FROM device_configs')->fetchColumn());
+            $latest = $db->query('SELECT * FROM device_configs WHERE generation=11 ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $sourceStates = $db->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(\PDO::FETCH_ASSOC);
+            $archive = $path . '.multi-configs.zip';
+            file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($archive) === true);
+            $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $document = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+            $zip->close();
+            $this->assertSame(32, $manifest['summary']['device_configs']);
+            $this->assertSame(33, $manifest['summary']['device_config_states']);
+            $this->assertSame($latest, $document['tables']['device_configs']);
+            $this->assertSame($sourceStates, $document['tables']['device_config_states']);
+            unset($document);
+
+            // 置換復元により過去4世代は残らず、ID・世代・空履歴の高水位は維持される。
+            $this->commitIdBackup($this->previewIdBackup($archive));
+            $this->assertSame($latest, $db->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($sourceStates, $db->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(\PDO::FETCH_ASSOC));
+            $deviceRevision = (int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn();
+            $saved = $this->client->postJson('/api.php?action=save_device_config', [
+                'device_id' => 1, 'expected_device_revision' => $deviceRevision,
+                'expected_revision' => 5, 'content' => 'hostname after-restore', 'memo' => '',
+            ])->assertStatus(200)->getJson();
+            $this->assertSame(12, $saved['items'][0]['generation']);
+        });
+    }
+
+    public function testConfigWebExportChecksSerializedBytesAndFailsWithoutPublishingPartialZip(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db, \Netarium\Tests\TestServer $server): void {
+            $content = "日本語\n" . str_repeat("x\n\"\\\t", 4096);
+            $db->exec('INSERT INTO device_config_states(device_id, revision, next_generation) VALUES(1,1,2)');
+            $db->prepare("INSERT INTO device_configs(device_id,generation,content,created_at,actor_name,memo) VALUES(1,1,?,'2026-01-01T00:00:00Z','admin','')")
+                ->execute([$content]);
+            $service = new \Netarium\Services\Backup\BackupService($db);
+            $config = [
+                'application_version' => '1.3.0',
+                'backup_export_directory' => $server->getTempDir() . '/export-boundary',
+                'backup_auto_directory' => $server->getTempDir() . '/auto-boundary',
+                'floor_plan_directory' => $server->getTempDir() . '/floorplans',
+                'device_image_directory' => $server->getTempDir() . '/device_images',
+            ];
+            $root = $service->prepareBackupExportRoot($config['backup_export_directory']);
+            $work = $service->createBackupWorkDirectory($root);
+            $result = $service->buildBackupZipFile($config, $work, $work . '/boundary.zip');
+            $bytes = filesize($work . '/data/netarium.json') + filesize($work . '/manifest.json');
+            $this->assertTrue($bytes > strlen($content), 'JSONエスケープ・メタデータを含む実サイズで判定する');
+            $service->removeDirectoryTree($work);
+            $before = $this->idBoundaryState($db);
+
+            // 展開後の実サイズちょうどは許可し、1バイト不足と圧縮後上限超過は拒否する。
+            $exact = $config;
+            $exact['storage_capacity']['backup']['max_uncompressed_bytes'] = $bytes;
+            $work = $service->createBackupWorkDirectory($root);
+            $service->buildBackupZipFile($exact, $work, $work . '/exact.zip');
+            $service->removeDirectoryTree($work);
+            foreach ([
+                ['max_uncompressed_bytes' => $bytes - 1],
+                ['max_zip_bytes' => 1],
+            ] as $limits) {
+                $limited = $config;
+                $limited['storage_capacity']['backup'] = $limits;
+                ob_start();
+                try {
+                    $service->exportBackupZip($limited);
+                    $this->fail('容量超過のWeb ZIPを出力してはいけない');
+                } catch (\Netarium\Core\ApiException $e) {
+                    $this->assertSame(400, $e->getHttpStatus());
+                    $this->assertStringContains('上限', $e->getMessage());
+                    $this->assertStringContains('停止型完全バックアップ', $e->getMessage());
+                } finally {
+                    $output = ob_get_clean();
+                }
+                $this->assertSame('', $output, '拒否時はZIPを一部も送信しない');
+                $this->assertSame([], glob($root . '/*'));
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $limited = $config;
+            $limited['storage_capacity']['backup']['max_zip_bytes'] = 1;
+            $this->assertRestoreStatus(400, static fn() => $service->createPreRestoreBackup($limited));
+            $this->assertSame([], glob($config['backup_auto_directory'] . '/*'), '失敗した自動退避ZIPは公開・残置しない');
+            $this->assertSame($before, $this->idBoundaryState($db));
+        });
+    }
+
+
     public function testVersionCompatibilityPolicyAndCrossVersionWebRestore(): void
     {
         require_once dirname(__DIR__, 2) . '/bootstrap.php';
         $policy = \Netarium\Services\Backup\BackupCompatibilityPolicy::class;
         foreach (['netarium-config', 'netarium-full'] as $format) {
-            foreach ([11, 12, 13, 14, 15, 16] as $schema) {
-                $this->assertTrue($policy::isCompatible($format, $format, 1, $schema, '1.2.0', 16, '1.3.0'));
+            foreach (range(11, APP_DATABASE_SCHEMA_VERSION) as $schema) {
+                $this->assertTrue($policy::isCompatible($format, $format, 1, $schema, '1.2.0', APP_DATABASE_SCHEMA_VERSION, '1.3.0'));
             }
             foreach ([
                 ['1.3.0', '1.3.0'], ['1.3.0', '1.3.1'], ['1.3.2', '1.3.10'],
@@ -2254,7 +2903,9 @@ class BackupTest extends TestCase
                 [1, 16, '1.3.0', 16, '2.0.0'], [1, 16, '2.0.0', 16, '1.3.0'],
                 [1, 10, '1.2.0', 16, '1.3.0'], [1, 17, '1.2.0', 16, '1.3.0'],
                 [1, '16', '1.2.0', 16, '1.3.0'], [1, 16, '1.2.0', 15, '1.3.0'],
-                [1, 16, '1.2.0', 17, '1.3.0'], [2, 16, '1.2.0', 16, '1.3.0'],
+                [1, 16, '1.2.0', APP_DATABASE_SCHEMA_VERSION + 1, '1.3.0'], [1, 19, '1.2.0', 18, '1.3.0'],
+                [1, 20, '1.3.0', 19, '1.3.0'],
+                [1, 18, '1.2.0', 17, '1.3.0'], [2, 16, '1.2.0', 16, '1.3.0'],
                 ['1', 16, '1.2.0', 16, '1.3.0'],
             ] as [$formatVersion, $schema, $source, $targetSchema, $target]) {
                 $this->assertFalse($policy::isCompatible($format, $format, $formatVersion, $schema, $source, $targetSchema, $target));
@@ -2265,14 +2916,14 @@ class BackupTest extends TestCase
 
         $repoRoot = (string)realpath(dirname(__DIR__, 2));
         $releaseRoot = sys_get_temp_dir() . '/netarium_v120_app_' . bin2hex(random_bytes(6));
-        $candidateRoot = sys_get_temp_dir() . '/netarium_v130_candidate_' . bin2hex(random_bytes(6));
+        $candidateRoot = sys_get_temp_dir() . '/netarium_current_candidate_' . bin2hex(random_bytes(6));
         $this->copyProjectTreeWithVersion($repoRoot, $releaseRoot, '1.2.0');
-        // Explicit candidate version only in an isolated copy, not a released v1.3.0 program.
+        // Exercise the actual source version, not a relabeled legacy application.
         foreach (['public', 'src', 'templates', 'resources', 'scripts', 'config'] as $dir) {
             $this->copyDirectoryRecursive($repoRoot . '/' . $dir, $candidateRoot . '/' . $dir);
         }
         copy($repoRoot . '/bootstrap.php', $candidateRoot . '/bootstrap.php');
-        file_put_contents($candidateRoot . '/version.php', "<?php\nconst NETARIUM_VERSION = '1.3.0';\n");
+        copy($repoRoot . '/version.php', $candidateRoot . '/version.php');
         $release = new \Netarium\Tests\TestServer($releaseRoot);
         $candidate = new \Netarium\Tests\TestServer($candidateRoot);
         $originalClient = $this->client;
@@ -2307,7 +2958,7 @@ class BackupTest extends TestCase
             $this->assertSame('1.2.0', $preview['backup']['application_version']);
             $this->assertSame(2, $preview['image_resolution']['matched']);
             $this->commitIdBackup($preview);
-            $roundTrip = $candidate->getTempDir() . '/schema16.zip';
+            $roundTrip = $candidate->getTempDir() . '/current-schema.zip';
             file_put_contents($roundTrip, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
             $this->assertTrue($zip->open($roundTrip) === true);
             $restored = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
@@ -2318,9 +2969,18 @@ class BackupTest extends TestCase
                 $withoutRevision = static fn(array $rows): array => array_map(
                     static fn(array $row): array => array_diff_key($row, ['resource_revision' => true]), $rows
                 );
-                $this->assertSame($withoutRevision($sourceData['tables'][$table]), $withoutRevision($restored['tables'][$table]), $table);
+                $restoredRows = $restored['tables'][$table];
+                if ($table === 'devices') {
+                    foreach ($restoredRows as &$row) {
+                        $this->assertTrue(array_key_exists('ip_segment_id', $row));
+                        $this->assertSame(null, $row['ip_segment_id']);
+                        unset($row['ip_segment_id']);
+                    }
+                    unset($row);
+                }
+                $this->assertSame($withoutRevision($sourceData['tables'][$table]), $withoutRevision($restoredRows), $table);
             }
-            foreach (['rack_settings', 'rack_mounts', 'rack_shelves', 'rack_shelf_devices', 'floor_rack_placements'] as $table) {
+            foreach (['rack_settings', 'rack_mounts', 'rack_shelves', 'rack_shelf_devices', 'floor_rack_placements', 'device_ip_addresses', 'address_spaces', 'ip_segments', 'change_history', 'device_configs', 'device_config_states'] as $table) {
                 $this->assertSame([], $restored['tables'][$table]);
             }
 
@@ -2332,13 +2992,15 @@ class BackupTest extends TestCase
             $db->exec("INSERT INTO rack_shelves VALUES(7,90,'Shelf','front',10,1,'full')");
             $db->exec('INSERT INTO rack_shelf_devices VALUES(2,7,0)');
             $db->exec('INSERT INTO floor_rack_placements VALUES(91,90,12.5,-20)');
+            $db->exec("INSERT INTO device_ip_addresses(id,device_id,ip,label,sort_order)
+                VALUES (7,1,'198.51.100.71','service',1),(8,1,'203.0.113.71','backup',0),(9,2,'198.51.100.71','isolated',0)");
             $kept = [];
-            foreach (['rack_settings', 'rack_mounts', 'rack_shelves', 'rack_shelf_devices', 'floor_rack_placements'] as $table) {
+            foreach (['rack_settings', 'rack_mounts', 'rack_shelves', 'rack_shelf_devices', 'floor_rack_placements', 'device_ip_addresses'] as $table) {
                 $kept[$table] = $db->query('SELECT * FROM ' . $table)->fetchAll(\PDO::FETCH_ASSOC);
             }
             file_put_contents($roundTrip, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
             $db->exec("UPDATE devices SET type='other' WHERE id=1");
-            $db->exec('DELETE FROM floor_rack_placements; DELETE FROM rack_shelf_devices; DELETE FROM rack_shelves; DELETE FROM rack_mounts');
+            $db->exec('DELETE FROM floor_rack_placements; DELETE FROM rack_shelf_devices; DELETE FROM rack_shelves; DELETE FROM rack_mounts; DELETE FROM device_ip_addresses');
             $this->commitIdBackup($this->previewIdBackup($roundTrip));
             $this->assertSame('pc', $db->query('SELECT type FROM devices WHERE id=1')->fetchColumn());
             foreach ($kept as $table => $rows) {
@@ -2353,10 +3015,13 @@ class BackupTest extends TestCase
                     file_put_contents($bad, 'not a zip');
                 } else {
                     $this->rewriteBackupZip($bad, static function (array &$doc, array &$m) use ($fault): void {
-                        if ($fault === 'reverse') { $m['application_version'] = '1.3.1'; }
+                        if ($fault === 'reverse') {
+                            [$major, $minor, $patch] = explode('.', NETARIUM_VERSION);
+                            $m['application_version'] = $major . '.' . $minor . '.' . ((int)$patch + 1);
+                        }
                         if ($fault === 'major') { $m['application_version'] = '2.0.0'; }
                         if ($fault === 'invalid') { $m['application_version'] = '1.3.0-beta.1'; }
-                        if ($fault === 'schema') { $m['schema_version'] = 17; }
+                        if ($fault === 'schema') { $m['schema_version'] = APP_DATABASE_SCHEMA_VERSION + 1; }
                         if ($fault === 'format') { $m['format_version'] = 2; }
                         if ($fault === 'contract') { $doc['tables']['devices'][0]['unknown'] = 'x'; }
                     });

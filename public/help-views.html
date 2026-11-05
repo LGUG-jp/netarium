@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ビュー・ラックの操作 - Netarium 利用ガイド</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="assets/icons/brand/netarium-mark-compact.svg">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <header class="help-header-bar">
+        <div class="help-header-inner">
+            <a href="help.html" class="help-header-brand">
+                <img src="assets/icons/brand/netarium-logo.svg" width="127" height="32" alt="Netarium">
+                <span>利用ガイド</span>
+            </a>
+            <nav aria-label="機能別ナビゲーション">
+                <ul class="help-nav-list">
+                    <li><a href="help.html" class="help-nav-link">トップ</a></li>
+                    <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
+                    <li><a href="help-devices.html" class="help-nav-link">機器・台帳</a></li>
+                    <li><a href="help-views.html" class="help-nav-link" aria-current="page">ビュー・ラック</a></li>
+                    <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="help-layout">
+        <aside class="help-toc">
+            <details id="help-toc" open>
+                <summary>目次</summary>
+                <nav aria-label="章目次">
+                    <ol>
+                        <li><a href="#views">ビューの管理と切り替え</a></li>
+                        <li><a href="#floor-plans">フロア図面（下絵画像）</a></li>
+                        <li><a href="#rack-views">ラックビューと棚板</a></li>
+                    </ol>
+                </nav>
+            </details>
+        </aside>
+
+        <main class="help-container" id="help-content">
+            <h1>ビュー・ラックの操作ガイド</h1>
+            <p>
+                論理構成図・フロア物理配置図・ラックビューの作成・切り替え、下絵図面の調整、およびラック内機器の搭載・棚板管理を説明します。
+            </p>
+
+            <section>
+                <h2 id="views" tabindex="-1">ビューの管理と切り替え</h2>
+                <p>上部バー中央のビュー検索欄で、作業対象の図面を素早く切り替えます。</p>
+                <ol>
+                    <li>上部バーのビュー名欄をクリックするか、文字を入力して候補を絞り込みます（名称・施設・フロア・種別で検索可能）。</li>
+                    <li>目的のビューをクリック、または上下キーと<span class="kbd">Enter</span>で選択すると即座にキャンバスへ展開されます。</li>
+                    <li><strong>新規作成・編集（管理者のみ）:</strong> 上部バーの「管理」→「ビュー管理」を開きます。名称・種別・施設・フロアを入力して「登録」または「変更」を押します。</li>
+                </ol>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">ビュー種別</th><th scope="col">特徴と用途</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">論理構成図</th>
+                            <td>ネットワークの論理的なセグメント、ルータ・スイッチのトポロジーを自由にレイアウトして結線します。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">フロア物理配置図</th>
+                            <td>庁舎やオフィスの平面図（下絵画像）を配置し、機器や情報コンセントの実位置を可視化します。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">ラックビュー</th>
+                            <td>19インチラックのユニット（U）単位で機器の前面・背面搭載位置や棚板を管理します。</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2 id="floor-plans" tabindex="-1">フロア図面（下絵画像）</h2>
+                <p>物理・フロア配置図では、建物の平面図やレイアウト図を下絵画像として登録し、拡大縮小・位置調整できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/floor-plan-adjust.webp" data-help-image data-caption="架空の庁舎図面：位置・サイズ・不透明度を調整" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/floor-plan-adjust.webp" width="2840" height="1576" loading="lazy" alt="架空の庁舎平面図の調整画面。図面を囲む青い枠に四隅のハンドルがあり、上部に不透明度50%の調整と完了、下部にCanvas倍率の操作がある。">
+                    </a>
+                    <figcaption>青い四隅のハンドルで図面のサイズ、図面本体のドラッグで位置、上部バーで不透明度（10〜100%）を調整します。</figcaption>
+                </figure>
+                <ol>
+                    <li>「管理」→「ビュー管理」でフロア種別のビューを選び、<strong>「図面設定」</strong>を押します。</li>
+                    <li><strong>画像登録:</strong> PNGまたはJPEG形式（30MiB以下、各辺7,000px以下）を選択してアップロードします（長辺4,096px以下へ自動縮小して保存）。</li>
+                    <li><strong>配置調整:</strong> 図面本体をドラッグして位置を移動し、四隅の青いハンドルで拡大・縮小します。</li>
+                    <li>上部バーのスライダーで不透明度を調整し、<strong>「完了」</strong>を押して確定します。</li>
+                </ol>
+                <p class="note">図面の調整中は接続の経路調整は起動できません。完了してから接続線を操作してください。</p>
+            </section>
+
+            <section>
+                <h2 id="rack-views" tabindex="-1">ラックビューと棚板</h2>
+                <p>物理サーバーラックの前面・背面における機器搭載（1〜60U、規定値42U）および棚板を管理します。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/rack-view.webp" data-help-image data-caption="ラックビュー：前面・背面表示とU範囲の選択・搭載" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/rack-view.webp" width="2472" height="1464" loading="lazy" alt="ラックビュー。左に前面、中央に背面の42Uラック、選択したU範囲とキャンバスツールバー、右側にメモ欄を表示。">
+                    </a>
+                    <figcaption>前面・背面の空きU範囲をドラッグ選択して「搭載」を押し、機器を選びます。右側でメモを直接入力できます。</figcaption>
+                </figure>
+                <ol>
+                    <li>ビュー切り替え欄で対象のラックビューを開きます。</li>
+                    <li>前面または背面の空きユニット（U）をクリック、またはドラッグして範囲を選択します。</li>
+                    <li>ポップアップの<strong>「搭載」</strong>を押し、未搭載の機器一覧から対象を選択して割り当てます。</li>
+                    <li><strong>搭載位置の変更:</strong> 搭載済み機器を別の空きUへドラッグすると、搭載位置や幅（全幅／半幅）を変更できます。</li>
+                    <li><strong>棚板（シェルフ）:</strong> 棚板を設置したUには、小型機器（ONU、ハブ等）を複数台まとめて設置できます。</li>
+                    <li>搭載解除は機器をクリックして右パネルの<strong>「ラックから外す」</strong>を押します（機器台帳のデータは削除されません）。</li>
+                </ol>
+            </section>
+
+            <div class="help-page-footer-nav">
+                <a href="help-devices.html" class="btn btn-secondary btn-sm">← 前へ：機器・台帳</a>
+                <a href="help-admin.html" class="btn btn-primary btn-sm">次へ：保存・管理 →</a>
+            </div>
+
+            <footer class="footer-close">
+                <button id="help-tab-close" type="button" class="btn btn-secondary">このタブを閉じる</button>
+                <p id="help-tab-close-notice" class="help-close-notice form-support" hidden>ブラウザのタブを閉じてください。</p>
+            </footer>
+        </main>
+    </div>
+
+    <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-title">
+        <header class="help-image-header">
+            <h2 id="help-image-title">操作ガイド画像</h2>
+            <button id="help-image-close" type="button" class="btn btn-secondary btn-sm" autofocus>閉じる</button>
+        </header>
+        <div class="help-image-scroll" tabindex="0" role="region" aria-label="拡大画像（矢印キーでスクロール）"><img id="help-image-preview" alt=""></div>
+        <p id="help-image-caption" class="form-support"></p>
+    </dialog>
+
+    <script src="js/help.js"></script>
+</body>
+</html>

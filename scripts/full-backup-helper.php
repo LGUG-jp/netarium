@@ -19,7 +19,8 @@ function fullSafeName(string $name): void
 
 function fullValidateSchema(PDO $db, int $schemaVersion): void
 {
-    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16], true)) { throw new RuntimeException('Unsupported source schema'); }
+    global $appRoot;
+    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22], true)) { throw new RuntimeException('Unsupported source schema'); }
     $reference = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     for ($version = 1; $version <= $schemaVersion; $version++) {
         ('migrateDatabaseToVersion' . $version)($reference);
@@ -34,7 +35,7 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
         return $rows;
     };
     if ($normalize($db) !== $normalize($reference)) { throw new RuntimeException('Database schema contract mismatch'); }
-    $types = in_array($schemaVersion, [13, 14, 15, 16], true)
+    $types = $schemaVersion >= 13
         ? "'switch','l3_switch','router','firewall','ap','server','pc','printer','other'"
         : "'switch','l3_switch','router','firewall','ap','server','printer','other'";
     if ($db->query("SELECT 1 FROM devices WHERE type NOT IN ($types) LIMIT 1")->fetchColumn() !== false) {
@@ -43,7 +44,7 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
     if ($schemaVersion === 11 && $db->query("SELECT 1 FROM views WHERE view_type NOT IN ('topology','floor') LIMIT 1")->fetchColumn() !== false) {
         throw new RuntimeException('Invalid source view type');
     }
-    if (in_array($schemaVersion, [12, 13, 14, 15, 16], true)) {
+    if ($schemaVersion >= 12) {
         \Netarium\Services\Topology\RackLayout::validate(
             $db->query('SELECT * FROM rack_settings')->fetchAll(PDO::FETCH_ASSOC),
             $db->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC),
@@ -58,11 +59,54 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
             }
         }
     }
-    if ($schemaVersion === 16) {
+    if ($schemaVersion >= 16) {
         \Netarium\Services\Topology\FloorRackPlacement::normalizeRows(
             $db->query('SELECT * FROM floor_rack_placements')->fetchAll(PDO::FETCH_ASSOC),
             $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC)
         );
+    }
+    if ($schemaVersion >= 17) {
+        $devices = [];
+        foreach ($db->query('SELECT id, ip FROM devices')->fetchAll(PDO::FETCH_ASSOC) as $device) {
+            $devices[$device['id']] = $device;
+        }
+        (new \Netarium\Services\Backup\BackupService($db))->validateBackupDeviceIpAddresses(
+            $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), $devices, $schemaVersion
+        );
+    }
+    if ($schemaVersion >= 18) {
+        (new \Netarium\Services\Backup\BackupService($db))->validateBackupIpManagement(
+            $db->query('SELECT * FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM ip_segments ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT id, ip, ip_segment_id FROM devices')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), $schemaVersion
+        );
+    }
+    if ($schemaVersion >= 19) {
+        \Netarium\Services\Topology\ChangeHistoryService::validateBackupRows(
+            $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+    if ($schemaVersion >= 20) {
+        $limits = \Netarium\Services\Storage\CapacityService::limits(
+            class_exists(\Netarium\Core\Config::class) ? \Netarium\Core\Config::create($appRoot) : []
+        );
+        $maxConfigBytes = $limits['device_configs']['max_total_bytes'] ?? \Netarium\Services\Topology\DeviceConfigService::DEFAULT_MAX_TOTAL_BYTES;
+        \Netarium\Services\Topology\DeviceConfigService::validateBackupRows(
+            $db->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN),
+            $maxConfigBytes
+        );
+    }
+    foreach (['address_spaces' => 18, 'ip_segments' => 18, 'change_history' => 19, 'device_configs' => 20] as $table => $introducedIn) {
+        if ($schemaVersion < $introducedIn) { continue; }
+        $stmt = $db->prepare('SELECT seq FROM sqlite_sequence WHERE name = ?');
+        $stmt->execute([$table]);
+        $sequence = $stmt->fetchColumn();
+        if ($sequence !== false && (!is_int($sequence) || $sequence < 0 || $sequence > \Netarium\Core\ResourceId::MAX_RESTORE)) {
+            throw new RuntimeException('Invalid sequence: ' . $table);
+        }
     }
 }
 
@@ -229,11 +273,7 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
         $file = $root . '/db/data.sqlite';
         $counts = fullDatabase($file, $root, false, $m['schema_version']);
         if ($counts !== $m['counts']) { throw new RuntimeException('Database count mismatch'); }
-        if (in_array($m['schema_version'], [11, 12, 13, 14, 15], true) && APP_DATABASE_SCHEMA_VERSION === 16
-            || in_array($m['schema_version'], [11, 12, 13, 14], true) && APP_DATABASE_SCHEMA_VERSION === 15
-            || in_array($m['schema_version'], [11, 12, 13], true) && APP_DATABASE_SCHEMA_VERSION === 14
-            || in_array($m['schema_version'], [11, 12], true) && APP_DATABASE_SCHEMA_VERSION === 13
-            || $m['schema_version'] === 11 && APP_DATABASE_SCHEMA_VERSION === 12) {
+        if ($m['schema_version'] < APP_DATABASE_SCHEMA_VERSION) {
             // Extraction uses exclusive-created files in a private workspace.
             // Only this isolated DB is migrated, after all source checks finish.
             $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
@@ -255,6 +295,31 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
             // Revalidate the resulting contract and image references, not the
             // old manifest hash/counts: those describe the unmodified source.
             fullDatabase($file, $root);
+        }
+        // All source hashes/counts and migration-preservation checks must pass
+        // before retention changes this isolated restore DB. Never prune the
+        // live source or the archived snapshot during backup creation.
+        if (APP_DATABASE_SCHEMA_VERSION >= 19) {
+            $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $pruned = (new \Netarium\Services\Topology\ChangeHistoryService($db))->pruneExpired();
+            $db = null;
+            if ($pruned > 0) {
+                // Manifest hashes/counts describe the original archive, not this
+                // retention-adjusted payload. Recheck the current DB contract.
+                fullDatabase($file, $root);
+            }
+        }
+        if (APP_DATABASE_SCHEMA_VERSION >= 21) {
+            $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $db->beginTransaction();
+            try {
+                (new \Netarium\Services\Monitoring\PingReachabilityMonitor($db))->reconcile([]);
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) { $db->rollBack(); }
+                throw $e;
+            }
+            $db = null;
         }
         return $m;
     } finally { $zip->close(); }

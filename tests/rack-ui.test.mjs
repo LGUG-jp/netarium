@@ -6,7 +6,7 @@ import { installWorkspaceDom } from './helpers/workspace-dom.mjs';
 test('ラックの両面表示・範囲選択・背面入力・機器詳細・閲覧権限を実フォームで扱う', async t => {
     const keys = ['window', 'document', 'Element', 'HTMLElement', 'fetch', 'requestAnimationFrame', 'cancelAnimationFrame'];
     const originals = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-    const dom = installWorkspaceDom({ templates: ['templates/components/canvas.php', 'templates/components/canvas_context_toolbar.php', 'templates/components/property_panel.php', 'templates/modals/view_manager.php'] });
+    const dom = installWorkspaceDom({ templates: ['templates/components/canvas.php', 'templates/components/canvas_context_toolbar.php', 'templates/components/property_panel.php', 'templates/modals/view_manager.php', 'templates/modals/ledger.php'] });
     const create = document.createElement;
     const scrollRequests = [];
     document.createElement = tag => {
@@ -78,6 +78,81 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     const change = async (name, value) => {
         const node = dom.get(`rack-mount-${name}`); node.value = value; await node.dispatch('input');
     };
+    await t.test('通常機器はクリック元を保持して個票を開き、閉鎖後の選択・フォーカスと閲覧権限を維持する', async () => {
+        const renderer = await import('../public/js/canvas/renderer.js');
+        const ledger = await import('../public/js/modals/ledger-modal.js');
+        appState.currentViewId = 2;
+        appState.views[1].view_type = 'floor';
+        appState.floorRackPlacements = [{ floor_view_id: 2, rack_view_id: 1, x: 150, y: 20 }];
+        renderer.render();
+        await appState.deviceLayer.querySelector('.floor-rack-select').dispatch('click');
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const floorRack = appState.deviceLayer.querySelector('.floor-rack');
+        assert.equal(floorRack.classList.contains('selected'), true);
+        const device = appState.deviceLayer.querySelector('.device');
+        const before = structuredClone(resource.buildResourceSave());
+        await device.dispatch('click', { detail: 1 });
+        assert.equal(appState.deviceLayer.querySelector('.device'), device, '最初のclickでdblclickの対象を破棄しない');
+        assert.equal(dom.get('panel').hidden, false);
+        assert.deepEqual([...appState.selectedPlacementIds], [1]);
+        assert.equal(appState.deviceLayer.querySelectorAll('.floor-rack').length, appState.floorRackPlacements.length);
+        assert.equal(floorRack.classList.contains('selected'), false, '機器選択でラックの選択表示を解除する');
+        await device.dispatch('click', { detail: 2 });
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, false);
+        assert.equal(dom.get('ledger-sheet-body').dataset.deviceId, '1');
+        assert.equal(appState.deviceLayer.querySelectorAll('.floor-rack').length, appState.floorRackPlacements.length);
+        assert.equal(appState.deviceLayer.querySelector('.floor-rack'), floorRack, 'ダブルクリックでもラックDOMを再生成しない');
+        await ledger.closeLedgerDetailPane();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        assert.equal(document.activeElement, device);
+        assert.deepEqual([...appState.selectedPlacementIds], [1]);
+        assert.deepEqual(resource.buildResourceSave(), before, '開閉だけで保存対象を変更しない');
+        for (let index = 0; index < 3; index++) {
+            await device.dispatch('click', { detail: 1 });
+            assert.equal(appState.deviceLayer.querySelectorAll('.floor-rack').length, appState.floorRackPlacements.length);
+        }
+        window.APP_CONFIG.user.isAdmin = false;
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, false, '閲覧者も既存個票を閲覧できる');
+        assert.ok(dom.get('ledger-sheet-body').querySelector('[data-field="name"]').readOnly);
+        await ledger.closeLedgerDetailPane();
+        window.APP_CONFIG.user.isAdmin = true;
+        for (const flag of ['linkMode', 'noteMode', 'floorPlanAdjustMode', 'isRangeSelecting', 'suppressNextClick']) {
+            appState[flag] = true;
+            await device.dispatch('dblclick');
+            assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true, `${flag}中は個票を開かない`);
+            appState[flag] = false;
+        }
+        appState.editingLinkId = 91;
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true);
+        appState.editingLinkId = null;
+        await device.dispatch('dblclick', { ctrlKey: true });
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true, '複数選択のダブルクリックを個票操作にしない');
+        device.classList.add('dragging');
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true, 'ドラッグ中は個票を開かない');
+        device.classList.remove('dragging');
+        appState.noteMode = true;
+        await device.dispatch('click', { detail: 1 });
+        assert.equal(appState.noteMode, false);
+        await device.dispatch('click', { detail: 2 });
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true, 'メモモード終了に使った連続クリックでは個票を開かない');
+        appState.suppressNextClick = true;
+        await device.dispatch('click', { detail: 1 });
+        await device.dispatch('click', { detail: 2 });
+        await device.dispatch('dblclick');
+        assert.equal(dom.get('ledger-device-sheet-overlay').hidden, true, 'ドラッグ後のclick抑止を消費しても個票を開かない');
+        appState.selectedPlacementIds.clear();
+        appState.editingDeviceId = null;
+        dom.get('panel').hidden = true;
+        appState.views[1].view_type = 'topology';
+        appState.floorRackPlacements = [];
+        appState.currentViewId = 1;
+        rack.renderRackView();
+    });
     await t.test('コンボボックスの検索・選択解除・上下キー・Escapeと新規登録切替', async () => {
         appState.devices[1].ip = '192.0.2.22';
         rack.openRackMountDialog({ viewId: 1, startU: 3 });
@@ -121,13 +196,10 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     await t.test('範囲と背面左右・奥行き全体の衝突を入力中に検証する', async () => {
         rack.openRackMountDialog({ viewId: 1, face: 'rear', startU: 3, heightU: 3, widthSlot: 'right' });
         await choose('機器2');
-        const summary = () => document.querySelector('.rack-mount-summary').textContent;
         const error = () => dom.get('rack-mount-error').textContent;
-        assert.ok(summary().includes('背面・左半分 / 3〜5U（3U占有）'));
         await change('start', '1');
         assert.ok(error().includes('背面1Uの左半分は使用中'));
         assert.equal(submitButton().disabled, true);
-        assert.equal(summary(), '搭載位置を確認してください。');
         await change('width', 'right');
         assert.equal(error(), '', '反対側ハーフ幅は併設可能');
         await change('width', 'full');
@@ -162,8 +234,6 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         await change('view', '3');
         assert.equal(submitButton().textContent, 'ラックへ移設');
         assert.equal(dom.get('rack-mount-title').textContent, '機器をラックへ移設');
-        assert.ok(document.querySelector('.rack-mount-current').textContent.includes('現在：試験ラック'));
-        assert.ok(document.querySelector('.rack-mount-summary').textContent.includes('移設先：移設先ラック'));
         appState.resourceConflicts.views.set(1, {});
         await document.querySelector('.rack-mount-form').dispatch('submit');
         assert.ok(dom.get('rack-mount-error').textContent.includes('保存状態が変わりました'));
@@ -175,13 +245,11 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         window.APP_CONFIG.user.isAdmin = true;
         await change('view', '1');
         assert.equal(submitButton().textContent, '搭載位置を変更');
-        assert.ok(document.querySelector('.rack-mount-summary').textContent.includes('同じラック内'));
         await cancelDialog();
         rack.openRackMountDialog({ viewId: 3, face: 'front', startU: 2 });
         await choose('機器1');
         assert.ok(dom.get('rack-mount-title').textContent.includes('移設'));
         assert.equal(dom.get('rack-mount-view'), null, '他ラック搭載済み候補でも空きセルの搭載先は固定');
-        assert.ok(document.querySelector('.rack-mount-summary').textContent.includes('移設先ラック'));
         await cancelDialog();
         appState.views.pop(); appState.rackSettings.pop();
         resource.resetResourceBaseline(appState);
@@ -311,6 +379,9 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     const section = dom.get('rack-position-section');
     assert.equal(section.parentElement.children.indexOf(section) + 1, section.parentElement.children.indexOf(dom.get('p-apply-btn').parentElement));
     assert.ok(section.querySelector('summary').textContent.includes('試験ラック'));
+    await rearBlock.dispatch('dblclick');
+    assert.equal(dom.get('rack-mount-search').value, '機器2', 'ラックの既存ダブルクリックは搭載位置変更を維持する');
+    await cancelDialog();
     // 閲覧者は機器を選択できるが、空きセル・搭載変更を使えない。
     window.APP_CONFIG.user.isAdmin = false;
     rack.renderRackView(); rack.renderRackPanel(appState.devices[1]);
@@ -374,6 +445,11 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         assert.equal(block().classList.contains('rack-device-invalid'), true);
         await block().dispatch('pointerup', { pointerId: 1, clientY: 60, clientX: 150 });
         assert.equal(movingMount().start_u, 3, '5Uの全幅機器との衝突は拒否');
+        // ドラッグのclickを消費した後も、同じ連続操作のdblclickで搭載変更を開かない。
+        await block().dispatch('click', { detail: 1 });
+        await block().dispatch('click', { detail: 2 });
+        await block().dispatch('dblclick');
+        assert.equal(dom.get('rack-mount-title'), null);
         await start(); await block().dispatch('pointerup', { pointerId: 1, clientY: 260, clientX: 150 });
         assert.equal(movingMount().start_u, 3, 'ラック範囲外を拒否');
         await start(); await block().dispatch('pointermove', { pointerId: 1, clientY: 180, clientX: 150 });

@@ -16,6 +16,65 @@ class AuthTest extends TestCase
         $this->client = $client;
     }
 
+    public function testRevokedSessionRendersCompleteLoginFormWithBufferingOff(): void
+    {
+        foreach ([0, 4096] as $buffering) {
+            $server = new \Netarium\Tests\TestServer(null, null, $buffering);
+            try {
+                $server->start();
+                $viewer = new TestHttpClient($server->getBaseUrl());
+                $admin = new TestHttpClient($server->getBaseUrl());
+                $this->assertTrue($viewer->login('viewer', 'viewer123'));
+                $this->assertTrue($admin->login('admin', 'admin123'));
+
+                $assertLoginForm = function (TestResponse $page) use ($buffering): string {
+                    $page->assertStatus(200);
+                    $body = $page->getBody();
+                    $this->assertSame(1, preg_match('/name="csrf_token"\\s+value="([a-f0-9]{64})"/', $body, $matches),
+                        'The first login response must include CSRF with output_buffering=' . $buffering);
+                    $this->assertStringContains('name="username"', $body);
+                    $this->assertStringContains('name="password"', $body);
+                    $this->assertStringContains('</form>', $body);
+                    return $matches[1];
+                };
+
+                // The change invalidates this client's authenticated session.
+                $changedPassword = 'Login-ready-339!';
+                $viewer->postJson('/api.php?action=change_own_password', [
+                    'current_password' => 'viewer123',
+                    'new_password' => $changedPassword,
+                    'new_password_confirm' => $changedPassword,
+                ])->assertOk();
+                $token = $assertLoginForm($viewer->get('/login.php'));
+                $viewer->postForm('/login.php', [
+                    'csrf_token' => $token,
+                    'username' => 'viewer',
+                    'password' => $changedPassword,
+                ])->assertStatus(302);
+
+                // Admin reset invalidates another live authenticated session.
+                $resetPassword = 'Admin-reset-339!';
+                $admin->postJson('/api.php?action=reset_user_password', [
+                    'id' => 2, // Fixture viewer
+                    'password' => $resetPassword,
+                    'password_confirm' => $resetPassword,
+                ])->assertOk();
+                $token = $assertLoginForm($viewer->get('/login.php'));
+                $viewer->postForm('/login.php', [
+                    'csrf_token' => $token,
+                    'username' => 'viewer',
+                    'password' => $resetPassword,
+                ])->assertStatus(302);
+
+                // The first visit from a fresh anonymous session still works.
+                $anonymous = new TestHttpClient($server->getBaseUrl());
+                $assertLoginForm($anonymous->get('/login.php'));
+            } finally {
+                $server->stop();
+            }
+        }
+    }
+
     private function submitLoginForm(
         TestHttpClient $client,
         string $username = 'viewer',
@@ -756,6 +815,111 @@ class AuthTest extends TestCase
         ]);
         $reset->assertOk();
         $freshViewerClient->get('/api.php?action=load')->assertStatus(401);
+    }
+
+    public function testUserSoftDeleteAndRestore(): void
+    {
+        $adminClient = new TestHttpClient($this->client->getBaseUrl());
+        $adminClient->login('admin', 'admin123');
+
+        $adminClient->postJson('/api.php?action=create_user', [
+            'username' => 'issue377user',
+            'password' => 'temporary-moon-377',
+            'password_confirm' => 'temporary-moon-377',
+            'role' => 'admin',
+        ])->assertOk();
+        $find = static function (TestHttpClient $client): array {
+            foreach ($client->get('/api.php?action=list_users')->getJson()['users'] as $user) {
+                if ($user['username'] === 'issue377user') {
+                    return $user;
+                }
+            }
+            return [];
+        };
+        $id = (int)$find($adminClient)['id'];
+
+        $userClient = new TestHttpClient($this->client->getBaseUrl());
+        $this->assertTrue($userClient->login('issue377user', 'temporary-moon-377'));
+
+        $adminClient->postJson('/api.php?action=delete_user', ['id' => $id])->assertOk();
+        $userClient->get('/api.php?action=load')->assertStatus(401);
+        $this->assertFalse((new TestHttpClient($this->client->getBaseUrl()))->login('issue377user', 'temporary-moon-377'));
+        $deleted = $find($adminClient);
+        $this->assertTrue($deleted['is_deleted']);
+        $this->assertFalse($deleted['is_active']);
+        $this->assertSame('admin', $deleted['role']);
+        $this->assertSame($id, (int)$deleted['id']);
+
+        $adminClient->postJson('/api.php?action=delete_user', ['id' => $id])->assertStatus(409);
+        $adminClient->postJson('/api.php?action=update_user', ['id' => $id, 'role' => 'admin', 'is_active' => true])->assertStatus(409);
+        $adminClient->postJson('/api.php?action=reset_user_password', [
+            'id' => $id,
+            'password' => 'another-pass-377!x',
+            'password_confirm' => 'another-pass-377!x',
+        ])->assertStatus(409);
+        $adminClient->postJson('/api.php?action=create_user', [
+            'username' => 'issue377user',
+            'password' => 'temporary-moon-377',
+            'password_confirm' => 'temporary-moon-377',
+            'role' => 'viewer',
+        ])->assertStatus(409);
+
+        $adminClient->postJson('/api.php?action=restore_user', ['id' => $id])->assertOk();
+        $adminClient->postJson('/api.php?action=restore_user', ['id' => $id])->assertStatus(409);
+        $restored = $find($adminClient);
+        $this->assertFalse($restored['is_deleted']);
+        $this->assertFalse($restored['is_active'], 'Restored user must stay disabled');
+        $this->assertFalse((new TestHttpClient($this->client->getBaseUrl()))->login('issue377user', 'temporary-moon-377'));
+
+        $adminClient->postJson('/api.php?action=update_user', ['id' => $id, 'role' => 'admin', 'is_active' => true])->assertOk();
+        $this->assertTrue((new TestHttpClient($this->client->getBaseUrl()))->login('issue377user', 'temporary-moon-377'));
+
+        $self = (int)$adminClient->get('/api.php?action=load')->getJson()['user']['id'];
+        $adminClient->postJson('/api.php?action=delete_user', ['id' => $self])->assertStatus(409);
+    }
+
+    public function testDisabledOrDeletedDormantSessionsDoNotReviveAfterReactivation(): void
+    {
+        foreach (['disable', 'delete'] as $operation) {
+            foreach (['viewer', 'admin'] as $role) {
+                $server = new \Netarium\Tests\TestServer();
+                try {
+                    $server->start();
+                    $admin = new TestHttpClient($server->getBaseUrl());
+                    $this->assertTrue($admin->login('admin', 'admin123'));
+                    $admin->postJson('/api.php?action=update_user', [
+                        'id' => 2, 'role' => $role, 'is_active' => true,
+                    ])->assertOk();
+                    $dormant = new TestHttpClient($server->getBaseUrl());
+                    $this->assertTrue($dormant->login('viewer', 'viewer123'));
+                    $dormant->get('/api.php?action=load')->assertOk();
+
+                    if ($operation === 'delete') {
+                        $admin->postJson('/api.php?action=delete_user', ['id' => 2])->assertOk();
+                        $admin->postJson('/api.php?action=restore_user', ['id' => 2])->assertOk();
+                    } else {
+                        $admin->postJson('/api.php?action=update_user', [
+                            'id' => 2, 'role' => $role, 'is_active' => false,
+                        ])->assertOk();
+                    }
+                    $this->assertFalse((new TestHttpClient($server->getBaseUrl()))->login('viewer', 'viewer123'));
+                    $admin->postJson('/api.php?action=update_user', [
+                        'id' => 2, 'role' => $role, 'is_active' => true,
+                    ])->assertOk();
+
+                    // No request from the old session while disabled: rejection must not rely on it.
+                    $dormant->get('/api.php?action=load')->assertStatus(401);
+                    $dormant->get('/api.php?action=list_users')->assertStatus(401);
+                    $fresh = new TestHttpClient($server->getBaseUrl());
+                    $this->assertTrue($fresh->login('viewer', 'viewer123'));
+                    $fresh->get('/api.php?action=load')->assertOk();
+                    $fresh->get('/api.php?action=list_users')->assertStatus($role === 'admin' ? 200 : 403);
+                    $admin->get('/api.php?action=list_users')->assertOk();
+                } finally {
+                    $server->stop();
+                }
+            }
+        }
     }
 
     public function testOwnPasswordChangeInvalidatesSession(): void

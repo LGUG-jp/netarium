@@ -164,6 +164,70 @@ async function drag(dx, dy, { target = image(), end = 'pointerup' } = {}) {
     return target;
 }
 
+test('図面操作は編集中の種別が物理の場合だけ表示し、種別切替で保存しない', () => {
+    const actions = dom.get('vm-floor-plan-actions');
+    assert.equal(actions.hidden, false);
+    for (const type of ['topology', 'floor', 'topology', 'floor']) {
+        dom.get('vm-type').value = type;
+        manager.updateViewManagerFormState();
+        assert.equal(actions.hidden, type !== 'floor');
+        assert.equal(dom.get('vm-floor-plan-btn').disabled, type !== 'floor');
+    }
+    appState.views[0].view_type = 'rack';
+    manager.loadSelectedViewIntoForm();
+    assert.equal(actions.hidden, true);
+    assert.equal(dom.get('vm-rack-fields').hidden, false);
+    assert.equal(dom.get('vm-type').disabled, true);
+    appState.views = [];
+    manager.loadSelectedViewIntoForm();
+    assert.equal(actions.hidden, true, '対象ビューがない場合も図面操作を残さない');
+    assert.equal(requests.length, 0);
+});
+
+test('図面の登録と削除で登録状態と操作名を切り替える', async () => {
+    const button = dom.get('vm-floor-plan-btn');
+    const registerLabel = button.textContent;
+    assert.equal(dom.get('vm-floor-plan-status').hidden, true);
+    await registerPlan();
+    await escape();
+    assert.equal(dom.get('vm-floor-plan-actions').hidden, false);
+    assert.equal(dom.get('vm-floor-plan-status').hidden, false);
+    assert.notEqual(button.textContent, registerLabel, '登録済みの管理操作は登録操作と区別する');
+    assert.equal(button.disabled, false);
+    await button.dispatch('click');
+    await floor.deleteCurrentFloorPlan();
+    await escape();
+    assert.equal(dom.get('vm-floor-plan-status').hidden, true);
+    assert.equal(button.textContent, registerLabel);
+    assert.equal(button.disabled, false);
+});
+
+for (const [label, block] of [
+    ['未適用入力', () => { dom.get('vm-name').value = '未適用'; }],
+    ['未保存ビュー', () => { appState.views[0].resource_revision = 0; }],
+    ['未保存変更', () => { appState.views[0].memo = '保存前'; }],
+    ['競合', () => { appState.resourceConflicts.views.set(1, {}); }],
+    ['管理者権限なし', () => { window.APP_CONFIG.user.isAdmin = false; }],
+    ['認証失効', () => { appState.authExpired = true; }]
+]) {
+    test(`物理の図面操作は${label}時に表示を保ちつつ無効化する`, async () => {
+        const originalView = { ...appState.views[0] };
+        block();
+        manager.updateViewManagerFormState();
+        assert.equal(dom.get('vm-floor-plan-actions').hidden, false);
+        assert.equal(dom.get('vm-floor-plan-btn').disabled, true);
+        assert.ok(dom.get('vm-floor-plan-help').textContent);
+        await manager.openSelectedViewFloorPlan();
+        assert.equal(dom.get('floor-plan-manager-overlay').hidden, true);
+        assert.equal(requests.length, 0);
+        Object.assign(appState.views[0], originalView);
+        appState.resourceConflicts.views.clear();
+        window.APP_CONFIG.user.isAdmin = true;
+        appState.authExpired = false;
+        manager.loadSelectedViewIntoForm();
+    });
+}
+
 test('登録後のCanvas編集はmodal stackを空にし、pointer確定を自動保存してEsc後も保持する', async () => {
     await registerPlan(); await edit();
     assert.equal(getTopModalContainer(), null);

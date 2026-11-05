@@ -18,6 +18,8 @@ import {
 } from './modals/link-display-modal.js';
 import { initializePrintModal } from './modals/print-modal.js';
 import { initializeLinkSystemsModal, openLinkSystems, closeLinkSystems } from './modals/link-systems-modal.js';
+import { openIpManagement } from './modals/ip-management-modal.js';
+import { openChangeHistory, closeChangeHistory } from './modals/change-history-modal.js';
 import { initializeLinkBulkModal } from './modals/link-bulk-modal.js';
 import {
     initializePingResultsModal, openPingResults, closePingResults, downloadPingResultsCsv
@@ -106,7 +108,6 @@ import {
     closeLedgerPlaceViewModal,
     confirmPlaceDevicesToView,
     deleteSelectedLedgerDevicesCompletely,
-    focusActiveDeviceOnCanvas,
     getLedgerSelectedDeviceIds,
     manageActiveDevicePlacements,
     openDashboardLedger,
@@ -114,7 +115,10 @@ import {
     openLedger,
     openLedgerWithFilters,
     openLedgerDetail,
+    focusLedgerSheetField,
     openLedgerPlaceViewModal,
+    openActiveDeviceHistory,
+    openActiveDeviceConfig,
     pingLedgerSelected,
     renderLedgerTable,
     resetLedgerFilters,
@@ -131,6 +135,7 @@ import {
     duplicateSelectedView,
     openViewManager,
     openSelectedViewFloorPlan,
+    openSelectedViewHistory,
     renderViewSelector,
     renderViewManagerList,
     reloadSelectedViewConflict,
@@ -322,6 +327,8 @@ export function registerStaticListeners() {
     document.getElementById('view-manage-btn')?.addEventListener('click', () => openViewManager());
     document.getElementById('link-display-settings-btn')?.addEventListener('click', () => openLinkDisplaySettings());
     document.getElementById('link-systems-settings-btn')?.addEventListener('click', () => openLinkSystems());
+    document.getElementById('ip-management-btn')?.addEventListener('click', () => openIpManagement());
+    document.getElementById('change-history-btn')?.addEventListener('click', () => openChangeHistory());
     document.getElementById('data-quality-btn')?.addEventListener('click', () => openDataQuality());
     document.getElementById('backup-export-btn')?.addEventListener('click', () => exportBackupZip());
     document.getElementById('backup-restore-btn')?.addEventListener('click', () => openBackupRestore());
@@ -382,8 +389,9 @@ export function registerStaticListeners() {
     document.getElementById('close-ledger-detail-pane-btn')?.addEventListener('click', () => closeLedgerDetailPane());
     document.getElementById('ledger-sheet-prev-btn')?.addEventListener('click', () => navigateLedgerDevice(-1));
     document.getElementById('ledger-sheet-next-btn')?.addEventListener('click', () => navigateLedgerDevice(1));
-    document.getElementById('ledger-sheet-canvas-btn')?.addEventListener('click', () => focusActiveDeviceOnCanvas());
     document.getElementById('ledger-sheet-view-manage-btn')?.addEventListener('click', () => manageActiveDevicePlacements());
+    document.getElementById('ledger-sheet-history-btn')?.addEventListener('click', () => openActiveDeviceHistory());
+    document.getElementById('ledger-sheet-config-btn')?.addEventListener('click', () => openActiveDeviceConfig());
     document.getElementById('ledger-sheet-save-btn')?.addEventListener('click', () => saveLedgerSheet());
     document.getElementById('close-ledger-place-view-modal-btn')?.addEventListener('click', () => closeLedgerPlaceViewModal());
     document.getElementById('close-ledger-place-view-modal-btn-2')?.addEventListener('click', () => closeLedgerPlaceViewModal());
@@ -407,6 +415,7 @@ export function registerStaticListeners() {
     document.getElementById('view-manager-form')?.addEventListener('submit', event => event.preventDefault());
     document.getElementById('vm-floor-plan-btn')?.addEventListener('click', () => openSelectedViewFloorPlan());
     document.getElementById('view-conflict-reload-btn')?.addEventListener('click', () => reloadSelectedViewConflict());
+    document.getElementById('view-history-btn')?.addEventListener('click', () => openSelectedViewHistory());
     document.getElementById('view-apply-btn')?.addEventListener('click', () => applyViewForm());
 }
 
@@ -503,20 +512,7 @@ function registerApplicationEvents() {
             if (!await openLedgerDetail(deviceId)) return;
             if (field) {
                 window.requestAnimationFrame(() => {
-                    const inputEl =
-                        document.querySelector(
-                            `#ledger-device-sheet-overlay [data-field="${field}"]`
-                        );
-                    if (
-                        inputEl instanceof
-                        HTMLElement
-                    ) {
-                        inputEl.focus();
-                        inputEl.scrollIntoView({
-                            block: 'center',
-                            inline: 'nearest'
-                        });
-                    }
+                    focusLedgerSheetField(field);
                 });
             }
         }
@@ -924,8 +920,9 @@ async function init() {
     initModalFocusTrap();
 
 
-    if (await loadData()) {
-        await openDirectLink(window.location.search || '');
+    const initialSearch = window.location.search || '';
+    if (await loadData({ initialSearch })) {
+        await openDirectLink(initialSearch);
     }
 }
 
@@ -994,7 +991,6 @@ window.confirmLedgerBulkEdit = confirmLedgerBulkEdit;
 window.closeLedgerDetailPane = closeLedgerDetailPane;
 window.closeLedgerPlaceViewModal = closeLedgerPlaceViewModal;
 window.confirmPlaceDevicesToView = confirmPlaceDevicesToView;
-window.focusActiveDeviceOnCanvas = focusActiveDeviceOnCanvas;
 window.manageActiveDevicePlacements = manageActiveDevicePlacements;
 window.openLedgerDetail = openLedgerDetail;
 window.openLedgerPlaceViewModal = openLedgerPlaceViewModal;
@@ -1046,6 +1042,8 @@ window.openPanel = openPanel;
 window.openPlacementManager = openPlacementManager;
 window.openPlacementManagerFromPanel = openPlacementManagerFromPanel;
 window.openViewManager = openViewManager;
+window.openChangeHistory = openChangeHistory;
+window.closeChangeHistory = closeChangeHistory;
 window.pingLedgerSelected = pingLedgerSelected;
 window.pingSelected = pingSelected;
 window.previewBackupRestore = previewBackupRestore;

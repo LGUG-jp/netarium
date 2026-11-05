@@ -20,7 +20,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 一時的な隔離ディレクトリおよび一時 SQLite DB を自動生成し、バックエンド API（Phase 0 基準）の振る舞いを検証します。
 
-`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、隔離候補 `1.3.0`（スキーマ 16）への順方向復元と、現行スキーマ 16 の主要保存項目の往復、ポリシー拒否判定を検証します。
+`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、現行版 v1.4.0 への順方向復元と、現行スキーマ 22 の主要保存項目の往復、ポリシー拒否判定を検証します。
 環境変数 `NETARIUM_BACKUP_V120_ROOT` で展開ルートを指定するか、対応する `v1.2.0` タグを取得してください。
 Web 復元テストでは旧版（`v1.0.0`〜`v1.1.0`）のタグや環境変数は不要です。
 未指定時はローカルのタグから `git archive` で隔離コピーを作り、タグ不足では明示的に失敗します。ネットワーク取得や現行コードの版番号偽装はテスト内で行いません。
@@ -58,7 +58,7 @@ php tests/full-backup.test.php
 
 一時的な隔離ディレクトリで完全バックアップヘルパープロセスのRPC動作を直接検証します。WALスナップショット採取、users/パスワードハッシュ・権限の復元、未参照を含む画像実体の保持、ロック競合排他、およびZIP改ざん・欠損・余分パス・zip-slip・スキーマ/アプリ不一致・破損・展開上限・カウント不一致・整合性異常時の前段拒否と本番DB不変を検証します。
 
-ラック・PC・奥行き・棚板・フロア配置参照対応では、前後面・物理左右・複数 U・`half` / `full`・PC・棚板と複数の子機器・物理配置図からのラック参照を含むスキーマ 16 同士の往復、スキーマ 11〜15 の元データ検証後の隔離 DB 移行、旧契約への未知データ混入拒否、移行失敗時のライブ DB 不変も検証します。
+現行スキーマ 22 の往復では、ラック前後面・物理左右・複数 U・`half` / `full`・PC・棚板と複数の子機器・フロア配置参照・追加 IP・IP マスタと所属・Ping 到達性・変更履歴・Config 全世代と採番状態・利用者の論理削除状態を検証します。旧スキーマ 11〜21 の元契約検証後の隔離 DB 移行、旧契約への未知データ混入拒否、移行失敗時のライブ DB 不変も対象です。
 旧完全 ZIP の移行については、32,768 件のメモを含む DB を PHP メモリ上限 24 MiB で復元できること、追加列を保持比較の対象から除外すること、移行中の旧列の値・型の変更や行削除を検出し、ライブ DB を変更せず拒否することも検証します。
 
 <a id="docker停止型完全バックアップ復元ランナーテスト259"></a>
@@ -71,26 +71,14 @@ php tests/docker-backup-runners.test.php
 
 隔離された一時ディレクトリで、`docker-backup-runner.php` による完全バックアップZIPの作成（SQLite VACUUM INTOスナップショット＋画像コピー＋manifest.json梱包）および `docker-restore-runner.php` による事前検証（`--verify-only`）・アトミック復元（`--apply`）、既存セッションの破棄、不整合・破損ZIPに対するロールバック保護、および全損復旧（空ホストストレージへの復元）を検証します。
 
-<a id="docker-ci-スモークテスト59299"></a>
+<a id="docker-ci-検証59299361"></a>
 
-### Docker CI スモークテスト
+### Docker CI 検証
 
 Linux コンテナ環境または CI 上で、Docker Compose による起動、ヘルスチェック（`public/healthcheck.php`）、更新・自動ロールバック CLI（`scripts/docker-update.sh`）、全損復旧（空 Volume への `docker-restore.sh`）、および公開スナップショットからの Docker ビルドを検証します。
 
-GitHub Actions の Docker CI では、Pull Request の変更内容に応じて検証範囲を 3 段階（`none`、`smoke`、`full`）に制御します。
-Markdown ドキュメントのみの変更、およびブラウザ用 JavaScript や CSS の変更では、Docker CI はコンテナ検証を実行しません（`none`）。
-PHP テンプレートや監視・品質関連の限定的な PHP コードの変更では、コンテナ起動と HTTP 疎通スモークを検証します（`smoke`）。ログイン後の `index.php` を取得し、主要画面の PHP テンプレート描画も確認します（ブラウザの表示・操作確認は含みません）。
-コア PHP コード、設定、スクリプト、Docker 資材、CI ワークフローの変更、または手動起動（`workflow_dispatch`）では、永続化、完全バックアップ・復元、更新・復旧、および公開スナップショットからのビルドを含む全手順を検証します（`full`）。
-
-<a id="docker-ci-範囲判定テスト299"></a>
-
-### Docker CI 範囲判定テスト
-
-```powershell
-node --test tests/ci-docker-scope.test.mjs
-```
-
-変更ファイル一覧から Docker CI の実行範囲（`none`、`smoke`、`full`）を判定する `scripts/ci-docker-scope.mjs` の判定ロジックと CLI 引数処理を検証します。
+GitHub Actions の Docker CI ワークフロー（`.github/workflows/docker-poc.yml`）は、通常の Pull Request では自動起動しません。
+手動起動（`workflow_dispatch`）またはリリース公開ワークフロー（`release-publish.yml`）からの呼び出し（`workflow_call`）により、常に全手順（`full`）を一括検証します。
 
 ### JavaScript 単体・結合テスト
 ```powershell
@@ -107,10 +95,9 @@ Node.js 標準の `node:test` ランナーを使用し、フロントエンド�
 
 ### PowerShell 配備モックテスト
 ```powershell
-# 一般権限で実行可能なモックテスト（3件）
+# 一般権限で実行可能なモックテスト（2件）
 powershell -ExecutionPolicy Bypass -File tests/uninstall-iis.test.ps1
 powershell -ExecutionPolicy Bypass -File tests/iis-lifecycle.test.ps1
-powershell -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
 
 # 一般権限で PWDB 辞書の fresh/update・欠損/破損拒否だけを実行（IIS/保護 ACL なし）
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/setup-iis.test.ps1 -PasswordBlocklistOnly
@@ -121,7 +108,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/setup-iis.test.ps1 -Re
 # DPAPI実往復と非昇格時の拒否。snapshot作成成功・実ACLの項目は管理者のみ
 powershell -ExecutionPolicy Bypass -File tests/snapshot-secrets.test.ps1
 
-# 管理者権限（SeSecurityPrivilege / UAC 昇格）が必要なテスト（6件）
+# 管理者権限（SeSecurityPrivilege / UAC 昇格）が必要なテスト（7件）
 # ※実 Set-Acl と bootstrap 秘密の管理者専用保管、追加辞書専用 ACL を検証します
 powershell -ExecutionPolicy Bypass -File tests/setup-iis.test.ps1
 powershell -ExecutionPolicy Bypass -File tests/fresh-setup-order.test.ps1
@@ -129,9 +116,10 @@ powershell -ExecutionPolicy Bypass -File tests/deployment-rollback.test.ps1
 powershell -ExecutionPolicy Bypass -File tests/deployment-acl.test.ps1
 powershell -ExecutionPolicy Bypass -File tests/existing-setup-acl.test.ps1
 powershell -ExecutionPolicy Bypass -File tests/password-blocklist-cli.test.ps1
+powershell -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
 ```
 
-IIS モックの試験は開発端末でも実行できます。`password-blocklist-cli.test.ps1` は実 IIS の専用 Application Pool・停止サイトを一時作成し、実 NTFS ACL と PHP を検証して終了時に撤去します。ACL を伴う試験には管理者権限が必要です。
+IIS モックの試験は開発端末でも実行できます。`full-backup.test.ps1` は実 CLI の管理者確認と復元 ACL 検証を含むため、共通関数の一部を除き昇格環境が必要です。`password-blocklist-cli.test.ps1` は実 IIS の専用 Application Pool・停止サイトを一時作成し、実 NTFS ACL と PHP を検証して終了時に撤去します。ACL を伴う試験には管理者権限が必要です。
 ---
 
 ## 2. PowerShell 配備モックテスト (`tests/*.test.ps1`)
@@ -148,10 +136,10 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `deployment-rollback.test.ps1` | `scripts/update.ps1`／`scripts/deployment-common.ps1` | **管理者** (※) | 更新失敗時のスナップショットからのファイル・DB 復元、旧 NCSC のみへの復元と PWDB 残置防止、同版 PWDB 資材の欠損・改変からの復元、スナップショットへの追加辞書非混入と保持。既存 Site の location が元は無し／有り／不明の場合の除去・保全 |
 | `deployment-acl.test.ps1` | `scripts/deployment-common.ps1` | **管理者** (※) | プログラムの広範な書込除去・既存Read保持、DB/config/sessionの既存明示Read除去、対象Poolだけの必要権限、bootstrap管理専用ACL |
 | `snapshot-secrets.test.ps1` | `scripts/deployment-common.ps1` | 一般／管理者 | 実DPAPIの空・ASCII・Unicode秘密の往復と破損拒否、非昇格時の書込前拒否。管理者ではUsers Read親下のsnapshot保護、manifest非漏洩・session除外・復号失敗時のDB不変 |
-| `full-backup.test.ps1` | `scripts/full-backup-common.ps1` | 一般 | 完全バックアップ共通関数の単体テスト（UNCパス拒否、リパースポイント拒否、SQLite sidecar検出、容量不足拒否、元状態維持ロジック） |
+| `full-backup.test.ps1` | `scripts/full-backup-common.ps1`／`backup-full.ps1`／`restore-full.ps1` | **管理者** (※) | UNCパス・リパースポイント・SQLite sidecar・容量不足の拒否、元状態維持に加え、実 CLI による DB・画像・認証状態の復元、セッション失効、ACL、配置失敗時の切戻しを検証 |
 | `password-blocklist-cli.test.ps1` | `scripts/set-password-blocklist.ps1` | **管理者** (※) | 追加パスワード辞書 CLI の登録・更新・解除（`-Disable`）、構文検証（UTF-8・改行・重複・制御文字・容量・件数の拒否）、兄弟 manifest（`password-blocklist.json`）と本文領域（`password-blocklist/`）のアトミック切替、更新失敗時の有効 manifest 保持、専用 ACL（SYSTEM/Administrators 書込、Pool 読取専用）と継承遮断の検証 |
 
-※ 管理者と記した 6 件は実際の `Set-Acl` を呼び出します（`password-blocklist-cli.test.ps1` は `WebAdministration` モジュールも必要です）。bootstrap 秘密や追加辞書領域は SYSTEM/Administrators 専用 ACL や Pool 専用権限を検査するため、非昇格の環境で保護確認を省略して実行しません。ローカルで一部だけ実行した場合は、全件成功とせず未実施ケースを明記します。
+※ 管理者と記した 7 件は実際の管理者確認や ACL 検証を含みます（`password-blocklist-cli.test.ps1` は `WebAdministration` モジュールも必要です）。bootstrap 秘密や追加辞書領域は SYSTEM/Administrators 専用 ACL や Pool 専用権限を検査するため、非昇格の環境で保護確認を省略して実行しません。ローカルで一部だけ実行した場合は、全件成功とせず未実施ケースを明記します。
 
 `snapshot-secrets.test.ps1`は非昇格時にsnapshot作成成功・ACL／復元のケースをSKIPと明示します。これを全ケース合格と扱いません。機密領域のDACL／所有者設定はWindowsのAccessControl APIで行い、SACLを書き換えません。別主体の実読取拒否と実IISのPool資格情報復元は[開発ガイド（配備の確認）](../docs/development.md#配備スクリプトの確認)に従って隔離 IIS で確認します。
 ---
@@ -170,11 +158,14 @@ IIS モックの試験は開発端末でも実行できます。`password-blockl
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器／ビュー／系統／メモ／ラック／棚板／フロア配置参照）の保存、スキーマ 11〜16 移行、面×U×横幅衝突、両側 revision による移設、全体保存時の搭載・棚板保持、バッチ rollback、隔離 PHP での Unicode 保存・ロード・ZIP 復元 |
-| `BackupTest.php` | `netarium-config` 形式 1 のスキーマ 11〜15 元契約検証・16 への構成変換、ラック・棚板・奥行き・配置参照の往復、同一 MAJOR 内正規 SemVer（source <= target）とスキーマ 11〜16 復元判定、消失プレビュー・事前退避、逆方向や未知形式の拒否、画像同一性・実体非破壊、利用者・セッション・bootstrap 保全 |
+| `BackupTest.php` | `netarium-config` 形式 1 のスキーマ 11〜21 元契約検証・22 への構成変換、IPAM・到達性・90 日履歴・Config 直近 1 世代と採番・ラック・棚板・配置参照の往復、同一 MAJOR 内正規 SemVer（source <= target）とスキーマ 11〜22 復元判定、消失プレビュー・事前退避、逆方向や未知形式の拒否、画像同一性・実体非破壊、利用者・セッション・bootstrap 保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
 | `DataQualityTest.php` | データ品質診断（未配置機器、孤立接続、重複 IP/名前等の検知）、保守期限警告 |
+| `IpManagementTest.php` | IP マスタ・所属、同一空間の新規重複拒否・異空間許容・未分類確認、CIDR 端点・ページング・競合、診断上限超過時の原子的拒否 |
+| `ChangeHistoryTest.php` | 機器・ビュー主要変更の成功時記録、期間・対象・操作者検索、90 日保持、閲覧者拒否、復元・競合との整合 |
+| `DeviceConfigTest.php` | 管理者限定の本文保存・世代・差分・削除、UTF-8 バイト数・保持数・全体容量、採番と競合、秘密値の他応答・ログへの非複製、Web／完全 ZIP の保存契約 |
 | `FloorPlanTest.php` | フロア図面登録、A3 自動縮小変換、EXIF 回転補正、透過 PNG 保持、寸法/容量上限（30MiB/7000px）境界 |
 | `DeviceImageTest.php` | 機器写真登録、長辺 2048px 保存用縮小、サムネイル生成、ガベージコレクション（GC）処理 |
 | `AuthenticatedImageCacheTest.php` | 原寸・サムネイル・図面の`private, no-store`、旧URLからの版更新、条件付き要求での画像読取、未認証・ログアウト・利用者停止・idle/absolute期限切れ・初回変更制限・エラー応答 |
@@ -195,6 +186,7 @@ Public の実タグと Private のローカルタグを区別して受入を行�
 既存の `tmp/`、配備先、本番 storage は使いません。
 下記は候補リポジトリのルートから実行する PowerShell の例です。
 公開先への書込み・タグ作成・IIS 設定変更は行いません。
+下記の PowerShell 完全 CLI 試験は管理者 PowerShell で実行します。非昇格の場合も PHP の Web／完全 ZIP 回帰は独立して実行できますが、完全 CLI の成功として扱いません。
 
 Web 復元テストは単一の正式な `v1.2.0` 代表試験に整理されており、旧版の複数タグ指定（`V100`〜`V110`）は Web テストでは不要です。
 完全 ZIP テストでも未変更の公式公開版 `v1.2.0`（スキーマ 11）実プログラムを指定して検証できます。
@@ -229,13 +221,22 @@ echo "PASS actual-tag Web ZIP smoke\n";
 ```
 
 取得 ref の peeled SHA は `対象変更` と照合します。
-Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、候補（スキーマ 16）の preview／commit を実行します。
-元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認し、現行スキーマ 16 同士の主要保存項目の往復も検証します。
-完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を候補（明示的な隔離候補 `1.3.0` / スキーマ 16）で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
+Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、現行 v1.4.0（スキーマ 22）の preview／commit を実行します。
+元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認し、現行スキーマ 22 同士の主要保存項目の往復も検証します。
+完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を現行版 `version.php` に従う隔離 v1.4.0／スキーマ 22 で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
 PowerShell テストは現行の `backup-full.ps1`／`restore-full.ps1` による DB・画像・利用者復元、セッション失効、配置失敗時の切戻し、旧版との互換拒否を検証します（IIS 操作は既存モック）。この試験は公開 `v1.2.0` 実 ZIP 受入とは区別します。
 候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
 これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
 実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たした状態で結果を記録してください。
+
+### v1.4.0 のリリース検証
+
+版番号更新に対応する Web／完全 ZIP の関連回帰と既存 CI を PR で確認します。
+最終 PHP・JavaScript 全件回帰、Docker CI `full`、Private release dry-run は、版番号と文書の PR を人間がマージした後の固定 `main` SHA で実行します。
+実行順序、v1.3.0／スキーマ 16 → 22 の更新・実 ZIP 復元、IIS／Docker、権限とランタイムの判定条件は [変更履歴](../CHANGELOG.md)を参照してください。
+上記の v1.2.0 代表自動回帰は、未変更の v1.3.0 実プログラムを使った更新・復元の代わりにはなりません。
+合成環境での実ブラウザ操作と実環境の受入は、人が対象 SHA・結果・未確認範囲を記録します。
+未実施項目、SKIP、旧コードを使わない fixture の成功を、正式版実資材の受入成功へ読み替えません。
 
 ---
 
@@ -321,7 +322,6 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `main-init.test.mjs`: アプリケーション起動時の初期化シーケンス
 - `palette-images.test.mjs`: 機器写真拡大ダイアログ（前後ナビゲーション、表示順序、端点制御、フォーカス復帰）
 - `toast.test.mjs`: 軽量トースト通知（3秒自動消去、二重表示防止）
-- `ci-docker-scope.test.mjs`: Docker CI 実行範囲判定スクリプト（`scripts/ci-docker-scope.mjs`）の単体テスト（変更パスの `none` / `smoke` / `full` 分類、判定優先順位、CLI 引数処理）
 
 ---
 

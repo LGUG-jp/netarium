@@ -56,7 +56,7 @@ export function prepareDeviceBulkEdit(session, updates) {
     const devices = assertTargets(session.ids);
     const candidates = devices.map((device, index) => {
         const current = toSaveDevice(device);
-        if (Object.keys(current).some(key => current[key] !== session.bases[index][key])) {
+        if (JSON.stringify(current) !== JSON.stringify(session.bases[index])) {
             throw new Error(`機器ID ${device.id} の属性が変更されています。一括編集を開き直してください`);
         }
         const { values, errors } = validateDeviceValues({ ...device, ...updates });

@@ -66,6 +66,23 @@ test('リンク経路編集の操作と保存境界', async t => {
     const elements = new Map();
     const element = id => elements.get(id) ?? null;
     const documentEvents = new Node();
+    // テストの簡易DOMでもpointerupには最後のmove座標を引き継ぐ。
+    // 省略された座標を(0, 0)とみなすと、本来のドラッグ終点が変わってしまう。
+    let lastPointer = { clientX: 0, clientY: 0 };
+    const dispatchDocumentEvent = documentEvents.dispatch.bind(documentEvents);
+    documentEvents.dispatch = (type, fields = {}) => {
+        if (type === 'pointermove' && (fields.pointerId == null || fields.pointerId === 1)) {
+            lastPointer = {
+                clientX: fields.clientX ?? lastPointer.clientX,
+                clientY: fields.clientY ?? lastPointer.clientY
+            };
+        }
+        if ((type === 'pointerup' || type === 'pointercancel') &&
+            fields.clientX === undefined && fields.clientY === undefined) {
+            fields = { ...lastPointer, ...fields };
+        }
+        return dispatchDocumentEvent(type, fields);
+    };
     globalThis.Element = globalThis.HTMLElement = Node;
     globalThis.document = {
         body: new Node(), activeElement: null,
@@ -153,6 +170,7 @@ test('リンク経路編集の操作と保存境界', async t => {
         hold = false; release = null; remap = false; fail = false; answer = true; confirmations = 0;
         serverData = null; loadRequests = 0;
         renderAllLinks = false;
+        lastPointer = { clientX: 0, clientY: 0 };
         window.APP_CONFIG.user.isAdmin = true;
         appState.views = [{ id: 1, resource_revision: 1, name: '試験', view_type: 'topology', sort_order: 10 }];
         appState.devices = [{ id: 10, resource_revision: 1, name: 'SW1', type: 'switch', ip: '' },
@@ -184,9 +202,12 @@ test('リンク経路編集の操作と保存境界', async t => {
     };
     const segment = (index = 0) => appState.currentSvg.querySelector(`[data-route-segment="${index}"]`);
     const start = () => element('lp-route-edit-btn').dispatch('click');
-    const beginDrag = () => segment().dispatch('pointerdown');
+    const beginDrag = () => {
+        lastPointer = { clientX: 0, clientY: 0 };
+        return segment().dispatch('pointerdown');
+    };
     const move = y => documentEvents.dispatch('pointermove', { clientY: y });
-    const end = type => documentEvents.dispatch(type ?? 'pointerup');
+    const end = (type, position = {}) => documentEvents.dispatch(type ?? 'pointerup', position);
 
     await t.test('ミニヘルプのESC・Tabは編集を終了せず、閉じると起動元へ戻る', async () => {
         reset();
@@ -455,6 +476,30 @@ test('リンク経路編集の操作と保存境界', async t => {
         assert.deepEqual(resource.buildResourceSave().views, []);
         assert.equal(requests.length, before, '再読込した経路を重複保存しない');
         start(); assert.ok(segment(), '最新データで経路編集を再開できる');
+    });
+    await t.test('経路は最後のmoveではなくupの座標で確定し保存される', async () => {
+        reset(); start(); await settle();
+        const initial = resolveTopologyLinkRoutes(appState.links, appState.placements).get(1);
+        beginDrag(); move(10);
+        assert.deepEqual(appState.links[0].manual_route, []);
+        end('pointerup', { clientY: 35 }); await settle();
+        assert.deepEqual(appState.links[0].manual_route, [
+            { x: initial[0].x, y: initial[0].y + 35 },
+            { x: initial.at(-1).x, y: initial.at(-1).y + 35 }
+        ]);
+        assert.deepEqual(requests.at(-1).views[0].links[0].manual_route,
+            appState.links[0].manual_route);
+    });
+    await t.test('経路はmoveなしのupだけでも確定し、cancelでは確定しない', async () => {
+        reset(); start(); await settle();
+        const initialY = resolveTopologyLinkRoutes(appState.links, appState.placements).get(1)[0].y;
+        beginDrag(); end('pointerup', { clientY: 25 }); await settle();
+        assert.equal(appState.links[0].manual_route[0].y, initialY + 25);
+        const saved = structuredClone(appState.links[0].manual_route);
+        const count = requests.length;
+        beginDrag(); move(20); end('pointercancel', { clientY: 90 }); await settle();
+        assert.deepEqual(appState.links[0].manual_route, saved);
+        assert.equal(requests.length, count);
     });
     await t.test('フロア図でも区間を調整でき、別pointerの終了やcapture失敗で誤確定しない', async () => {
         reset(); appState.views[0].view_type = 'floor'; start(); await settle();

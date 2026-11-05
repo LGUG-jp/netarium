@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>保存・管理の操作 - Netarium 利用ガイド</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="assets/icons/brand/netarium-mark-compact.svg">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <header class="help-header-bar">
+        <div class="help-header-inner">
+            <a href="help.html" class="help-header-brand">
+                <img src="assets/icons/brand/netarium-logo.svg" width="127" height="32" alt="Netarium">
+                <span>利用ガイド</span>
+            </a>
+            <nav aria-label="機能別ナビゲーション">
+                <ul class="help-nav-list">
+                    <li><a href="help.html" class="help-nav-link">トップ</a></li>
+                    <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
+                    <li><a href="help-devices.html" class="help-nav-link">機器・台帳</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">ビュー・ラック</a></li>
+                    <li><a href="help-admin.html" class="help-nav-link" aria-current="page">保存・管理</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="help-layout">
+        <aside class="help-toc">
+            <details id="help-toc" open>
+                <summary>目次</summary>
+                <nav aria-label="章目次">
+                    <ol>
+                        <li><a href="#saving">変更の保存と競合への対処</a></li>
+                        <li><a href="#csv-backup">CSVとバックアップZIPの使い分け</a></li>
+                        <li><a href="#accounts">利用者管理とパスワード</a></li>
+                        <li><a href="#first-password">初回パスワード変更</a></li>
+                    </ol>
+                </nav>
+            </details>
+        </aside>
+
+        <main class="help-container" id="help-content">
+            <h1>保存・管理の操作ガイド</h1>
+            <p>
+                データの自動保存の仕組み、他利用者との更新競合の解消、CSV取込・バックアップ復元の使い分け、および利用者・パスワード管理の手順を説明します。
+            </p>
+
+            <section>
+                <h2 id="saving" tabindex="-1">変更の保存と競合への対処</h2>
+                <p>Netariumでは、編集内容を確定（「適用」）すると自動的にサーバーへ保存されます。</p>
+                <figure class="help-figure">
+                    <svg class="help-flow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 330" width="440" height="330" role="img" aria-labelledby="save-flow-title save-flow-desc">
+                        <title id="save-flow-title">自動保存フロー</title>
+                        <desc id="save-flow-desc">編集した入力を適用、またはCanvas操作を確定すると自動保存。成功は保存済み、競合時は内容を控えて対象を再読込する。</desc>
+                        <g fill="var(--bg-panel)" stroke="var(--border-strong)" stroke-width="2">
+                            <rect x="55" y="10" width="330" height="45" rx="4"/>
+                            <rect x="55" y="80" width="330" height="45" rx="4"/>
+                            <rect x="55" y="150" width="330" height="45" rx="4"/>
+                            <rect x="10" y="260" width="195" height="55" rx="4" stroke="var(--success)"/>
+                            <rect x="235" y="260" width="195" height="55" rx="4" stroke="var(--danger)"/>
+                        </g>
+                        <g fill="none" stroke="var(--text-muted)" stroke-width="2">
+                            <path d="M220 55v23m-5-6 5 6 5-6M220 125v23m-5-6 5 6 5-6M220 195v30H107v33m-5-6 5 6 5-6M220 225h113v33m-5-6 5 6 5-6"/>
+                        </g>
+                        <g fill="var(--text-main)" font-family="system-ui, sans-serif" font-size="18" text-anchor="middle">
+                            <text x="220" y="39">編集</text>
+                            <text x="220" y="109">「適用」または操作確定</text>
+                            <text x="220" y="179">自動保存</text>
+                            <text x="107" y="293">保存済み</text>
+                            <text x="333" y="282">競合あり</text>
+                            <text x="333" y="304" font-size="15">内容を控え、再読込</text>
+                        </g>
+                    </svg>
+                    <figcaption>入力の適用と保存は別の段階です。上部「保存」だけでは未適用入力は確定しません。通信失敗などの場合は、下部の保存状態に従って対処してください。</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>自動保存の契機:</strong> 機器・接続・メモ・図面の移動や追加は操作確定時に即時自動保存されます。個票やプロパティパネルでの入力は、パネル内の<strong>「適用」</strong>を押した時点で保存対象になります。</li>
+                    <li><strong>上部バー「保存」ボタン:</strong> 未送信の変更がある場合や、通信一時切断後の再試行に使用します。未適用の入力は確定されません。</li>
+                    <li><strong>未適用入力の保護:</strong> 個票を閉じたり別の機器を選択した際に未適用入力がある場合、「適用」「編集を続ける」「変更を取り消す」の確認ダイアログが表示されます。</li>
+                </ul>
+                <div class="note">
+                    <strong>データの競合（コンフリクト）について:</strong> 別の利用者が同じ機器やビューを先に更新していた場合、自動上書きを防止するため「競合あり」となります。必要な入力内容をメモ等に控えた上で、画面の「競合した機器を再読込」または「競合したビューを再読込」を実行して最新データを取得し、再度編集を行ってください。
+                </div>
+            </section>
+
+            <section>
+                <h2 id="csv-backup" tabindex="-1">CSVとバックアップZIPの使い分け</h2>
+                <p>機器台帳の外部編集・一括登録にはCSV、システム全体の保全・復元にはバックアップZIPを使用します。</p>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">種別</th><th scope="col">対象データ</th><th scope="col">主な用途と制約</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">機器台帳CSV</th>
+                            <td>機器の基本属性、管理IP、追加IP（JSON形式）。</td>
+                            <td>表計算ソフト等での一括編集・棚卸し用。ビュー配置、接続線、図面、画像、利用者は含みません。新規機器は未配置で取り込まれます。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">構成情報ZIP（Web版）</th>
+                            <td>台帳、ビュー、配置、ラック、接続、系統、メモ、変更履歴、各機器の直近1世代Config、画像参照メタデータ。</td>
+                            <td>管理画面の「バックアップ」から取得・復元。画像実体や利用者アカウントは含みません。復元前には必ず退避バックアップを取得してください。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">完全バックアップ（サーバーCLI）</th>
+                            <td>SQLite DB、画像実体、利用者アカウント。セッションは含めず、復元時に既存セッションを失効させます。</td>
+                            <td>サーバー障害やシステム移行時の全損復旧用。サーバー上で<code>backup-full.ps1</code>等の管理者スクリプトを実行します。</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <h3>CSV取込の手順</h3>
+                <ol>
+                    <li>機器台帳で「CSV出力」を行い、最新フォーマット（固定20列、UTF-8）のテンプレートを確認します。</li>
+                    <li>編集後、「CSV取込」でファイル（2MiB・5,000行以下）を選択し、検証結果プレビューを確認します。</li>
+                    <li>新規機器の件数、更新機器の変更前後、IP重複の警告を確認し、<strong>「取込を実行」</strong>を押します。</li>
+                </ol>
+                <p class="note">新たに診断するIP重複が1,000組を超える場合は取り込めません。重複するIPを整理するか、CSVを分割してください。</p>
+            </section>
+
+            <section>
+                <h2 id="accounts" tabindex="-1">利用者管理とパスワード</h2>
+                <p>管理者は上部バーの「管理」→「利用者管理」から、ユーザーの登録・権限変更・停止・復元を行います。</p>
+                <ol>
+                    <li><strong>新規登録:</strong> 「＋ 利用者を登録」を押して登録フォームを展開し、ユーザー名（半角英数3〜50文字）、役割（管理者／閲覧者）、仮パスワードを入力して「利用者を登録」を押します。</li>
+                    <li><strong>停止・再開（有効/無効）:</strong> 一覧で対象利用者の「有効」チェックボックスを切り替え、下部の「適用」を押して確定します。停止前のセッションは再開しても復活しないため、利用再開時は改めてログインしてください。</li>
+                    <li><strong>削除と復元:</strong> 「削除」を押すと削除済みタブへ移動します（操作履歴やデータ整合性を保つため論理削除）。「削除済み」タブで「復元」を押すと一覧へ戻ります（復元直後は無効状態のため、有効にチェックを入れて「適用」で再開します）。</li>
+                    <li><strong>パスワード再設定:</strong> 利用者がパスワードを忘れた場合、一覧の「パスワード再設定」から仮パスワードを再発行します。</li>
+                </ol>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">パスワード要件</th><th scope="col">仕様と制限</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">文字数</th>
+                            <td>12〜128文字（Unicodeコードポイントで判定）。UTF-8で最大512バイト。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">文字種</th>
+                            <td>英大文字・小文字・数字・記号・日本語・絵文字・空白を使用可能（特定の混在は必須ではありません）。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">安全基準</th>
+                            <td>頻出・既知漏えいパスワードや、ユーザー名から推測しやすい値は自動的に拒否されます。</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2 id="first-password" tabindex="-1">仮パスワードで初めてログインする</h2>
+                <p>管理者に登録された新規利用者や、パスワード再設定を受けた利用者は、初回ログイン時にパスワード変更が必須となります。</p>
+                <figure class="help-figure">
+                    <svg class="help-flow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 355" width="440" height="355" role="img" aria-labelledby="password-flow-title password-flow-desc">
+                        <title id="password-flow-title">初回パスワード変更フロー</title>
+                        <desc id="password-flow-desc">管理者が仮パスワードを発行。本人がログインし、別のパスワードへ変更後、新しい値で再ログインして通常利用を開始する。</desc>
+                        <g fill="var(--bg-panel)" stroke="var(--border-strong)" stroke-width="2">
+                            <rect x="30" y="10" width="380" height="45" rx="4"/>
+                            <rect x="30" y="80" width="380" height="45" rx="4"/>
+                            <rect x="30" y="150" width="380" height="45" rx="4" stroke="var(--primary)"/>
+                            <rect x="30" y="220" width="380" height="45" rx="4"/>
+                            <rect x="30" y="290" width="380" height="45" rx="4"/>
+                        </g>
+                        <path d="M220 55v23m-5-6 5 6 5-6M220 125v23m-5-6 5 6 5-6M220 195v23m-5-6 5 6 5-6M220 265v23m-5-6 5 6 5-6" fill="none" stroke="var(--text-muted)" stroke-width="2"/>
+                        <g fill="var(--text-main)" font-family="system-ui, sans-serif" font-size="18" text-anchor="middle">
+                            <text x="220" y="39">管理者が仮パスワードを発行</text>
+                            <text x="220" y="109">仮パスワードでログイン</text>
+                            <text x="220" y="179">本人による変更が必須</text>
+                            <text x="220" y="249">新しいパスワードで再ログイン</text>
+                            <text x="220" y="319">通常利用</text>
+                        </g>
+                    </svg>
+                    <figcaption>本人が変更を終えるまでは通常画面やAPIを利用できません。仮パスワードとは異なる、本人だけが知るパスワードを設定してください。</figcaption>
+                </figure>
+                <ol>
+                    <li>管理者から通知されたユーザー名と仮パスワードでログインします。</li>
+                    <li>初回パスワード変更画面が表示されるので、仮パスワードと「新しいパスワード（12文字以上）」を入力します。</li>
+                    <li>「パスワードを変更」を押すとログアウトします。</li>
+                    <li>新しいパスワードで再ログインすると、通常の管理画面が利用可能になります。</li>
+                </ol>
+            </section>
+
+            <div class="help-page-footer-nav">
+                <a href="help-views.html" class="btn btn-secondary btn-sm">← 前へ：ビュー・ラック</a>
+                <a href="help.html" class="btn btn-primary btn-sm">トップへ戻る ↑</a>
+            </div>
+
+            <footer class="footer-close">
+                <button id="help-tab-close" type="button" class="btn btn-secondary">このタブを閉じる</button>
+                <p id="help-tab-close-notice" class="help-close-notice form-support" hidden>ブラウザのタブを閉じてください。</p>
+            </footer>
+        </main>
+    </div>
+
+    <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-title">
+        <header class="help-image-header">
+            <h2 id="help-image-title">操作ガイド画像</h2>
+            <button id="help-image-close" type="button" class="btn btn-secondary btn-sm" autofocus>閉じる</button>
+        </header>
+        <div class="help-image-scroll" tabindex="0" role="region" aria-label="拡大画像（矢印キーでスクロール）"><img id="help-image-preview" alt=""></div>
+        <p id="help-image-caption" class="form-support"></p>
+    </dialog>
+
+    <script src="js/help.js"></script>
+</body>
+</html>

@@ -5,7 +5,7 @@
  * 確定済みデータの保存要求・再試行・対象別競合制御・状態表示を共通管理する。
  */
 
-import { appState, validateAllDataBeforeSave } from './state.js';
+import { appState, validateAllDataBeforeSave, toSaveDevice } from './state.js';
 import { eventBus } from './event-bus.js';
 import { hasDeviceDraftChanges } from './device-drafts.js';
 import { apiFetch, handleAuthExpired } from './api-client.js';
@@ -507,6 +507,27 @@ async function executeSave({ silent = false } = {}) {
         if (err.status === 401) {
             pendingSave = null;
             handleAuthExpired();
+            return false;
+        }
+        if (err.apiRejected && err.details?.reason === 'ip_confirmation_required') {
+            const operations = pendingSave?.payload.devices || [];
+            const warnings = err.details.warnings || [];
+            pendingSave = null;
+            const unchanged = operations.filter(operation => operation.device).every(operation => {
+                const current = appState.devices.find(row => Number(row.id) === Number(operation.id));
+                return current && JSON.stringify(toSaveDevice(current)) === JSON.stringify(operation.device);
+            });
+            if (unchanged && !operations.some(operation => operation.device?.ip_conflicts_confirmed) &&
+                window.confirm('未分類のIPアドレスが重複します。ネットワークの分離を確認して未分類のまま保存しますか？\n' +
+                    warnings.map(warning => warning.message || `${warning.ip}: ${(warning.targets || []).map(target => `機器ID ${target.device_id ?? target.id} ${target.device_name ?? target.name ?? ''}`).join(' / ')}`).join('\n'))) {
+                for (const operation of operations) {
+                    const current = appState.devices.find(row => Number(row.id) === Number(operation.id));
+                    if (current && operation.device) current.ip_conflicts_confirmed = true;
+                }
+                return true;
+            }
+            markSaveError('IPアドレスの重複確認が必要です。入力内容は保持されています。');
+            showToast('IPアドレスの重複確認を完了していません。入力内容は保持されています', 'warning');
             return false;
         }
         if (err.apiRejected && err.status === 409) {

@@ -12,10 +12,11 @@
     z-index: 2000;
     background-color: rgba(15, 23, 42, 0.45);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: var(--space-3);
-    overflow: hidden;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
     backdrop-filter: blur(2px);
 }
 
@@ -25,12 +26,19 @@
     width: min(96vw, 1440px);
     height: min(92vh, 900px);
     max-width: 100%;
-    max-height: 100%;
+    box-sizing: border-box;
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-md);
     background-color: #ffffff;
     box-shadow: var(--shadow-lg);
     overflow: hidden;
+}
+
+@media (min-width: 1500px) {
+    #ledger-dialog {
+        width: min(96vw, 1520px);
+    }
 }
 
 .ledger-header {
@@ -419,6 +427,24 @@
     text-align: center;
 }
 
+#ledger-table tbody .ledger-sticky-check {
+    padding: 0;
+    cursor: pointer;
+}
+
+#ledger-table .ledger-select-cell-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 28px;
+    height: 100%;
+    padding: 4px 0;
+    box-sizing: border-box;
+    cursor: pointer;
+    margin: 0;
+}
+
 #ledger-table thead .ledger-sticky-check {
     z-index: 15;
     background-color: #f0f2f5;
@@ -615,6 +641,15 @@
     overflow-wrap: anywhere;
 }
 
+#ledger-table th[data-column="additional_ips"],
+#ledger-table td[data-column="additional_ips"] {
+    width: 64px;
+    min-width: 64px;
+    white-space: nowrap;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
 #ledger-table:not([data-column-preset="all"]) input:not([type="checkbox"]),
 #ledger-table:not([data-column-preset="all"]) select,
 #ledger-table:not([data-column-preset="all"]) .device-type-picker,
@@ -658,9 +693,11 @@
     z-index: 2200;
     background-color: rgba(15, 23, 42, 0.55);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 16px;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
     backdrop-filter: blur(2px);
 }
 
@@ -669,10 +706,11 @@
 }
 
 .ledger-device-sheet-dialog {
-    width: min(92vw, 840px);
-    height: min(90vh, 840px);
+    width: min(96vw, 1240px);
+    height: min(92dvh, 840px);
     max-width: 100%;
-    max-height: 100%;
+    box-sizing: border-box;
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-md);
     background-color: #ffffff;
@@ -701,6 +739,8 @@
     line-height: 1.3;
     min-width: 0;
     overflow-wrap: anywhere;
+    max-height: 3.9em;
+    overflow: hidden;
 }
 
 .ledger-sheet-sub {
@@ -717,6 +757,11 @@
     flex-shrink: 0;
 }
 
+.ledger-sheet-header-actions button {
+    height: 32px;
+    min-height: 32px;
+}
+
 
 .ledger-sheet-actions-bar {
     display: flex;
@@ -726,6 +771,8 @@
     background-color: #ffffff;
     border-bottom: 1px solid var(--border-light);
     flex-shrink: 0;
+    max-height: 25dvh;
+    overflow-y: auto;
 }
 
 #ledger-sheet-save-btn {
@@ -739,82 +786,143 @@
     padding: 16px 20px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 12px;
 }
 
-/* 1台の台帳（個票）アコーディオンセクションスタイル */
-details.ledger-sheet-section {
-    /* 展開した本文を縮めず、親の個票本文でスクロールさせる。 */
-    flex-shrink: 0;
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-sm);
-    background-color: #ffffff;
-    overflow: hidden;
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-details.ledger-sheet-section[open] {
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
-    border-color: var(--border-strong);
-}
-
-summary.ledger-sheet-section-summary {
-    cursor: pointer;
-    padding: 10px 14px;
-    background-color: #f8fafc;
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text-main);
+.ledger-sheet-tabs {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    user-select: none;
-    list-style: none;
-    border-bottom: 1px solid transparent;
-    transition: background-color var(--transition-fast), color var(--transition-fast);
+    flex-shrink: 0;
+    gap: 8px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--border-light);
 }
 
-summary.ledger-sheet-section-summary::-webkit-details-marker {
+.ledger-sheet-tabs button {
+    padding: 12px;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    cursor: pointer;
+}
+
+.ledger-sheet-tabs button[aria-selected="true"] {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+}
+
+.ledger-sheet-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
+}
+
+.ledger-sheet-panel[hidden] {
     display: none;
 }
 
-summary.ledger-sheet-section-summary:hover {
-    background-color: var(--primary-soft);
-    color: var(--primary);
+.ledger-sheet-section {
+    min-width: 0;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: #ffffff;
 }
 
-details.ledger-sheet-section[open] summary.ledger-sheet-section-summary {
-    border-bottom-color: var(--border-light);
-    background-color: #f1f5f9;
-}
-
-.ledger-sheet-summary-left {
-    display: inline-flex;
+.ledger-sheet-section-summary {
+    min-height: 42px;
+    box-sizing: border-box;
+    padding: 4px 12px;
+    display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
+    flex-wrap: wrap;
+    background: #f8fafc;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    border-bottom: 1px solid var(--border-light);
 }
 
-.ledger-sheet-summary-icon {
-    font-size: 12px;
-    transition: transform var(--transition-fast);
-    display: inline-block;
+.ledger-sheet-section-summary h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
 }
 
-details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
-    transform: rotate(90deg);
+
+.ledger-sheet-maintenance {
+    grid-row: span 2;
+    align-self: stretch;
 }
 
 .ledger-sheet-summary-right {
     display: inline-flex;
+    min-width: 0;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
 }
 
-.ledger-sheet-content {
-    padding: 12px 14px;
+.ledger-sheet-summary-right .btn {
+    min-height: 28px;
+    padding-block: 0;
 }
 
-.ledger-sheet-table {
+.ledger-sheet-content {
+    padding: 10px 12px;
+}
+
+div.ledger-sheet-table {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    font-size: 13px;
+}
+
+.ledger-sheet-field {
+    min-width: 0;
+}
+
+.ledger-sheet-field > label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-muted);
+}
+
+.ledger-sheet-field > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.ledger-sheet-field:has([data-field="ip"]),
+.ledger-sheet-field:has([data-field="additional_ips"]),
+.ledger-sheet-field:has(.ledger-sheet-view-pills),
+.ledger-sheet-field:has([data-field="location"]),
+.ledger-sheet-field:has([data-field="department"]),
+.ledger-sheet-field:has([data-field="maintenance_vendor"]),
+.ledger-sheet-field:has([data-field="memo"]) {
+    grid-column: 1 / -1;
+}
+
+.ledger-sheet-table.ledger-sheet-asset-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-content: start;
+}
+
+
+@media (max-width: 680px) {
+    .ledger-sheet-panel { grid-template-columns: 1fr; }
+    .ledger-sheet-maintenance { grid-row: auto; }
+    .ledger-sheet-table.ledger-sheet-asset-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ledger-sheet-body { padding: 12px; }
+}
+
+@media (max-width: 400px) {
+    div.ledger-sheet-table { grid-template-columns: 1fr; }
+}
+
+table.ledger-sheet-table {
     width: 100%;
     border-collapse: collapse;
     border: 1px solid var(--border-strong);
@@ -919,6 +1027,8 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    max-height: 88px;
+    overflow-y: auto;
 }
 
 .ledger-sheet-view-pill {
@@ -929,13 +1039,23 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
     background-color: #e2e8f0;
     font-size: 12px;
     font-weight: 600;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    cursor: pointer;
+    gap: 4px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
+
+.ledger-sheet-view-pill::after { content: '↗'; flex-shrink: 0; }
+.ledger-sheet-view-pill:hover { background: var(--primary-soft); text-decoration: underline; }
+.ledger-sheet-view-pill:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 /* 登録画像セクション（個票内） */
 .ledger-sheet-images-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(230px, 100%), 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+    gap: 6px;
 }
 
 .ledger-sheet-image-card {
@@ -944,6 +1064,7 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
     padding: 8px;
     background-color: #f8fafc;
     display: flex;
+    min-width: 0;
     flex-direction: column;
     gap: 8px;
 }
@@ -951,7 +1072,7 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
 .ledger-sheet-image-thumb-wrap {
     position: relative;
     width: 100%;
-    height: 140px;
+    height: 84px;
     background-color: #0f172a;
     border-radius: var(--radius-sm);
     overflow: hidden;
@@ -1000,23 +1121,91 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
 
 .ledger-sheet-image-actions {
     display: flex;
-    gap: 6px;
+    gap: 3px;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
 }
 
 .ledger-sheet-image-actions button {
     font-size: 12px;
-    padding: 2px 8px;
-    height: 26px;
+    padding: 2px 4px;
+    height: 28px;
+    min-height: 28px;
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
-.ledger-sheet-images-empty {
-    color: var(--text-muted);
-    font-size: 13px;
-    padding: 12px 0;
-    text-align: center;
+.ledger-sheet-image-actions .ledger-sheet-image-icon-action {
+    width: 24px;
+    min-width: 24px;
+    padding: 0;
 }
+
+.ledger-sheet-image-support > span {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.ledger-sheet-image-empty {
+    justify-content: center;
+    border-style: dashed;
+    min-height: 150px;
+}
+
+.ledger-sheet-image-slot-add {
+    min-height: 84px;
+    padding: 8px;
+    border: 1px dashed var(--border-light);
+    border-radius: var(--radius-sm);
+    background: #fff;
+    color: var(--primary);
+    cursor: pointer;
+}
+
+.ledger-sheet-image-slot-add:disabled {
+    cursor: not-allowed;
+    color: var(--text-muted);
+}
+
+.device-ip-editor-compact {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.device-ip-editor-compact > .device-ip-rows {
+    width: 100%;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 3px 4px;
+    box-sizing: border-box;
+}
+
+.device-ip-editor-compact > [hidden] {
+    display: none;
+}
+
+.device-ip-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+    max-height: 90px;
+    overflow-y: auto;
+    flex: 1 1 100%;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.device-ip-chip {
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: #f1f5f9;
+    overflow-wrap: anywhere;
+}
+
 /* ========================================================
    ビュー配置先 選択ダイアログ
 ======================================================== */
@@ -1026,9 +1215,11 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
     z-index: 2250;
     background-color: rgba(15, 23, 42, 0.55);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
-    padding: 16px;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
     backdrop-filter: blur(2px);
 }
 
@@ -1038,7 +1229,8 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
 
 .ledger-place-view-dialog {
     width: min(92vw, 480px);
-    max-height: min(85vh, 600px);
+    box-sizing: border-box;
+    max-height: min(600px, calc(100dvh - 2 * var(--modal-edge-space)));
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-md);
     background-color: #ffffff;
@@ -1329,8 +1521,7 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
 
 /* 操作群が折り返す画面では、一覧を潰さずダイアログ全体でもスクロールする。 */
 @media (max-width: 640px), (max-height: 600px) {
-    .ledger-dialog,
-    .ledger-device-sheet-dialog {
+    .ledger-dialog {
         overflow-y: auto;
     }
 
@@ -1340,10 +1531,6 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
         max-height: 60vh;
     }
 
-    .ledger-sheet-body {
-        flex: 0 0 auto;
-        overflow-y: visible;
-    }
 
     .ledger-sheet-images-grid,
     .ledger-sheet-image-card {
@@ -1379,7 +1566,16 @@ details.ledger-sheet-section[open] .ledger-sheet-summary-icon {
         padding: 6px 8px;
     }
 
-    summary.ledger-sheet-section-summary {
+    .device-ip-row {
+        gap: 4px;
+    }
+
+    .ledger-sheet-table .device-ip-row input {
+        padding-right: 4px;
+        padding-left: 4px;
+    }
+
+    .ledger-sheet-section-summary {
         flex-wrap: wrap;
         gap: var(--space-2);
     }

@@ -15,6 +15,7 @@ import { validateCanvasNote } from './canvas-note-data.js';
 export { normalizeCanvasNote, toSaveCanvasNote } from './canvas-note-data.js';
 import { validateRackLayout } from './rack-layout.js';
 import { validateFloorRackPlacements } from './floor-rack-data.js';
+import { normalizeAdditionalIps, validateDeviceIps, deviceIpRecords } from './device-ip-addresses.js';
 
 export const appState = {
     views: [],
@@ -22,6 +23,8 @@ export const appState = {
     placements: [],
     links: [],
     linkSystems: [],
+    addressSpaces: [],
+    ipSegments: [],
     canvasNotes: [],
     rackSettings: [],
     rackMounts: [],
@@ -337,6 +340,9 @@ export function toSaveDevice(device) {
         : 'other',
 
         ip: String(device.ip || ''),
+        ip_segment_id: device.ip_segment_id == null ? null : Number(device.ip_segment_id),
+        ...(device.ip_conflicts_confirmed ? { ip_conflicts_confirmed: true } : {}),
+        additional_ips: normalizeAdditionalIps(device.additional_ips).map(({ _client_key, ...row }) => row),
         x: Number(device.x) || 0,
         y: Number(device.y) || 0,
 
@@ -470,7 +476,6 @@ export function toNullableNumber(value) {
 
 export function validateDevicesForSave(devices = appState.devices) {
     const usedIds = new Set();
-    const usedIps = new Map();
 
     for (const device of devices) {
         const id = Number(device.id);
@@ -511,19 +516,8 @@ export function validateDevicesForSave(devices = appState.devices) {
             );
         }
 
-        /*
-         * APIは現在IP重複を禁止していません。
-         * 運用上禁止する場合だけ残す。
-         */
-        if (device.ip) {
-            if (usedIps.has(device.ip)) {
-                throw new Error(
-                    `IPアドレス ${device.ip} が重複しています`
-                );
-            }
-
-            usedIps.set(device.ip, id);
-        }
+        const addressError = validateDeviceIps({ ...device, additional_ips: normalizeAdditionalIps(device.additional_ips) });
+        if (addressError) throw new Error(`機器ID ${id}: ${addressError}`);
 
         usedIds.add(id);
     }
@@ -810,8 +804,7 @@ export function findDeviceWithDuplicateIp(
         return (
             Number(device.id) !==
                 Number(excludedDeviceId) &&
-            normalizeText(device.ip).trim() ===
-                normalizedIp
+            deviceIpRecords(device).includes(normalizedIp)
         );
     }) || null;
 }
@@ -847,6 +840,8 @@ export function normalizeDevice(device) {
         name: normalizeText(device.name),
         type,
         ip: normalizeText(device.ip),
+        ip_segment_id: device.ip_segment_id == null ? null : Number(device.ip_segment_id),
+        additional_ips: normalizeAdditionalIps(device.additional_ips),
         x: Number(device.x) || 0,
         y: Number(device.y) || 0,
         status: normalizeStatus(device.status),

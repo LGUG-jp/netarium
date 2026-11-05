@@ -1,24 +1,30 @@
-name: PHP Syntax Check
+name: Lightweight CI
 
 on:
   push:
     branches:
       - main
   pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  syntax-check:
-    name: Check PHP Syntax
+  checks:
+    name: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up PHP
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
@@ -30,11 +36,12 @@ jobs:
         run: |
           echo "Running syntax check on all PHP files..."
           FAILED=0
+          find . -type f -name "*.php" -print0 > "$RUNNER_TEMP/netarium-php-files"
           while IFS= read -r -d '' file; do
             if ! php -l "$file"; then
               FAILED=1
             fi
-          done < <(find . -type f -name "*.php" -print0)
+          done < "$RUNNER_TEMP/netarium-php-files"
 
           if [ $FAILED -ne 0 ]; then
             echo "::error::PHP syntax errors were detected."
@@ -45,22 +52,33 @@ jobs:
 
       - name: Check PowerShell deployment scripts for non-ASCII characters and BOM
         run: |
-          echo "Checking deployment PowerShell scripts for non-ASCII characters and UTF-8 BOM..."
-          FAILED=0
-          for file in scripts/*.ps1; do
-            if grep -P -n "[^\x00-\x7F]" "$file"; then
-              echo "::error file=$file::Non-ASCII characters detected in $file. Deployment PowerShell scripts must be pure ASCII."
-              FAILED=1
-            fi
-            if head -c 3 "$file" | grep -q $'\xEF\xBB\xBF'; then
-              echo "::error file=$file::UTF-8 BOM detected in $file. Deployment PowerShell scripts must not contain a BOM."
-              FAILED=1
-            fi
-          done
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
 
-          if [ $FAILED -ne 0 ]; then
-            echo "::error::PowerShell script encoding validation failed."
-            exit 1
-          fi
+          let failed = false;
+          for (const name of fs.readdirSync('scripts').filter(name => name.endsWith('.ps1'))) {
+            const file = path.join('scripts', name);
+            const bytes = fs.readFileSync(file);
+            if (bytes.some(byte => byte > 0x7f)) {
+              console.error(`::error file=${file}::Non-ASCII characters detected. Deployment PowerShell scripts must be pure ASCII.`);
+              failed = true;
+            }
+            if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+              console.error(`::error file=${file}::UTF-8 BOM detected. Deployment PowerShell scripts must not contain a BOM.`);
+              failed = true;
+            }
+          }
+          if (failed) process.exit(1);
+          console.log('All deployment PowerShell scripts passed encoding check successfully.');
+          NODE
 
-          echo "All deployment PowerShell scripts passed encoding check successfully."
+      - name: Validate public snapshot without Docker
+        run: |
+          node scripts/export-public-snapshot.mjs --commit HEAD \
+            --out-dir "$RUNNER_TEMP/netarium-public-snapshot" \
+            --manifest-dir "$RUNNER_TEMP/netarium-public-snapshot-manifest"
+
+      - name: Exercise isolated release safety boundaries (no credentials)
+        if: github.repository == 'LGUG-jp/netarium-dev'
+        run: node --test tests/export-public-snapshot.test.mjs tests/release-sync.test.mjs tests/release-control.test.mjs tests/release-finalize.test.mjs

@@ -8,18 +8,12 @@
             role="dialog"
             aria-modal="true"
             aria-labelledby="data-quality-title"
-            aria-describedby="data-quality-description"
             tabindex="-1"
         >
             <header class="placement-manager-header">
-                <div>
-                    <h2 id="data-quality-title">
-                        データ品質診断
-                    </h2>
-                    <p id="data-quality-description">
-                        機器・配置・図面・接続・監視状態を診断し、問題の修正先へ移動します。
-                    </p>
-                </div>
+                <h2 id="data-quality-title">
+                    データ品質診断
+                </h2>
 
                 <button
                     type="button"

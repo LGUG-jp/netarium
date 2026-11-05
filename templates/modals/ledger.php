@@ -11,14 +11,7 @@
             aria-labelledby="ledger-title"
         >
             <header class="ledger-header">
-                <div>
-                    <h2 id="ledger-title">機器台帳</h2>
-                    <p>
-                        <?= $isAdmin
-                            ? '表内の項目を編集できます。機器の行を離れると、その行の変更を保存します。'
-                            : '機器台帳を閲覧できます。' ?>
-                    </p>
-                </div>
+                <h2 id="ledger-title">機器台帳</h2>
 
                 <button
                     type="button"
@@ -246,6 +239,7 @@
                                 <th class="ledger-sticky-name">名称</th>
                                 <th>種別</th>
                                 <th>IPアドレス</th>
+                                <th data-column="additional_ips">追加IP</th>
                                 <th>施設</th>
                                 <th>フロア</th>
                                 <th>設置場所</th>
@@ -310,18 +304,6 @@
                 <header class="ledger-sheet-header">
                     <h3 id="ledger-sheet-title" class="ledger-sheet-title">機器台帳 個票</h3>
                     <div class="ledger-sheet-header-actions">
-                        <button
-                            type="button"
-                            class="modal-close-btn"
-                            id="close-ledger-detail-pane-btn"
-                            aria-label="閉じる"
-                        >
-                            ×
-                        </button>
-                    </div>
-                </header>
-
-                <div class="ledger-sheet-actions-bar" role="toolbar" aria-label="個票操作">
                     <button
                         type="button"
                         id="ledger-sheet-prev-btn"
@@ -340,16 +322,20 @@
                     >
                         次へ
                     </button>
+                        <button
+                            type="button"
+                            class="modal-close-btn"
+                            id="close-ledger-detail-pane-btn"
+                            aria-label="閉じる"
+                        >
+                            ×
+                        </button>
+                    </div>
+                </header>
+
+                <div class="ledger-sheet-actions-bar" role="toolbar" aria-label="個票操作">
                     <button id="ledger-sheet-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="機器のリンクをコピー（保存後に利用できます）">
                         機器のリンクをコピー
-                    </button>
-                    <button
-                        type="button"
-                        id="ledger-sheet-canvas-btn"
-                        class="btn btn-secondary btn-sm"
-                        title="台帳を閉じて現在のビューで該当機器を選択表示します"
-                    >
-                        キャンバスで表示
                     </button>
                     <button
                         type="button"
@@ -361,6 +347,23 @@
                     </button>
                     <button
                         type="button"
+                        id="ledger-sheet-history-btn"
+                        class="btn btn-secondary btn-sm admin-only"
+                        title="この機器の変更履歴を表示します"
+                    >
+                        変更履歴
+                    </button>
+                    <button
+                        type="button"
+                        id="ledger-sheet-config-btn"
+                        class="btn btn-secondary btn-sm admin-only"
+                        title="機器の保存が完了してからConfigを利用できます"
+                        disabled
+                    >
+                        Config
+                    </button>
+                    <button
+                        type="button"
                         id="ledger-sheet-save-btn"
                         class="btn btn-primary btn-sm admin-only"
                         title="個票の変更を適用し、自動保存します"
@@ -369,6 +372,7 @@
                         適用
                     </button>
                 </div>
+                <div id="ledger-sheet-tabs" class="ledger-sheet-tabs" role="tablist" aria-label="個票の情報分類"></div>
 
                 <div id="ledger-sheet-body" class="ledger-sheet-body">
                     <!-- JSで動的に1台の台帳（個票シートテーブルおよび登録画像）を描画 -->

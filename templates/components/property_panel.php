@@ -67,7 +67,7 @@
                 <button id="p-type" type="button" class="device-type-trigger" value="other" aria-label="種別"></button>
 
                 <label for="p-ip" class="form-label">
-                    IPアドレス
+                    管理IPv4アドレス
                 </label>
                 <input
                     id="p-ip"
@@ -78,6 +78,8 @@
                     placeholder="例: 192.168.1.1"
                 >
                 <div id="p-ip-error" class="form-error" hidden></div>
+                <div class="form-label">追加IPv4アドレス</div>
+                <div id="p-additional-ips"></div>
             </div>
         </details>
 
@@ -278,7 +280,7 @@
                     </div>
 
                     <p class="form-support">
-                        PNGまたはJPEG、入力は<?= (int)(($storageCapacity['images']['max_entry_bytes'] ?? 10485760) / (1024 * 1024)) ?>MiB以下。各辺<?= (int)($appConfig['max_device_image_width'] ?? 4000) ?>px以下。詳細は<a href="help.html#devices" target="_blank" rel="noopener">ヘルプ</a>を参照してください。
+                        PNGまたはJPEG、入力は<?= (int)(($storageCapacity['images']['max_entry_bytes'] ?? 10485760) / (1024 * 1024)) ?>MiB以下。各辺<?= (int)($appConfig['max_device_image_width'] ?? 4000) ?>px以下。詳細は<a href="help-devices.html#devices" target="_blank" rel="noopener">ヘルプ</a>を参照してください。
                     </p>
 
                     <div id="p-device-images-dirty-warning" class="device-images-notice form-support" hidden>
@@ -467,7 +469,7 @@
                 <p id="ping-help-description">PingのNGは機器停止を断定するものではありません。ICMP応答の無効化、ファイアウォール、ネットワーク経路などによって応答しない場合があります。</p>
                 <ul>
                     <li>OK: Pingへの応答を確認しました。機器のすべての機能が正常であることを保証するものではありません。</li>
-                    <li>未確認: Ping結果が未取得、またはIPアドレスの変更などでリセットされた状態です。</li>
+                    <li>未確認: Ping結果が未取得、IP重複などで実行をスキップした、またはIPアドレスの変更などでリセットされた状態です。スキップ理由は監視詳細や結果一覧で確認できます。</li>
                     <li>確認中: Pingを実行しています。完了後に結果を確認してください。</li>
                 </ul>
             </div>

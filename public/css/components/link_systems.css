@@ -65,6 +65,8 @@
 .link-system-option[aria-selected="true"]::after { content: "✓"; margin-left: auto; }
 .placement-manager-dialog.link-systems-dialog { width: min(900px, 100%); }
 .link-systems-header-actions { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
+.link-systems-header-actions .btn { min-height: 32px; height: 32px; padding-block: 0; }
+#link-systems-refresh { display: inline-flex; align-items: center; gap: 6px; }
 .link-systems-dialog .placement-manager-header h2 { min-width: 0; overflow-wrap: anywhere; }
 .link-systems-body { flex: 1 1 auto; padding: var(--space-4); min-height: 0; overflow-y: auto; }
 .link-systems-body h3 { margin: 0; font-size: 16px; }
@@ -124,6 +126,7 @@
 .link-systems-color-option[aria-checked="true"] { background: var(--primary-soft); }
 .link-systems-color-option[aria-checked="true"]::after { content: "✓"; position: absolute; right: var(--space-2); font-size: 12px; font-weight: 700; }
 .link-systems-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-4); margin-top: var(--space-2); }
+#link-systems-delete { margin-right: auto; }
 #link-systems-status { overflow-wrap: anywhere; }
 #link-systems-status:not(:empty) { margin-bottom: var(--space-3); }
 #link-systems-status.is-error { color: var(--danger); }

@@ -20,6 +20,7 @@ class Element {
         };
         this.handlers = {};
         this.children = [];
+        this.parentElement = null;
     }
     set id(val) {
         this._id = val;
@@ -35,11 +36,41 @@ class Element {
             && (child.className || '').split(/\s+/).includes(selector.slice(1))) || null;
     }
     appendChild(child) {
+        child.remove();
+        child.parentElement = this;
         this.children.push(child);
         if (child.id) elements.set(child.id, child);
         return child;
     }
-    replaceChildren(...children) { this.children = children; }
+    append(...children) { children.forEach(child => this.appendChild(child)); }
+    get nextSibling() {
+        return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] ?? null;
+    }
+    get previousSibling() {
+        return this.parentElement?.children[this.parentElement.children.indexOf(this) - 1] ?? null;
+    }
+    get nextElementSibling() { return this.nextSibling; }
+    get previousElementSibling() { return this.previousSibling; }
+    after(...children) {
+        const parent = this.parentElement;
+        if (!parent) return;
+        children = children.filter((child, index) => children.lastIndexOf(child) === index);
+        let next = this.nextSibling;
+        while (next && children.includes(next)) next = next.nextSibling;
+        children.forEach(child => child.remove());
+        let index = next ? parent.children.indexOf(next) : parent.children.length;
+        for (const child of children) {
+            child.remove();
+            child.parentElement = parent;
+            parent.children.splice(index++, 0, child);
+            if (child.id) elements.set(child.id, child);
+        }
+    }
+    replaceChildren(...children) {
+        this.children.forEach(child => { child.parentElement = null; });
+        this.children = [];
+        this.append(...children);
+    }
     focus() {}
     closest(selector) {
         if (selector === '#panel' && this.id.startsWith('p-')) return elements.get('panel');
@@ -56,6 +87,8 @@ class Element {
         for (const handler of this.handlers['click'] || []) handler({ target: this });
     }
     remove() {
+        if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+        this.parentElement = null;
         if (this.id) elements.delete(this.id);
     }
 }
@@ -72,6 +105,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
     for (const id of ['lp-system-name', 'lp-system-swatch', 'lp-system-options']) elements.set(id, new Element(id));
     const summaryIds = ['basic', 'placement', 'asset', 'management', 'extra'].map(group => `p-summary-${group}`);
     for (const id of [...summaryIds, 'p-last-checked', 'p-response-ms', 'p-last-error']) elements.set(id, new Element(id));
+    for (const id of panelInputs.map(id => `p-${id}`)) elements.get('panel').appendChild(elements.get(id));
     elements.get('lp-system').tagName = 'BUTTON';
     elements.get('lp-system').setAttribute('role', 'combobox');
     elements.get('lp-system').setAttribute('aria-controls', 'lp-system-options');

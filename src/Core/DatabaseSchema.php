@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const APP_DATABASE_SCHEMA_VERSION = 16;
+const APP_DATABASE_SCHEMA_VERSION = 22;
 
 
 function migrateDatabase(PDO $db): void
@@ -87,6 +87,24 @@ function migrateDatabase(PDO $db): void
                 break;
             case 16:
                 migrateDatabaseToVersion16($db);
+                break;
+            case 17:
+                migrateDatabaseToVersion17($db);
+                break;
+            case 18:
+                migrateDatabaseToVersion18($db);
+                break;
+            case 19:
+                migrateDatabaseToVersion19($db);
+                break;
+            case 20:
+                migrateDatabaseToVersion20($db);
+                break;
+            case 21:
+                migrateDatabaseToVersion21($db);
+                break;
+            case 22:
+                migrateDatabaseToVersion22($db);
                 break;
 
             default:
@@ -1196,6 +1214,193 @@ function migrateDatabaseToVersion16(PDO $db): void
                 END");
             }
             $db->exec('PRAGMA user_version = 16');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion17(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 17) {
+            $db->exec("CREATE TABLE device_ip_addresses (
+                id INTEGER PRIMARY KEY,
+                device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                ip TEXT NOT NULL CHECK (length(trim(ip)) > 0),
+                label TEXT NOT NULL DEFAULT '' CHECK (length(label) <= 100),
+                sort_order INTEGER NOT NULL DEFAULT 0 CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0)
+            )");
+            $db->exec('CREATE INDEX idx_device_ip_addresses_device ON device_ip_addresses(device_id, sort_order, id)');
+            foreach (['INSERT', 'UPDATE', 'DELETE'] as $event) {
+                $suffix = strtolower($event);
+                $refs = $event === 'INSERT' ? 'NEW.device_id' : ($event === 'DELETE' ? 'OLD.device_id' : 'OLD.device_id, NEW.device_id');
+                $when = $event === 'UPDATE'
+                    ? ' WHEN OLD.device_id IS NOT NEW.device_id OR OLD.ip IS NOT NEW.ip OR OLD.label IS NOT NEW.label OR OLD.sort_order IS NOT NEW.sort_order'
+                    : '';
+                $db->exec("CREATE TRIGGER resource_owner_device_ip_addresses_{$suffix} AFTER {$event} ON device_ip_addresses{$when} BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE devices SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id IN ({$refs});
+                END");
+            }
+            $db->exec('PRAGMA user_version = 17');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion18(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 18) {
+            $db->exec("CREATE TABLE address_spaces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+                memo TEXT NOT NULL DEFAULT '' CHECK (length(memo) <= 1000)
+            )");
+            $db->exec("CREATE TABLE ip_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address_space_id INTEGER NOT NULL REFERENCES address_spaces(id) ON DELETE RESTRICT,
+                cidr TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '' CHECK (length(name) <= 100),
+                purpose TEXT NOT NULL DEFAULT '' CHECK (length(purpose) <= 100),
+                facility TEXT NOT NULL DEFAULT '' CHECK (length(facility) <= 100),
+                vlan_id INTEGER CHECK (vlan_id IS NULL OR (typeof(vlan_id) = 'integer' AND vlan_id BETWEEN 1 AND 4094)),
+                memo TEXT NOT NULL DEFAULT '' CHECK (length(memo) <= 1000)
+            )");
+            $db->exec('CREATE INDEX idx_ip_segments_space ON ip_segments(address_space_id)');
+            $db->exec('ALTER TABLE devices ADD COLUMN ip_segment_id INTEGER REFERENCES ip_segments(id) ON DELETE SET NULL');
+            $db->exec('ALTER TABLE device_ip_addresses ADD COLUMN segment_id INTEGER REFERENCES ip_segments(id) ON DELETE SET NULL');
+            $db->exec('CREATE INDEX idx_devices_ip_segment ON devices(ip_segment_id)');
+            $db->exec('CREATE INDEX idx_device_ip_addresses_segment ON device_ip_addresses(segment_id)');
+            $db->exec("CREATE TRIGGER resource_owner_device_ip_segment AFTER UPDATE OF segment_id ON device_ip_addresses
+                WHEN OLD.segment_id IS NOT NEW.segment_id BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE devices SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id = NEW.device_id;
+                END");
+            $db->exec("CREATE TRIGGER resource_owner_management_ip_segment AFTER UPDATE OF ip_segment_id ON devices
+                WHEN OLD.ip_segment_id IS NOT NEW.ip_segment_id BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE devices SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                    WHERE id = NEW.id;
+                END");
+            $db->exec('PRAGMA user_version = 18');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion19(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 19) {
+            $db->exec("CREATE TABLE change_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL CHECK (typeof(event_id) = 'integer' AND event_id > 0),
+                request_id TEXT NOT NULL DEFAULT '' CHECK (length(request_id) <= 64),
+                occurred_at TEXT NOT NULL CHECK (
+                    length(occurred_at) = 20
+                    AND substr(occurred_at, 5, 1) = '-'
+                    AND substr(occurred_at, 8, 1) = '-'
+                    AND substr(occurred_at, 11, 1) = 'T'
+                    AND substr(occurred_at, 14, 1) = ':'
+                    AND substr(occurred_at, 17, 1) = ':'
+                    AND substr(occurred_at, 20, 1) = 'Z'
+                ),
+                actor_user_id INTEGER NULL CHECK (actor_user_id IS NULL OR (typeof(actor_user_id) = 'integer' AND actor_user_id > 0)),
+                actor_name TEXT NOT NULL DEFAULT '' CHECK (length(actor_name) <= 100),
+                target_type TEXT NOT NULL CHECK (target_type IN ('device', 'view')),
+                target_id INTEGER NOT NULL CHECK (typeof(target_id) = 'integer' AND target_id > 0),
+                target_name TEXT NOT NULL CHECK (length(target_name) BETWEEN 1 AND 200),
+                operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+                summary TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 500),
+                changes_json TEXT NOT NULL CHECK (length(changes_json) BETWEEN 2 AND 16384)
+            )");
+            $db->exec('CREATE INDEX idx_change_history_occurred ON change_history(occurred_at DESC, id DESC)');
+            $db->exec('CREATE INDEX idx_change_history_target ON change_history(target_type, target_id, occurred_at DESC, id DESC)');
+            $db->exec('CREATE INDEX idx_change_history_event ON change_history(event_id, id)');
+            $db->exec('PRAGMA user_version = 19');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion20(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 20) {
+            $db->exec("CREATE TABLE device_config_states (
+                device_id INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL CHECK (typeof(revision) = 'integer' AND revision > 0),
+                next_generation INTEGER NOT NULL CHECK (typeof(next_generation) = 'integer' AND next_generation > 0)
+            )");
+            $db->exec("CREATE TABLE device_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                generation INTEGER NOT NULL CHECK (typeof(generation) = 'integer' AND generation > 0),
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                actor_user_id INTEGER NULL CHECK (actor_user_id IS NULL OR (typeof(actor_user_id) = 'integer' AND actor_user_id > 0)),
+                actor_name TEXT NOT NULL CHECK (length(actor_name) <= 100),
+                memo TEXT NOT NULL DEFAULT '' CHECK (length(memo) <= 200),
+                UNIQUE(device_id, generation)
+            )");
+            $db->exec('CREATE INDEX idx_device_configs_order ON device_configs(device_id, created_at DESC, generation DESC)');
+            $db->exec('PRAGMA user_version = 20');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion21(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 21) {
+            $db->exec("ALTER TABLE address_spaces ADD COLUMN ping_reachability TEXT NOT NULL DEFAULT 'unset' CHECK (ping_reachability IN ('unset', 'reachable', 'unreachable'))");
+            $db->exec('PRAGMA user_version = 21');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion22(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 22) {
+            // 論理削除。削除済み利用者は is_active=0 かつ deleted_at 設定済み。既存利用者はNULL。
+            $db->exec('ALTER TABLE users ADD COLUMN deleted_at TEXT');
+            $db->exec('PRAGMA user_version = 22');
         }
         $db->commit();
     } catch (Throwable $e) {

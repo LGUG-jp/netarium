@@ -9,11 +9,31 @@ globalThis.HTMLSelectElement = class {
     static [Symbol.hasInstance](element) { return element?.tagName === 'SELECT'; }
 };
 
+function registerMockTree(element, connected) {
+    if (element.id) {
+        if (connected) mockElements.set(element.id, element);
+        else if (mockElements.get(element.id) === element) mockElements.delete(element.id);
+    }
+    for (const child of element.children) registerMockTree(child, connected);
+}
+
 function createMockElement(tag = 'div') {
     const el = {
         tagName: tag.toUpperCase(),
         className: '',
         children: [],
+        parentElement: null,
+        get parentNode() { return this.parentElement; },
+        get isConnected() {
+            return this === globalThis.document?.body || Boolean(this.parentElement?.isConnected);
+        },
+        get id() { return this._id || ''; },
+        set id(value) {
+            if (mockElements.get(this.id) === this) mockElements.delete(this.id);
+            this._id = String(value);
+            if (this.isConnected && this.id) mockElements.set(this.id, this);
+        },
+        get lastElementChild() { return this.children.at(-1) || null; },
         dataset: {},
         hidden: false,
         selected: false,
@@ -53,7 +73,7 @@ function createMockElement(tag = 'div') {
             contains(c) { return this.classes.has(c); }
         },
         set innerHTML(val) {
-            if (val === '') this.children = [];
+            if (val === '') this.replaceChildren();
         },
         setAttribute(name, val) {
             this[name] = val;
@@ -74,20 +94,46 @@ function createMockElement(tag = 'div') {
         insertAdjacentElement(position, child) {
             if (position !== 'afterend') throw new Error(`Unsupported fixture position: ${position}`);
             if (!this.parentElement) return null;
-            const parent = this.parentElement;
-            child.parentElement = parent;
-            parent.children.splice(parent.children.indexOf(this) + 1, 0, child);
+            this.after(child);
             return child;
         },
         _listeners: {},
-        append(...children) { this.children.push(...children); },
-        replaceChildren(...children) { this.children = [...children]; },
+        append(...children) { children.forEach(child => this.appendChild(child)); },
+        replaceChildren(...children) {
+            for (const child of [...this.children]) this.removeChild(child);
+            this.append(...children);
+        },
         querySelector() { return null; },
         querySelectorAll() { return []; },
-        appendChild(child) {
+        appendChild(child) { return this.insertBefore(child, null); },
+        insertBefore(child, reference) {
+            if (reference !== null && !this.children.includes(reference)) throw new Error('Reference is not a child');
+            if (child === reference) return child;
+            child.remove();
+            const index = reference === null ? this.children.length : this.children.indexOf(reference);
+            this.children.splice(index, 0, child);
             child.parentElement = this;
-            this.children.push(child);
+            registerMockTree(child, this.isConnected);
+            if (this.tagName === 'SELECT' && !this.multiple && !this.selectedOptions.length) child.selected = true;
             return child;
+        },
+        removeChild(child) {
+            const index = this.children.indexOf(child);
+            if (index === -1) throw new Error('Node is not a child');
+            this.children.splice(index, 1);
+            registerMockTree(child, false);
+            child.parentElement = null;
+            return child;
+        },
+        remove() {
+            if (this.parentElement) this.parentElement.removeChild(this);
+            else registerMockTree(this, false);
+        },
+        after(...children) {
+            const parent = this.parentElement;
+            if (!parent) return;
+            const reference = parent.children[parent.children.indexOf(this) + 1] || null;
+            children.forEach(child => parent.insertBefore(child, reference));
         },
         addEventListener(ev, fn) { this._listeners[ev] = fn; },
         removeEventListener(ev) { delete this._listeners[ev]; },
@@ -116,7 +162,8 @@ if (typeof globalThis.document === 'undefined') {
                 const isSelect = id === 'ledger-place-view-select' || /^ledger-(view|facility|floor|status|type|ip-presence|placement)-filter$/.test(id);
                 const element = createMockElement(isSelect ? 'select' : 'div');
                 if (isSelect && id !== 'ledger-place-view-select') element.multiple = true;
-                mockElements.set(id, element);
+                element.id = id;
+                document.body.appendChild(element);
             }
             return mockElements.get(id);
         },
@@ -177,6 +224,7 @@ import {
 beforeEach(() => {
     clearPendingSave();
     placementState.active = false;
+    document.body.replaceChildren();
     mockElements.clear();
     globalThis.window.APP_CONFIG.user.isAdmin = true;
     globalThis.window.APP_CONFIG.csrfToken = 'placement-test-token';
@@ -898,23 +946,3 @@ test('rack views refuse stamp/queue placement even if a stale normal-view placem
     assert.equal(placementState.queue.length, 1);
 });
 
-test('placement manager exposes rack destinations as mount actions instead of XY checkboxes', async () => {
-    const manager = await import('../public/js/modals/placement-modal.js');
-    const { eventBus } = await import('../public/js/core/event-bus.js');
-    const rack = { id: 3, name: 'Rack', view_type: 'rack', facility: '別施設', floor: '別階' };
-    appState.views.push(rack);
-    appState.rackSettings = [{ view_id: 3, total_u: 8 }];
-    appState.rackMounts = [{ device_id: 2, view_id: 3, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' }];
-    manager.openPlacementManager(2);
-    const option = manager.createPlacementManagerOption(rack, false);
-    assert.equal(option.tagName, 'BUTTON');
-    assert.equal(option.children.length, 0, 'no XY checkbox is created for a rack');
-    assert.ok(option.textContent.includes('搭載位置を編集'));
-    assert.deepEqual(manager.getPlacementManagerChanges(), { addedViewIds: [], removedViewIds: [] });
-    const before = structuredClone({ devices: appState.devices, placements: appState.placements, mounts: appState.rackMounts });
-    const requested = [];
-    const stop = eventBus.on('rack:mount-device', request => requested.push(request));
-    try { await option._listeners.click(); } finally { stop(); }
-    assert.deepEqual(requested, [{ viewId: 3, deviceId: 2 }]);
-    assert.deepEqual({ devices: appState.devices, placements: appState.placements, mounts: appState.rackMounts }, before);
-});

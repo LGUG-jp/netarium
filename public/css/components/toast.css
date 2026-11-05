@@ -60,6 +60,20 @@
     color: var(--warning-text);
 }
 
+.toast-info,
+#toast.toast-info {
+    background-color: var(--info-bg);
+    border: 1px solid var(--info);
+    color: var(--info);
+}
+
+.toast-success,
+#toast.toast-success {
+    background-color: var(--success-bg);
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+
 
 /* ==============================
    Compact Toast

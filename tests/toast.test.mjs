@@ -62,6 +62,26 @@ test('軽量通知は置換から3秒後に消え、保存状態を変更しな�
     assert.equal(save.textContent, '保存中');
 });
 
+test('前面の情報・成功通知には警告記号を付けず、置換から3秒後に消去する', t => {
+    const { add, advance, elements } = installDom(t);
+    const status = add('status-toast-message');
+    notifications.showStatusMessage('保存しました');
+    notifications.showToast('保存しました', 'success');
+    const toast = elements.get('toast');
+    assert.equal(status.textContent, '', '同じ通知を背面のステータスに重複表示しない');
+    assert.equal(toast.hidden, false);
+    assert.equal(toast.textContent, '保存しました');
+    assert.equal(toast.getAttribute('aria-live'), 'polite');
+    advance(2000);
+    notifications.showToast('セグメント一覧へ戻りました', 'info');
+    advance(1000);
+    assert.equal(toast.hidden, false, '先行通知の消去時刻でも後続通知は表示する');
+    assert.equal(toast.textContent, 'セグメント一覧へ戻りました');
+    advance(2000);
+    assert.equal(toast.hidden, true);
+    assert.equal(toast.textContent, '');
+});
+
 test('警告とエラーはステータスへ重複せず、置換後の表示時間と読み上げを維持する', t => {
     const { add, advance, elements } = installDom(t);
     const status = add('status-toast-message');

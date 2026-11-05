@@ -25,7 +25,8 @@ class UserManagementService
                 must_change_password,
                 created_at,
                 updated_at,
-                last_login_at
+                last_login_at,
+                deleted_at
             FROM users
             ORDER BY username COLLATE NOCASE, id
         ")->fetchAll();
@@ -36,6 +37,7 @@ class UserManagementService
                 static function (array $user): array {
                     $user['id'] = (int)$user['id'];
                     $user['is_active'] = (int)$user['is_active'] === 1;
+                    $user['is_deleted'] = $user['deleted_at'] !== null;
                     $user['must_change_password'] = (int)$user['must_change_password'] === 1;
 
                     return $user;
@@ -135,7 +137,7 @@ class UserManagementService
 
         try {
             $userStmt = $this->db->prepare("
-                SELECT id, role, is_active
+                SELECT id, role, is_active, deleted_at
                 FROM users
                 WHERE id = :id
                 LIMIT 1
@@ -145,6 +147,10 @@ class UserManagementService
 
             if (!is_array($user)) {
                 throw new ApiException('利用者が見つかりません', 404);
+            }
+
+            if ($user['deleted_at'] !== null) {
+                throw new ApiException('削除済みの利用者です。復元してから操作してください', 409);
             }
 
             $otherAdminStmt = $this->db->prepare("
@@ -178,12 +184,15 @@ class UserManagementService
                         role = :role,
                         is_active = :is_active,
                         auth_revision = auth_revision + 1,
+                        password_revision = password_revision + :revoke_sessions,
                         updated_at = :updated_at
                     WHERE id = :id
                 ");
                 $stmt->execute([
                     ':role' => $role,
                     ':is_active' => $isActive ? 1 : 0,
+                    // auth_revision refreshes roles; password_revision irreversibly revokes old sessions.
+                    ':revoke_sessions' => (int)$user['is_active'] === 1 && !$isActive ? 1 : 0,
                     ':updated_at' => date('Y-m-d H:i:s'),
                     ':id' => $id,
                 ]);
@@ -210,6 +219,98 @@ class UserManagementService
         ];
     }
 
+    public function deleteUser(array $input): array
+    {
+        $id = (int)($input['id'] ?? 0);
+        if ($id <= 0) {
+            throw new ApiException('利用者IDが不正です', 400);
+        }
+        if ($id === \currentUserId()) {
+            throw new ApiException('自分自身は削除できません', 409);
+        }
+
+        $this->db->exec('BEGIN IMMEDIATE');
+        try {
+            $stmt = $this->db->prepare('SELECT role, is_active, deleted_at FROM users WHERE id = :id LIMIT 1');
+            $stmt->execute([':id' => $id]);
+            $user = $stmt->fetch();
+            if (!is_array($user)) {
+                throw new ApiException('利用者が見つかりません', 404);
+            }
+            if ($user['deleted_at'] !== null) {
+                throw new ApiException('既に削除済みです', 409);
+            }
+
+            $others = $this->db->prepare("SELECT COUNT(*) FROM users WHERE is_active = 1 AND role = 'admin' AND id <> :id");
+            $others->execute([':id' => $id]);
+            if ((int)$others->fetchColumn() < 1 && (int)$user['is_active'] === 1 && (string)$user['role'] === 'admin') {
+                throw new ApiException('最後の有効なadminは削除できません', 409);
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $update = $this->db->prepare("
+                UPDATE users
+                SET
+                    is_active = 0,
+                    deleted_at = :now,
+                    auth_revision = auth_revision + 1,
+                    password_revision = password_revision + 1,
+                    updated_at = :now
+                WHERE id = :id AND deleted_at IS NULL
+            ");
+            $update->execute([':now' => $now, ':id' => $id]);
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+
+        return ['ok' => true, 'message' => '利用者を削除済み一覧へ移動しました'];
+    }
+
+    public function restoreUser(array $input): array
+    {
+        $id = (int)($input['id'] ?? 0);
+        if ($id <= 0) {
+            throw new ApiException('利用者IDが不正です', 400);
+        }
+
+        $this->db->exec('BEGIN IMMEDIATE');
+        try {
+            $stmt = $this->db->prepare('SELECT deleted_at FROM users WHERE id = :id LIMIT 1');
+            $stmt->execute([':id' => $id]);
+            $user = $stmt->fetch();
+            if (!is_array($user)) {
+                throw new ApiException('利用者が見つかりません', 404);
+            }
+            if ($user['deleted_at'] === null) {
+                throw new ApiException('削除済みの利用者ではありません', 409);
+            }
+
+            // 復元は無効状態のまま。セッション・権限の自動復活はしない。
+            $update = $this->db->prepare("
+                UPDATE users
+                SET
+                    deleted_at = NULL,
+                    is_active = 0,
+                    auth_revision = auth_revision + 1,
+                    updated_at = :now
+                WHERE id = :id AND deleted_at IS NOT NULL
+            ");
+            $update->execute([':now' => date('Y-m-d H:i:s'), ':id' => $id]);
+            $this->db->commit();
+        } catch (\Throwable $e) {
+            if ($this->db->inTransaction()) {
+                $this->db->rollBack();
+            }
+            throw $e;
+        }
+
+        return ['ok' => true, 'message' => '利用者を復元しました。無効状態のため、利用再開する場合は有効化してください'];
+    }
+
     public function resetPassword(array $input): array
     {
         $id = (int)($input['id'] ?? 0);
@@ -220,12 +321,16 @@ class UserManagementService
         }
         $this->db->exec('BEGIN IMMEDIATE');
         try {
-            $stmt = $this->db->prepare('SELECT username FROM users WHERE id = :id');
+            $stmt = $this->db->prepare('SELECT username, deleted_at FROM users WHERE id = :id');
             $stmt->execute([':id' => $id]);
-            $username = $stmt->fetchColumn();
-            if ($username === false) {
+            $target = $stmt->fetch();
+            if (!is_array($target)) {
                 throw new ApiException('利用者が見つかりません', 404);
             }
+            if ($target['deleted_at'] !== null) {
+                throw new ApiException('削除済みの利用者です。復元してから操作してください', 409);
+            }
+            $username = (string)$target['username'];
             $this->validatePasswordInput($password, $passwordConfirm, (string)$username);
             $update = $this->db->prepare("
                 UPDATE users SET

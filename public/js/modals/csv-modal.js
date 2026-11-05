@@ -375,20 +375,23 @@ export function createDevicesCsvChangesElement(
             ? row.changed_fields
             : [];
 
-    const changes =
-        row?.changes &&
-        typeof row.changes === 'object'
-            ? row.changes
-            : {};
+    const changes = Object.fromEntries(
+        (Array.isArray(row?.changes) ? row.changes : [])
+            .map(change => [change.field, change])
+    );
 
     if (operation === 'insert') {
         container.textContent =
             '新規登録';
 
-        return container;
+        if (!changes.additional_ips) return container;
     }
 
-    if (changedFields.length === 0) {
+    const visibleFields = operation === 'insert'
+        ? ['additional_ips']
+        : changedFields;
+
+    if (visibleFields.length === 0) {
         container.textContent =
             operation === 'unchanged'
                 ? '変更なし'
@@ -397,7 +400,7 @@ export function createDevicesCsvChangesElement(
         return container;
     }
 
-    changedFields.forEach(field => {
+    visibleFields.forEach(field => {
         const change =
             changes[field];
 
@@ -472,7 +475,9 @@ export function createDevicesCsvChangesElement(
 
         values.appendChild(
             createDevicesCsvValueElement(
-                change.after,
+                field === 'additional_ips' && change.after === '[]'
+                    ? (operation === 'insert' ? '[]（追加 IP なし）' : '[]（全削除）')
+                    : change.after,
                 'csv-import-change-after'
             )
         );
@@ -993,6 +998,9 @@ export async function commitDevicesCsvImport() {
                     ? '警告内容を確認したうえで取込を実行してください。\n'
                     : ''
             ) +
+            devicesCsvImportRows.flatMap(row => (row.warnings || []).map(warning =>
+                `行 ${row.line ?? '?'}: ${typeof warning === 'object' ? warning.message : warning}`
+            )).join('\n') + '\n\n' +
             '配置と接続は変更されません。'
         )
     ) {

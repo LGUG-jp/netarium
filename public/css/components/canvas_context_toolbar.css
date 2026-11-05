@@ -100,14 +100,11 @@
 }
 
 
-#link-route-help-overlay {
-    padding: var(--space-3);
-}
 
 .placement-manager-dialog.link-route-help-dialog {
     width: min(28rem, 100%);
     height: auto;
-    max-height: calc(100dvh - var(--space-6));
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     border-radius: var(--radius-md);
     color: var(--text-main);
     background: var(--bg-panel-solid);

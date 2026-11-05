@@ -2,10 +2,13 @@ import { appState, getDeviceById, toSaveDevice, validateDevicesForSave } from '.
 import { eventBus } from './event-bus.js';
 import { validateDeviceValues } from './device-validation.js';
 import { resetDeviceMonitoringState } from './device-monitoring.js';
+import { confirmDeviceIpChanges } from './device-ip-addresses.js';
+const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 // 編集途中の値は確定済みstateと分け、別の保存要求へ混入させない。
 const scopes = new Map();
-const editableFields = Object.keys(toSaveDevice({})).filter(key => !['id', 'x', 'y'].includes(key));
+const editableFields = [...Object.keys(toSaveDevice({})).filter(key => !['id', 'x', 'y', 'ip_conflicts_confirmed'].includes(key))];
 const notify = () => eventBus.emit('device-drafts:changed');
 
 function scopeDrafts(scope) {
@@ -18,17 +21,17 @@ export function getDeviceDraft(scope, id) {
     const current = getDeviceById(id);
     if (!current) return null;
     const drafts = scopeDrafts(scope);
-    if (!drafts.has(id)) drafts.set(id, { base: { ...current }, values: { ...current } });
+    if (!drafts.has(id)) drafts.set(id, { base: clone(current), values: clone(current) });
     const entry = drafts.get(id);
     if (!changed(entry)) {
-        Object.assign(entry.base, current);
-        Object.assign(entry.values, current);
+        Object.assign(entry.base, clone(current));
+        Object.assign(entry.values, clone(current));
     }
     return drafts.get(id).values;
 }
 
 function changed(entry) {
-    return editableFields.some(key => entry.values[key] !== entry.base[key]);
+    return editableFields.some(key => !equal(entry.values[key], entry.base[key]));
 }
 
 export function hasDeviceDraftChanges(scope, id) {
@@ -58,12 +61,15 @@ function candidateFor(id, entry) {
     }
     const candidate = { ...current };
     for (const key of editableFields) {
-        if (entry.values[key] === entry.base[key]) continue;
-        if (current[key] !== entry.base[key] && current[key] !== entry.values[key]) {
+        if (equal(entry.values[key], entry.base[key])) continue;
+        if (!equal(current[key], entry.base[key]) && !equal(current[key], entry.values[key])) {
             throw new Error('同じ機器の項目が別の編集画面で確定されています。入力内容を確認してください');
         }
-        candidate[key] = entry.values[key];
+        candidate[key] = clone(entry.values[key]);
     }
+    const membership = device => JSON.stringify([`${device.ip || ''}:${device.ip_segment_id ?? ''}`,
+        ...(device.additional_ips || []).map(row => `${row.ip}:${row.segment_id ?? ''}`).sort()]);
+    if (membership(candidate) !== membership(current)) delete candidate.ip_conflicts_confirmed;
     // IP重複は全候補を組み立てた後の集合で判定し、交換・付け替えを許可する。
     const { values, errors } = validateDeviceValues(candidate);
     if (Object.keys(errors).length) {
@@ -85,7 +91,9 @@ export function commitDeviceDrafts(scope, ids) {
         if (entry && changed(entry)) candidates.set(id, candidateFor(id, entry));
     }
     if (candidates.size) {
-        validateDevicesForSave(appState.devices.map(row => candidates.get(Number(row.id)) || { ...row }));
+        const finalDevices = appState.devices.map(row => candidates.get(Number(row.id)) || clone(row));
+        validateDevicesForSave(finalDevices);
+        if (!confirmDeviceIpChanges(appState.devices, finalDevices)) throw new Error('IPアドレスの重複確認をキャンセルしました。入力内容は保持されています');
         for (const [id, candidate] of candidates) {
             const current = getDeviceById(id);
             const ipChanged = current.ip !== candidate.ip;
@@ -125,6 +133,18 @@ eventBus.on('resources:ids-remapped', maps => {
         }
     }
     notify();
+});
+eventBus.on('device-addresses:identified', mappings => {
+    for (const { deviceId, localDeviceId, ids } of mappings) for (const drafts of scopes.values()) {
+        const entry = drafts.get(Number(localDeviceId ?? deviceId));
+        if (!entry) continue;
+        for (const device of [entry.base, entry.values]) for (const address of device.additional_ips || []) {
+            if (address.id == null && ids[address._client_key]) {
+                address.id = ids[address._client_key];
+                delete address._client_key;
+            }
+        }
+    }
 });
 eventBus.on('resources:reloaded', () => discardDeviceDrafts());
 eventBus.on('resource:reloaded', ({ kind, id }) => {

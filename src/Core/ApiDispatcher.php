@@ -22,6 +22,8 @@ final class ApiDispatcher
             'list_users' => \Netarium\Actions\Auth\ListUsersAction::class,
             'create_user' => \Netarium\Actions\Auth\CreateUserAction::class,
             'update_user' => \Netarium\Actions\Auth\UpdateUserAction::class,
+            'delete_user' => \Netarium\Actions\Auth\DeleteUserAction::class,
+            'restore_user' => \Netarium\Actions\Auth\RestoreUserAction::class,
             'reset_user_password' => \Netarium\Actions\Auth\ResetUserPasswordAction::class,
             'change_own_password' => \Netarium\Actions\Auth\ChangeOwnPasswordAction::class,
             'data_quality' => \Netarium\Actions\Quality\DataQualityAction::class,
@@ -39,6 +41,18 @@ final class ApiDispatcher
             'create_link_system' => \Netarium\Actions\Topology\CreateLinkSystemAction::class,
             'update_link_system' => \Netarium\Actions\Topology\UpdateLinkSystemAction::class,
             'delete_link_system' => \Netarium\Actions\Topology\DeleteLinkSystemAction::class,
+            'load_ip_management' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'load_ip_management_summary' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'create_ip_network' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'save_address_space' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'delete_address_space' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'save_ip_segment' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'delete_ip_segment' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'reclassify_ips' => \Netarium\Actions\Topology\IpManagementAction::class,
+            'load_change_history' => \Netarium\Actions\Topology\ChangeHistoryAction::class,
+            'load_device_configs' => \Netarium\Actions\Topology\DeviceConfigAction::class,
+            'save_device_config' => \Netarium\Actions\Topology\DeviceConfigAction::class,
+            'delete_device_configs' => \Netarium\Actions\Topology\DeviceConfigAction::class,
             'upload_floor_plan' => \Netarium\Actions\FloorPlan\UploadFloorPlanAction::class,
             'delete_floor_plan' => \Netarium\Actions\FloorPlan\DeleteFloorPlanAction::class,
             'update_floor_plan_settings' => \Netarium\Actions\FloorPlan\UpdateFloorPlanSettingsAction::class,
@@ -60,6 +74,8 @@ final class ApiDispatcher
             'list_users',
             'create_user',
             'update_user',
+            'delete_user',
+            'restore_user',
             'reset_user_password',
             'data_quality',
             'save',
@@ -67,6 +83,10 @@ final class ApiDispatcher
             'create_link_system',
             'update_link_system',
             'delete_link_system',
+            'create_ip_network',
+            'save_address_space', 'delete_address_space', 'save_ip_segment', 'delete_ip_segment', 'reclassify_ips',
+            'load_change_history',
+            'load_device_configs', 'save_device_config', 'delete_device_configs',
             'upload_floor_plan',
             'delete_floor_plan',
             'update_floor_plan_settings',
@@ -100,6 +120,11 @@ final class ApiDispatcher
             'create_link_system',
             'update_link_system',
             'delete_link_system',
+            'create_ip_network',
+            'load_ip_management', 'save_address_space', 'delete_address_space', 'save_ip_segment', 'delete_ip_segment', 'reclassify_ips',
+            'load_ip_management_summary',
+            'load_change_history',
+            'load_device_configs', 'save_device_config', 'delete_device_configs',
             'upload_floor_plan',
             'delete_floor_plan',
             'update_floor_plan_settings',
@@ -112,6 +137,8 @@ final class ApiDispatcher
         $auditedActionMap = [
             'create_user' => 'create_user',
             'update_user' => 'update_user',
+            'delete_user' => 'delete_user',
+            'restore_user' => 'restore_user',
             'reset_user_password' => 'reset_user_password',
             'change_own_password' => 'change_own_password',
             'save' => 'topology.save',
@@ -119,6 +146,14 @@ final class ApiDispatcher
             'create_link_system' => 'link_system.create',
             'update_link_system' => 'link_system.update',
             'delete_link_system' => 'link_system.delete',
+            'create_ip_network' => 'ip_management.network_create',
+            'save_address_space' => 'ip_management.space_save',
+            'delete_address_space' => 'ip_management.space_delete',
+            'save_ip_segment' => 'ip_management.segment_save',
+            'delete_ip_segment' => 'ip_management.segment_delete',
+            'reclassify_ips' => 'ip_management.reclassify',
+            'save_device_config' => 'device_config.save',
+            'delete_device_configs' => 'device_config.delete',
             'upload_floor_plan' => 'upload_floor_plan',
             'delete_floor_plan' => 'delete_floor_plan',
             'update_floor_plan_settings' => 'update_floor_plan_settings',
@@ -233,7 +268,8 @@ final class ApiDispatcher
              * 詳細はブラウザではなく、
              * WebサーバーまたはPHPのエラーログへ記録する。
              */
-            error_log('[Netarium API] ' . get_class($e) . ': ' . $e->getMessage());
+            $sensitiveConfigAction = in_array($action ?? '', ['load_device_configs', 'save_device_config', 'delete_device_configs'], true);
+            error_log('[Netarium API] ' . get_class($e) . ($sensitiveConfigAction ? ': Config operation failed' : ': ' . $e->getMessage()));
             $isBusy = $e instanceof PDOException && Database::isBusy($e);
             $errorStatus = $isBusy ? 503 : 500;
 
@@ -251,7 +287,7 @@ final class ApiDispatcher
                 $response['request_id'] = AuditLog::id();
             }
 
-            if ((bool)($config['expose_error_detail'] ?? false)) {
+            if (!$sensitiveConfigAction && (bool)($config['expose_error_detail'] ?? false)) {
                 $response['detail'] = $e->getMessage();
             }
 

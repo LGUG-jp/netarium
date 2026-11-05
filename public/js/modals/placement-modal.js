@@ -10,6 +10,7 @@ import {
 
 import { appState } from '../core/state.js';
 import { allocateLocalId } from '../core/state.js';
+import { flushSaveQueue, hasResourceConflict } from '../core/save-queue.js';
 import { eventBus } from '../core/event-bus.js';
 import { chooseUnsavedChanges } from '../core/unsaved-changes-dialog.js';
 import {
@@ -382,27 +383,16 @@ export function createPlacementManagerOption(
     view,
     recommended
 ) {
-    if (view.view_type === 'rack') {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'placement-manager-option';
-        const mount = getRackDeviceMounts(appState).find(row =>
-            Number(row.device_id) === Number(placementManagerDeviceId));
-        const mountedHere = mount && Number(mount.view_id) === Number(view.id);
-        button.textContent = `${view.name} / ラック / ${[view.facility, view.floor].filter(Boolean).join(' / ')} — ${
-            mountedHere ? `${mount.start_u}U・搭載位置を編集` : mount ? 'このラックへ移設' : '搭載位置を指定'}`;
-        button.addEventListener('click', async () => {
-            const deviceId = placementManagerDeviceId;
-            if (!await closePlacementManager()) return;
-            eventBus.emit('rack:mount-device', { viewId: Number(view.id), deviceId: Number(deviceId) });
-        });
-        return button;
-    }
+    const isRack = view.view_type === 'rack';
+    const mount = isRack ? getRackDeviceMounts(appState).find(row =>
+        Number(row.device_id) === Number(placementManagerDeviceId)) : null;
+    const mountedHere = Boolean(mount && Number(mount.view_id) === Number(view.id));
     const label =
-        document.createElement('label');
+        document.createElement(isRack ? 'div' : 'label');
 
     label.className =
         'placement-manager-option';
+    if (isRack) label.classList.add('placement-manager-rack-option');
 
     if (recommended) {
         label.classList.add(
@@ -415,11 +405,13 @@ export function createPlacementManagerOption(
 
     checkbox.type = 'checkbox';
     checkbox.value = String(view.id);
-    checkbox.checked =
-        placementManagerSelectedViewIds
-            .has(Number(view.id));
+    checkbox.checked = isRack ? mountedHere : placementManagerSelectedViewIds.has(Number(view.id));
+    if (isRack) {
+        checkbox.disabled = true;
+        checkbox.setAttribute('aria-label', `${view.name}：${mountedHere ? '搭載済み' : '未搭載'}（搭載状態の表示）`);
+    }
 
-    checkbox.addEventListener(
+    if (!isRack) checkbox.addEventListener(
         'change',
         () => {
             const viewId =
@@ -451,7 +443,7 @@ export function createPlacementManagerOption(
         `ビューID ${view.id}`;
 
     const typeLabel =
-        view.view_type === 'floor'
+        isRack ? 'ラック' : view.view_type === 'floor'
             ? '物理'
             : '論理';
 
@@ -465,6 +457,14 @@ export function createPlacementManagerOption(
     ]
         .filter(Boolean)
         .join(' / ');
+    if (isRack) {
+        const totalU = (appState.rackSettings || []).find(row => Number(row.view_id) === Number(view.id))?.total_u;
+        detail.textContent = mountedHere
+            ? `ラック / 搭載済み・${mount.start_u}〜${Number(mount.start_u) + Number(mount.height_u) - 1}U`
+            : `ラック / 未搭載${totalU == null ? '' : `・${totalU}U`}`;
+        label.title = [view.name, view.facility, view.floor, detail.textContent,
+            mountedHere && mount.shelf_id ? `棚板「${mount.shelf_name}」` : ''].filter(Boolean).join(' / ');
+    }
 
     main.appendChild(name);
     main.appendChild(detail);
@@ -480,7 +480,20 @@ export function createPlacementManagerOption(
             'placement-manager-option-badge';
 
         badge.textContent = '推奨';
-        label.appendChild(badge);
+        if (isRack) name.appendChild(badge);
+        else label.appendChild(badge);
+    }
+    if (isRack) {
+        const action = document.createElement('button');
+        action.type = 'button';
+        action.className = 'btn btn-secondary btn-sm placement-manager-rack-action';
+        action.textContent = mountedHere ? '搭載位置を編集' : mount ? 'このラックへ移設' : '搭載位置を指定';
+        action.addEventListener('click', async () => {
+            const deviceId = placementManagerDeviceId;
+            if (!await closePlacementManager()) return;
+            eventBus.emit('rack:mount-device', { viewId: Number(view.id), deviceId: Number(deviceId) });
+        });
+        label.appendChild(action);
     }
 
     return label;
@@ -609,7 +622,7 @@ export async function applyPlacementManager() {
     if (!requireAdminUiAction()) {
         return false;
     }
-    const device =
+    let device =
         getDeviceById(
             placementManagerDeviceId
         );
@@ -623,7 +636,7 @@ export async function applyPlacementManager() {
         return false;
     }
 
-    const changes =
+    let changes =
         getPlacementManagerChanges();
 
     const removedLinkCount =
@@ -655,11 +668,46 @@ export async function applyPlacementManager() {
         }
     }
 
-    const removedViewIdSet =
+    let removedViewIdSet =
         new Set(
             changes.removedViewIds
                 .map(Number)
         );
+
+    // 配置や配線を消す前に、影響するパネルの未適用入力を解決する。
+    // 無関係な機器・配線のパネルは閉じず、入力と編集対象を保持する。
+    if (
+        removedViewIdSet.has(Number(appState.currentViewId)) &&
+        Number(appState.editingDeviceId) === Number(device.id) &&
+        !await closePanel()
+    ) {
+        return false;
+    }
+
+    const editingLink = appState.links.find(link =>
+        Number(link.id) === Number(appState.editingLinkId)
+    );
+    if (
+        editingLink &&
+        removedViewIdSet.has(Number(editingLink.view_id)) &&
+        (Number(editingLink.from_id) === Number(device.id) ||
+            Number(editingLink.to_id) === Number(device.id)) &&
+        !await closeLinkPanel()
+    ) {
+        return false;
+    }
+
+    // 「適用」は保存を開始するだけなので、削除前に成功を確認する。
+    if (changes.removedViewIds.length > 0 &&
+        !await flushSaveQueue({ silent: true })) return false;
+
+    // 入力確認中の保存による仮IDの再採番を反映してから変更する。
+    device = getDeviceById(placementManagerDeviceId);
+    if (!device || !requireAdminUiAction()) return false;
+    changes = getPlacementManagerChanges();
+    removedViewIdSet = new Set(changes.removedViewIds.map(Number));
+    if (hasResourceConflict('devices', device.id) ||
+        changes.removedViewIds.some(id => hasResourceConflict('views', id))) return false;
 
     appState.placements = appState.placements.filter(
         placement =>
@@ -735,11 +783,10 @@ export async function applyPlacementManager() {
     dismissPlacementManager();
 
     if (removedCurrentView) {
-        appState.selectedPlacementIds.clear();
-        appState.editingDeviceId = null;
-        appState.editingLinkId = null;
-        await closePanel();
-        await closeLinkPanel();
+        const remainingPlacementIds = new Set(appState.placements.map(placement => Number(placement.id)));
+        for (const id of appState.selectedPlacementIds) {
+            if (!remainingPlacementIds.has(Number(id))) appState.selectedPlacementIds.delete(id);
+        }
     }
 
     render();

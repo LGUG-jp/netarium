@@ -13,8 +13,11 @@ use Netarium\Core\Request;
 use Netarium\Core\ResourceId;
 use Netarium\Repositories\AppMetaRepository;
 use Netarium\Repositories\DeviceRepository;
+use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Services\FloorPlan\FloorPlanService;
 use Netarium\Services\Topology\DeviceFields;
+use Netarium\Services\Topology\IpManagementService;
+use Netarium\Services\Topology\ChangeHistoryService;
 
 class CsvImportExportService
 {
@@ -32,7 +35,7 @@ class CsvImportExportService
     /**
      * 機器台帳CSVの列定義。
      *
-     * v8.4.2のCSV取込でも同じ順序を使用する。
+     * 出力・テンプレート・取込で同じ20列の順序を使用する。
      */
     public function getDeviceCsvColumns(): array
     {
@@ -41,6 +44,7 @@ class CsvImportExportService
             'name',
             'type',
             'ip',
+            'additional_ips',
             'facility',
             'floor',
             'location',
@@ -246,6 +250,7 @@ class CsvImportExportService
             FROM devices
             ORDER BY id
         ");
+        $additionalByDevice = (new DeviceIpAddressRepository($this->db))->getByDeviceIds();
 
         $filename = 'netarium-devices_' . date('Ymd_His') . '.csv';
 
@@ -261,6 +266,7 @@ class CsvImportExportService
             $this->writeCsvRow($output, $columns);
 
             while (($device = $stmt->fetch(PDO::FETCH_ASSOC)) !== false) {
+                $device['additional_ips'] = $this->encodeDeviceCsvAdditionalIps($additionalByDevice[(int)$device['id']] ?? []);
                 $row = [];
 
                 foreach ($columns as $column) {
@@ -406,6 +412,14 @@ class CsvImportExportService
 
         return $text;
     }
+    private function encodeDeviceCsvAdditionalIps(array $rows): string
+    {
+        return json_encode(array_map(
+            static fn(array $row): array => ['ip' => $row['ip'], 'label' => $row['label']],
+            $rows
+        ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    }
+
 
     public function normalizeDeviceCsvComparable(array $device): array
     {
@@ -415,6 +429,10 @@ class CsvImportExportService
             if ($column === 'id') {
                 $id = $device['id'] ?? null;
                 $normalized['id'] = ($id !== null && $id !== '') ? ResourceId::parse($id, 'id') : null;
+                continue;
+            }
+            if ($column === 'additional_ips') {
+                $normalized[$column] = $this->encodeDeviceCsvAdditionalIps($device[$column] ?? []);
                 continue;
             }
 
@@ -431,6 +449,7 @@ class CsvImportExportService
             'name' => '名称',
             'type' => '種別',
             'ip' => 'IPアドレス',
+            'additional_ips' => '追加IPv4アドレス',
             'facility' => '施設',
             'floor' => 'フロア',
             'location' => '設置場所',
@@ -565,6 +584,11 @@ class CsvImportExportService
         $columns = $this->getDeviceCsvColumns();
         $columnCount = count($columns);
         $devicesById = $this->deviceRepo->getDevicesByIdForCsvImport();
+        $additionalByDevice = (new DeviceIpAddressRepository($this->db))->getByDeviceIds();
+        foreach ($devicesById as $id => &$device) {
+            $device['additional_ips'] = $additionalByDevice[$id] ?? [];
+        }
+        unset($device);
 
         $rows = [];
         $summary = [
@@ -577,12 +601,11 @@ class CsvImportExportService
         ];
 
         $usedCsvIds = [];
-        $usedIps = [];
         $dataRowCount = 0;
         $physicalLine = 1;
 
         try {
-            $header = fgetcsv($stream);
+            $header = fgetcsv($stream, 0, ',', '"', '');
 
             if ($header === false) {
                 throw new ApiException('CSVヘッダーを読み取れません', 400);
@@ -607,7 +630,7 @@ class CsvImportExportService
             );
 
             if (count($header) !== $columnCount) {
-                throw new ApiException('CSVヘッダーの列数が不正です', 400);
+                throw new ApiException('CSVヘッダーの列数が不正です。新しいテンプレートを出力して列構成を合わせてください', 400);
             }
 
             foreach ($columns as $index => $column) {
@@ -615,13 +638,14 @@ class CsvImportExportService
                     $actual = (string)($header[$index] ?? '');
 
                     throw new ApiException(
-                        'CSVヘッダーの' . ($index + 1) . '列目が不正です。期待値: ' . $column . ' / 実際: ' . $actual,
+                        'CSVヘッダーの' . ($index + 1) . '列目が不正です。期待値: ' . $column . ' / 実際: ' . $actual
+                        . '。新しいテンプレートを出力して列構成を合わせてください',
                         400
                     );
                 }
             }
 
-            while (($values = fgetcsv($stream)) !== false) {
+            while (($values = fgetcsv($stream, 0, ',', '"', '')) !== false) {
                 $physicalLine++;
 
                 if ($this->isEmptyCsvRow($values)) {
@@ -639,7 +663,7 @@ class CsvImportExportService
                 $transformations = [];
 
                 if (count($values) !== $columnCount) {
-                    $errors[] = "列数が{$columnCount}列ではありません";
+                    $errors[] = "列数が{$columnCount}列ではありません。新しいテンプレートを出力して列構成を合わせてください";
                     $rows[] = [
                         'line' => $physicalLine,
                         'operation' => 'error',
@@ -714,7 +738,7 @@ class CsvImportExportService
                     $labels = $this->getDeviceCsvColumnLabels();
 
                     foreach ($this->getDeviceCsvColumns() as $column) {
-                        if ($column === 'id') {
+                        if ($column === 'id' || $column === 'additional_ips') {
                             continue;
                         }
 
@@ -743,6 +767,41 @@ class CsvImportExportService
 
                 if ($record['ip'] !== '' && !filter_var($record['ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
                     $errors[] = 'ip: IPv4形式で入力してください';
+                }
+
+                try {
+                    $existingAdditional = $additionalByDevice[$id] ?? [];
+                    $additional = $existingAdditional;
+                    if ($record['additional_ips'] !== '') {
+                        $decoded = json_decode($record['additional_ips'], false, 512, JSON_THROW_ON_ERROR);
+                        if (!is_array($decoded)) {
+                            throw new ApiException('additional_ips: JSON配列で指定してください', 400);
+                        }
+                        $additional = [];
+                        foreach ($decoded as $address) {
+                            if (!$address instanceof \stdClass) {
+                                throw new ApiException('additional_ips: 各要素はIPと用途ラベルのオブジェクトで指定してください', 400);
+                            }
+                            $additional[] = ['ip' => $address->ip ?? null, 'label' => $address->label ?? ''];
+                        }
+                    }
+                    $record['additional_ips'] = DeviceIpAddressRepository::normalize($additional, $record['ip'], 'additional_ips: ');
+                    $existingByIp = array_column($existingAdditional, null, 'ip');
+                    foreach ($record['additional_ips'] as &$address) {
+                        $address['id'] = $existingByIp[$address['ip']]['id'] ?? null;
+                        if (isset($existingByIp[$address['ip']]) && $existingByIp[$address['ip']]['label'] === $address['label']) {
+                            $address['segment_id'] = $existingByIp[$address['ip']]['segment_id'];
+                        } else {
+                            unset($address['segment_id']);
+                        }
+                    }
+                    unset($address);
+                } catch (\JsonException $e) {
+                    $errors[] = 'additional_ips: JSONの形式が不正です';
+                    $record['additional_ips'] = [];
+                } catch (ApiException $e) {
+                    $errors[] = $e->getMessage();
+                    $record['additional_ips'] = [];
                 }
 
                 foreach ($this->getDeviceCsvTextLimits() as $column => $maxLength) {
@@ -786,18 +845,6 @@ class CsvImportExportService
                     $errors[] = 'maintenance_expiry: 保守期限は導入年月以降の日付を指定してください';
                 }
 
-                $ip = $record['ip'];
-
-                if ($ip !== '') {
-                    if (isset($usedIps[$ip])) {
-                        $errors[] = "ip: {$ip}がCSV内で重複しています";
-                    } else {
-                        $usedIps[$ip] = [
-                            'line' => $physicalLine,
-                            'id' => $id,
-                        ];
-                    }
-                }
 
                 $operation = 'insert';
                 $comparison = [
@@ -808,6 +855,8 @@ class CsvImportExportService
                 if ($id !== null && isset($devicesById[$id])) {
                     $comparison = $this->compareDeviceCsvFields($devicesById[$id], $record);
                     $operation = $comparison['changed_fields'] === [] ? 'unchanged' : 'update';
+                } elseif ($record['additional_ips'] !== []) {
+                    $comparison = $this->compareDeviceCsvFields([], ['additional_ips' => $record['additional_ips']]);
                 }
 
                 /*
@@ -881,69 +930,22 @@ class CsvImportExportService
         if ($summary['total'] === 0) {
             throw new ApiException('CSVにデータ行がありません', 400);
         }
-
-        /*
-         * CSVに含まれない既存機器を含めた
-         * 最終状態でIP重複を検証する。
-         */
-        $finalIpOwners = [];
-
-        foreach ($devicesById as $existingId => $existing) {
-            $existingIp = trim((string)$existing['ip']);
-
-            if ($existingIp !== '') {
-                $finalIpOwners[$existingIp] = (int)$existingId;
-            }
+        $ipManagement = new IpManagementService($this->db);
+        $toResolve = [];
+        foreach ($rows as $index => $row) {
+            if ($row['errors'] !== []) { continue; }
+            $toResolve[$index] = array_replace($row['data'], ['id' => $row['id'] ?? ('new:' . $row['line'])]);
         }
-
-        foreach ($rows as &$row) {
-            if ($row['data'] === null || $row['errors'] !== []) {
-                continue;
-            }
-
-            $record = $row['data'];
-            $id = $row['id'];
-
-            /*
-             * 更新の場合は、更新前IPの所有を解除する。
-             */
-            if ($id !== null && isset($devicesById[$id])) {
-                $oldIp = trim((string)$devicesById[$id]['ip']);
-
-                if ($oldIp !== '' && ($finalIpOwners[$oldIp] ?? null) === $id) {
-                    unset($finalIpOwners[$oldIp]);
+        $resolved = $ipManagement->resolveDevices($toResolve, true);
+        foreach ($resolved as $index => $record) {
+            $rows[$index]['data'] = $record;
+            foreach (array_merge([['ip' => $record['ip'], 'segment_id' => $record['ip_segment_id']]], $record['additional_ips']) as $address) {
+                if ($address['ip'] !== '' && $address['segment_id'] === null) {
+                    $rows[$index]['warnings'][] = $this->createDeviceCsvWarning('unclassified_ip', 'IP ' . $address['ip'] . ' は未分類で保存されます。アドレス空間・セグメントを確認してください', 'ip');
                 }
             }
-
-            $newIp = $record['ip'];
-
-            if ($newIp === '') {
-                continue;
-            }
-
-            if (isset($finalIpOwners[$newIp])) {
-                $row['errors'][] = "ip: {$newIp}は機器ID {$finalIpOwners[$newIp]}で使用されています";
-                $row['operation'] = 'error';
-
-                $summary[$id === null ? 'insert' : (
-                    $this->normalizeDeviceCsvComparable($devicesById[$id]) ===
-                    $this->normalizeDeviceCsvComparable($record) ? 'unchanged' : 'update'
-                )]--;
-
-                $summary['error']++;
-                continue;
-            }
-
-            if ($id !== null) {
-                $finalIpOwners[$newIp] = $id;
-            } else {
-                /*
-                 * 新規機器は負数の仮所有者として扱う。
-                 */
-                $finalIpOwners[$newIp] = -1 * (int)$row['line'];
-            }
         }
-        unset($row);
+
 
         /*
          * 管理番号とシリアル番号は、
@@ -980,6 +982,35 @@ class CsvImportExportService
             $finalDevicesById[$temporaryKey] = $record;
             $newDeviceRowKeys[$temporaryKey] = $rowIndex;
         }
+
+        $ipConflicts = $ipManagement->conflicts(array_values($finalDevicesById), array_values($devicesById));
+        $ipConflictsByDevice = [];
+        foreach (['errors', 'warnings'] as $kind) {
+            foreach ($ipConflicts[$kind] as $conflict) {
+                foreach ($conflict['targets'] as $target) {
+                    $ipConflictsByDevice[(string)$target['device_id']][$kind][] = $conflict;
+                }
+            }
+        }
+        foreach ($rows as &$row) {
+            if (!is_array($row['data'] ?? null) || $row['errors'] !== []) { continue; }
+            $key = (string)($row['id'] ?? ('new:' . $row['line']));
+            foreach (['errors', 'warnings'] as $kind) {
+                foreach ($ipConflictsByDevice[$key][$kind] ?? [] as $conflict) {
+                    if ($kind === 'errors') {
+                        $row['errors'][] = $conflict['message'] . '：同一アドレス空間内の新規重複は登録できません';
+                    } else {
+                        $row['warnings'][] = array_merge($this->createDeviceCsvWarning('duplicate_ip', $conflict['message'] . '。未分類の所属を確認してください', 'ip'), $conflict);
+                    }
+                }
+            }
+            if ($row['errors'] !== []) {
+                $summary[$row['operation']]--;
+                $summary['error']++;
+                $row['operation'] = 'error';
+            }
+        }
+        unset($row);
 
         $duplicateFields = [
             'asset_number' => '管理番号',
@@ -1369,6 +1400,25 @@ class CsvImportExportService
 
         try {
             $newRevision = $this->appMetaRepo->claimDataRevision($requestedRevision);
+            $reachabilityMonitor = new \Netarium\Services\Monitoring\PingReachabilityMonitor($this->db);
+            $beforeReachability = $reachabilityMonitor->snapshot();
+            $ipManagement = new IpManagementService($this->db);
+            $finalDevices = array_column((new DeviceRepository($this->db))->getAllWithStatus(), null, 'id');
+            foreach ($rows as $row) {
+                if (($row['operation'] ?? '') === 'unchanged') { continue; }
+                $key = $row['id'] ?? ('new:' . $row['line']);
+                $finalDevices[$key] = array_replace($row['data'], ['id' => $key, 'ip_conflicts_confirmed' => true]);
+            }
+            $ipManagement->assertFinal(array_values($finalDevices));
+            $beforeCsvDeviceIds = [];
+            foreach ($rows as $row) {
+                if (($row['operation'] ?? '') === 'update' && isset($row['id'])) {
+                    $beforeCsvDeviceIds[] = ResourceId::parse($row['id'], 'id');
+                }
+            }
+            $changeHistory = new ChangeHistoryService($this->db);
+            $beforeHistory = $changeHistory->captureSnapshot($beforeCsvDeviceIds, []);
+            $afterCsvDeviceIds = [];
 
             $insertStmt = $this->db->prepare("
                 INSERT INTO devices (
@@ -1475,6 +1525,7 @@ class CsvImportExportService
             ");
 
             $assignedIds = [];
+            $addressRepo = new DeviceIpAddressRepository($this->db);
 
             foreach ($rows as $row) {
                 if (!is_array($row) || !is_array($row['data'] ?? null)) {
@@ -1522,8 +1573,13 @@ class CsvImportExportService
 
                 if ($operation === 'insert') {
                     $insertStmt->execute($params);
+                    $this->db->prepare('UPDATE devices SET ip_segment_id = ? WHERE id = ?')->execute([$record['ip_segment_id'], $id]);
                     $createMonitorStmt->execute([':id' => $id]);
+                    if ($record['additional_ips'] !== []) {
+                        $addressRepo->saveForDevice($id, $record['additional_ips'], (string)$record['ip']);
+                    }
 
+                    $afterCsvDeviceIds[] = $id;
                     $assignedIds[] = [
                         'line' => (int)$row['line'],
                         'id' => $id,
@@ -1539,6 +1595,11 @@ class CsvImportExportService
                 }
 
                 $updateStmt->execute($params);
+                $this->db->prepare('UPDATE devices SET ip_segment_id = ? WHERE id = ?')->execute([$record['ip_segment_id'], $id]);
+                if (in_array('additional_ips', $row['changed_fields'], true)) {
+                    $addressRepo->saveForDevice($id, $record['additional_ips'], (string)$record['ip']);
+                }
+                $afterCsvDeviceIds[] = $id;
 
                 if ((string)$oldIp !== (string)$record['ip']) {
                     $resetMonitorStmt->execute([':id' => $id]);
@@ -1549,8 +1610,11 @@ class CsvImportExportService
             if ($changedIpCount > 0) {
                 $newMonitorRevision = $this->appMetaRepo->incrementMonitorRevision();
             }
+            $reachabilityMonitor->reconcile($beforeReachability, $changedIpCount === 0);
+            $newMonitorRevision = $this->appMetaRepo->getMonitorRevision();
 
             $this->appMetaRepo->set('last_saved_at', $savedAt);
+            $changeHistory->recordFromSnapshot($beforeHistory, $afterCsvDeviceIds, [], 'csv_import');
 
             $this->db->commit();
         } catch (Throwable $e) {

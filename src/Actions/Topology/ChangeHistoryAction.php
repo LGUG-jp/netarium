@@ -1,0 +1,19 @@
+<?php
+declare(strict_types=1);
+
+namespace Netarium\Actions\Topology;
+
+use PDO;
+use Netarium\Actions\ActionInterface;
+use Netarium\Core\Request;
+use Netarium\Core\Response;
+use Netarium\Services\Topology\ChangeHistoryService;
+
+final class ChangeHistoryAction implements ActionInterface
+{
+    public function handle(PDO $db, array $config): void
+    {
+        Request::requireMethod('GET');
+        Response::json((new ChangeHistoryService($db))->list($_GET));
+    }
+}

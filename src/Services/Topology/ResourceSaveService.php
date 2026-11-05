@@ -11,6 +11,7 @@ use Netarium\Core\Database;
 use Netarium\Core\ResourceId;
 use Netarium\Repositories\AppMetaRepository;
 use Netarium\Repositories\DeviceRepository;
+use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Repositories\DeviceImageRepository;
 use Netarium\Services\DeviceImage\DeviceImageService;
 use Netarium\Services\FloorPlan\FloorPlanService;
@@ -61,6 +62,8 @@ final class ResourceSaveService
             $this->db->beginTransaction();
             // Acquire the writer lock before reading resource revisions. busy_timeout remains in effect.
             $this->db->exec("UPDATE resource_sequences SET value = value WHERE name = 'revision'");
+            $reachabilityMonitor = new \Netarium\Services\Monitoring\PingReachabilityMonitor($this->db);
+            $beforeReachability = $reachabilityMonitor->snapshot();
             $devices = $this->indexed($this->db->query('SELECT * FROM devices')->fetchAll(PDO::FETCH_ASSOC));
             $views = $this->indexed($this->db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC));
             $existingViews = $views;
@@ -383,6 +386,40 @@ final class ResourceSaveService
                 ], $config);
             $normalizedViews = $this->indexed($normalizedViews);
             $normalizedDevices = $this->indexed($normalizedDevices);
+            $ipManagement = new IpManagementService($this->db);
+            $normalizedDevices = $this->indexed($ipManagement->resolveDevices(array_values($normalizedDevices)));
+            $finalDevices = $this->indexed((new DeviceRepository($this->db))->getAllWithStatus());
+            foreach ($deviceOperations as $localId => $operation) {
+                $id = $maps['devices'][$localId] ?? $localId;
+                if ($operation['operation'] === 'delete') { unset($finalDevices[$id]); }
+                else { $finalDevices[$id] = $normalizedDevices[$id]; }
+            }
+            $ipManagement->assertFinal(array_values($finalDevices));
+            $changeHistory = new ChangeHistoryService($this->db);
+            $beforeHistoryDeviceIds = [];
+            $afterHistoryDeviceIds = [];
+            foreach ($deviceOperations as $localId => $operation) {
+                $mappedId = (int)($maps['devices'][$localId] ?? $localId);
+                if ($operation['operation'] !== 'create') {
+                    $beforeHistoryDeviceIds[] = (int)$localId;
+                }
+                if ($operation['operation'] !== 'delete') {
+                    $afterHistoryDeviceIds[] = $mappedId;
+                }
+            }
+            $createdViewIds = array_fill_keys(array_map('intval', array_values($maps['views'])), true);
+            $beforeHistoryViewIds = [];
+            $afterHistoryViewIds = [];
+            foreach (array_keys($affectedViews) as $vId) {
+                $vId = (int)$vId;
+                if (!isset($createdViewIds[$vId])) {
+                    $beforeHistoryViewIds[] = $vId;
+                }
+                if (!isset($deletedViews[$vId])) {
+                    $afterHistoryViewIds[] = $vId;
+                }
+            }
+            $beforeHistory = $changeHistory->captureSnapshot($beforeHistoryDeviceIds, $beforeHistoryViewIds);
             $monitorChanged = false;
             $changedDeviceIds = [];
             foreach ($deviceOperations as $localId => $operation) {
@@ -396,7 +433,11 @@ final class ResourceSaveService
                     continue;
                 }
                 $previousIp = (new DeviceRepository($this->db))->getIpById($id);
-                $this->writeRow('devices', $normalizedDevices[$id], $operation['operation'] === 'create');
+                $device = $normalizedDevices[$id];
+                $additionalIps = $device['additional_ips'];
+                unset($device['additional_ips'], $device['ip_conflicts_confirmed']);
+                $this->writeRow('devices', $device, $operation['operation'] === 'create');
+                (new DeviceIpAddressRepository($this->db))->saveForDevice($id, $additionalIps, $device['ip']);
                 $changedDeviceIds[$id] = true;
                 if ($previousIp === null || $previousIp !== $normalizedDevices[$id]['ip']) {
                     $stmt = $this->db->prepare("INSERT INTO device_monitor_status (device_id, status, last_checked_at, last_response_ms, last_error)
@@ -486,13 +527,16 @@ final class ResourceSaveService
                     $this->writeRow('floor_rack_placements', $row, true);
                 }
             }
-            if ($monitorChanged) {
+            $resetIds = $reachabilityMonitor->reconcile($beforeReachability, false);
+            foreach ($resetIds as $resetId) { $changedDeviceIds[$resetId] = true; }
+            if ($monitorChanged || $resetIds !== []) {
                 $meta->incrementMonitorRevision();
             }
             if ($deviceOperations !== [] || $viewOperations !== []) {
                 $this->db->exec("UPDATE app_meta SET meta_value = CAST(meta_value AS INTEGER) + 1 WHERE meta_key = 'data_revision'");
                 $meta->set('last_saved_at', date(DATE_ATOM));
             }
+            $changeHistory->recordFromSnapshot($beforeHistory, $afterHistoryDeviceIds, $afterHistoryViewIds, 'save_resources');
             // Read the response before commit, from the same snapshot as the writes.
             $affectedPlacements = $this->selectRows('device_placements', 'view_id', array_keys($affectedViews));
             $affectedLinks = $this->selectRows('links', 'view_id', array_keys($affectedViews));

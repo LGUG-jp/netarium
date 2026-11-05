@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>機器・台帳の操作 - Netarium 利用ガイド</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="assets/icons/brand/netarium-mark-compact.svg">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <header class="help-header-bar">
+        <div class="help-header-inner">
+            <a href="help.html" class="help-header-brand">
+                <img src="assets/icons/brand/netarium-logo.svg" width="127" height="32" alt="Netarium">
+                <span>利用ガイド</span>
+            </a>
+            <nav aria-label="機能別ナビゲーション">
+                <ul class="help-nav-list">
+                    <li><a href="help.html" class="help-nav-link">トップ</a></li>
+                    <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
+                    <li><a href="help-devices.html" class="help-nav-link" aria-current="page">機器・台帳</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">ビュー・ラック</a></li>
+                    <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="help-layout">
+        <aside class="help-toc">
+            <details id="help-toc" open>
+                <summary>目次</summary>
+                <nav aria-label="章目次">
+                    <ol>
+                        <li><a href="#devices">機器情報の編集と登録画像</a></li>
+                        <li><a href="#device-sheet">機器個票の編集と複数IP</a></li>
+                        <li><a href="#management-ssh">機器への管理接続</a></li>
+                        <li><a href="#ledger">機器台帳とダッシュボード</a></li>
+                        <li><a href="#ip-management">IPアドレス管理（ネットワーク区分）</a></li>
+                        <li><a href="#change-history">変更履歴の確認</a></li>
+                        <li><a href="#device-config">機器Configの手動保管</a></li>
+                        <li><a href="#ledger-columns">台帳の表示項目とセル操作</a></li>
+                        <li><a href="#ledger-filters">台帳の複数条件絞り込み</a></li>
+                        <li><a href="#maintenance-outlook">保守期限の見通し</a></li>
+                        <li><a href="#ledger-ping">チェックした機器のPing</a></li>
+                        <li><a href="#device-bulk">機器の一括編集</a></li>
+                    </ol>
+                </nav>
+            </details>
+        </aside>
+
+        <main class="help-container" id="help-content">
+            <h1>機器・台帳の操作ガイド</h1>
+            <p>
+                機器プロパティパネル、機器台帳、個票シート、IPアドレス管理、変更履歴、Config保管、Ping疎通確認、および一括編集の手順を説明します。
+            </p>
+
+            <section>
+                <h2 id="devices" tabindex="-1">機器情報の編集と登録画像</h2>
+                <p>キャンバス上の機器をクリックすると右側にプロパティパネルが開き、基本情報・設置情報・管理保守情報を確認・編集できます。</p>
+                <ol>
+                    <li>選択モードでキャンバス上の機器をクリックします。</li>
+                    <li>右パネルで必要な見出し（「基本情報」「設置情報」「機器・資産情報」「管理・保守情報」など）を開いて各項目を入力します。</li>
+                    <li>パネル下部の<strong>「適用」</strong>を押すと入力が検証され、自動保存されます。</li>
+                    <li><strong>機器画像:</strong> 「機器・資産情報」の登録画像枠（最大3枚）から「＋ 画像を追加」でPNG/JPEG（10MiB以下、長辺4000px以下）をアップロードできます。管理者は画像の並べ替えや削除も可能です。</li>
+                </ol>
+            </section>
+
+            <section>
+                <h2 id="device-sheet" tabindex="-1">機器個票の編集と複数IP</h2>
+                <p>機器台帳で「詳細」を押すか、キャンバス上で機器をダブルクリックすると、1台の詳細な個票シートが開きます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/device-sheet-basic.webp" data-help-image data-caption="機器個票 1：機器・設置・資産タブ（基本情報、追加IP、登録画像）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-sheet-basic.webp" width="2228" height="1460" loading="lazy" alt="機器個票の編集画面（機器・設置・資産タブ）。基本情報・IPアドレス、追加IPv4アドレスの編集ボタン、設置・配置情報、機器・資産情報、登録画像を表示。">
+                    </a>
+                    <figcaption>第1タブ「機器・設置・資産」：基本情報、追加IPアドレスの登録・編集、設置先ビュー、資産番号、登録画像（最大3枚）を管理します。</figcaption>
+                </figure>
+                <figure class="help-figure">
+                    <a href="assets/help/device-sheet-edit.webp" data-help-image data-caption="機器個票 2：管理・保守・状態タブ（監視状態とPing結果案内）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-sheet-edit.webp" width="2480" height="1680" loading="lazy" alt="機器個票の編集画面（管理・保守・状態タブ）。①上部の適用ボタン、②情報分類タブ、③管理・保守情報、④監視・疎通状態（NGとPing結果についてのリンク）を表示。">
+                    </a>
+                    <figcaption>第2タブ「管理・保守・状態」：①上部の「適用」で確定、②タブ切り替え、③保守情報入力、④Ping疎通結果と注意を確認します。</figcaption>
+                </figure>
+
+                <h3>複数IPアドレスの追加・変更・削除</h3>
+                <p>1台の機器に対して、主IP（管理IPv4）に加えて複数の追加IP（サービス用、VIP、管理用セカンダリ等）を登録できます。</p>
+                <ol>
+                    <li>「機器・設置・資産」タブの「追加IPv4アドレス」欄で、<strong>「編集」</strong>（未登録時は「IPアドレスを追加」）を押します。</li>
+                    <li>入力行に<strong>IPv4アドレス</strong>と<strong>用途ラベル（任意）</strong>を入力します。</li>
+                    <li>続けて登録する場合は<strong>「IPアドレスを追加」</strong>を押して行を増やします。</li>
+                    <li>不要なIPは行右端の赤い<strong>ゴミ箱アイコン</strong>を押して削除します。</li>
+                    <li><strong>「閉じる」</strong>を押すとサマリー表示へ戻り、上部の<strong>「適用」</strong>を押して自動保存します。</li>
+                </ol>
+                <ul>
+                    <li><strong>セグメント所属の判定:</strong> IPアドレスを入力すると、一致するセグメント候補が1件の場合は自動選択され、複数候補がある場合は候補選択・確認が必要となります。該当する候補がない場合は「未分類」として登録されます。</li>
+                </ul>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">IP重複の条件</th><th scope="col">保存時の判定と動作</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">同一機器内で同じIP</th>
+                            <td>登録エラーとなり保存できません。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">同一ネットワーク区分内の別機器で新規重複</th>
+                            <td><strong>登録拒否</strong>となり保存できません。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">異なるネットワーク区分間の同じIP</th>
+                            <td>独立したアドレス空間として登録・保存可能です。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">未分類を含む新規重複</th>
+                            <td>警告が表示され、明示的な確認が必要です（未確認の場合は保存が拒否されます）。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">既存データの重複</th>
+                            <td>既存の重複状態は原則として保持されます。</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p class="note"><strong>注意（保存判定とPingスキップの区別）:</strong> 上記の重複判定はデータの保存可否に関する検証です。保存済みのデータであっても、同一IPが複数の到達可能区分に存在し通信先が特定できない場合は、Ping実行時に安全のため送信が自動スキップされます。</p>
+            </section>
+
+            <section>
+                <h2 id="management-ssh" tabindex="-1">機器へ管理接続する</h2>
+                <p>右パネルや個票の<strong>「機器へ接続」</strong>から、管理画面や外部SSHクライアントを直接呼び出せます。</p>
+                <ul>
+                    <li><strong>HTTP / HTTPS:</strong> 登録された管理用IP・ポートのURLをブラウザの別タブで開きます。</li>
+                    <li><strong>SSH:</strong> 端末のOSに関連付けられた外部SSHクライアント（<code>ssh://</code>プロトコル）を起動します。</li>
+                </ul>
+                <p class="note">WindowsでTera Term等を使用する場合は、SSH接続画面の「？接続方法」を開き、プロトコルの関連付け手順を確認してください。</p>
+            </section>
+
+            <section>
+                <h2 id="ledger" tabindex="-1">機器台帳・ダッシュボード・品質診断</h2>
+                <p>登録された全機器の一覧管理と、システム全体の運用状態を集約表示する機能です。</p>
+                <ul>
+                    <li><strong>機器台帳:</strong> 上部バーの「台帳」ボタンから開きます。全機器の検索、列プリセット切り替え、複数条件絞り込み、CSV入出力、一括編集、選択機器のPingを実行できます。</li>
+                    <li><strong>ダッシュボード（管理者のみ）:</strong> 上部バーから開きます。機器総数、監視状態（OK / NG / 未確認）、保守期限の見通し、施設・種別の内訳を集計表示します。</li>
+                    <li><strong>データ品質診断（管理者のみ）:</strong> 上部バーの「管理」→「データ品質診断」から、未配置機器、IP重複、未設定項目などの不整合を検出し、修正導線を提供します。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="ip-management" tabindex="-1">IPアドレス管理（ネットワーク区分）</h2>
+                <p>組織内で利用されているIPv4ネットワーク体系を「ネットワーク区分」と「セグメント（CIDR）」として階層管理し、機器の所属やPing疎通到達性を制御します。閲覧者はネットワーク区分・セグメント・所属IPの参照が可能で、登録・編集・再分類は管理者のみ行えます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/ip-management-spaces.webp" data-help-image data-caption="IPアドレス管理：ネットワーク区分一覧とPing到達性・未分類IP" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/ip-management-spaces.webp" width="1970" height="1204" loading="lazy" alt="IPアドレス管理画面。ネットワーク区分一覧に各区分のセグメント数・登録IP数、Ping到達性（可能・不可・未設定）を表示。下部に未分類IPのエリアを表示。">
+                    </a>
+                    <figcaption>ネットワーク区分ごとにPing到達性（可能／不可／未設定）を設定し、下部エリアで未分類IPの再分類を行います。</figcaption>
+                </figure>
+                <ol>
+                    <li>上部バーの<strong>「管理」→「IPアドレス管理」</strong>を開きます（閲覧者も参照可能）。</li>
+                    <li><strong>ネットワーク区分の登録（管理者のみ）:</strong> 「ネットワークを登録」を押し、区分名（例: 基幹系、情報系、庁内LAN）、メモ、および<strong>Ping到達性</strong>（「到達可能」「到達不可」「未設定」）を設定して保存します。</li>
+                    <li><strong>セグメント（CIDR）の登録（管理者のみ）:</strong> 区分カードをクリックして詳細を開き、「セグメントを追加」からCIDR（例: <code>192.168.10.0/24</code>）と用途を入力して登録します。</li>
+                    <li><strong>登録IPの確認:</strong> 各セグメントを開くと、所属する機器名・IPアドレス・種別が一覧表示されます。</li>
+                    <li><strong>未分類IPの再分類（管理者のみ）:</strong> 区分一覧下部の「未分類IP」を開くと、セグメントに属していないIPを持つ機器が一覧表示されます。セグメント登録後に所属を更新できます。</li>
+                </ol>
+                <p class="note"><strong>Ping到達性の設定と注意:</strong> 「到達不可」は不要なPing送信を安全にスキップするための設定であり、機器自体の故障を意味するものではありません。なお、Ping到達性は運用者による運用の宣言であり、設定してもサーバーOSの通信経路や送信元インターフェース・VRFが自動変更されるものではなく、実際の到達経路や応答機器の同一性が保証されるわけではありません。</p>
+            </section>
+
+            <section>
+                <h2 id="change-history" tabindex="-1">変更履歴の確認</h2>
+                <p>機器の追加・更新・削除、ビューの配置変更、接続の作成・削除などの操作イベントを最大90日間保持し、変更前後の差分を確認できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/change-history.webp" data-help-image data-caption="変更履歴：期間・対象別の絞り込みと変更前後の差分展開" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/change-history.webp" width="2078" height="1380" loading="lazy" alt="変更履歴画面。対象名検索、対象種別フィルター、直近7日・30日・90日ボタン、イベント一覧と変更前後の差分テーブルを表示。">
+                    </a>
+                    <figcaption>直近の期間ボタンや対象種別で絞り込み、行をクリックして変更前後の差分（変更項目・以前の値・変更後の値）を確認します。</figcaption>
+                </figure>
+                <ol>
+                    <li>上部バーの<strong>「管理」→「変更履歴」</strong>、または機器個票の<strong>「変更履歴」</strong>ボタンから開きます。</li>
+                    <li>上部ツールバーで<strong>期間</strong>（「直近7日」「直近30日」「直近90日」）、対象種別（機器／ビュー／接続など）、操作者、対象名で絞り込みます。</li>
+                    <li>一覧の行をクリックするか左端の「▶」を押すと、変更イベントが展開され、<strong>「項目」「変更前」「変更後」</strong>の差分が表示されます。</li>
+                    <li>対象名のリンクをクリックすると、該当機器の個票やビューへ直接移動できます。</li>
+                </ol>
+                <p class="note"><strong>ログの区別:</strong> 変更履歴は構成データの編集差分を追跡する機能です。ログインやAPI実行を記録する「監査ログ」や、設定テキスト世代を管理する「機器Config履歴」とは独立して保持されます。</p>
+            </section>
+
+            <section>
+                <h2 id="device-config" tabindex="-1">機器 Config の手動保管（管理者のみ）</h2>
+                <p>ルータやスイッチ等の設定テキスト（コンフィグ）を機器個票に紐付けて履歴保管・差分比較できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/device-config-view.webp" data-help-image data-caption="Config管理 1：世代履歴と本文閲覧（Config本文タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-config-view.webp" width="2084" height="1396" loading="lazy" alt="Config管理の本文表示画面。左に登録世代一覧（日時・登録者）、右に設定テキスト本文と検索・全文コピーを表示。">
+                    </a>
+                    <figcaption>第1タブ「Config本文」：左側で過去の登録世代（最大5世代）を切り替え、設定テキストの全文閲覧や検索、コピーを行います。</figcaption>
+                </figure>
+                <figure class="help-figure">
+                    <a href="assets/help/device-config-diff.webp" data-help-image data-caption="Config管理 2：過去の版との行単位差分比較（差分比較タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-config-diff.webp" width="2082" height="1390" loading="lazy" alt="Config管理の差分比較画面。左に比較元の過去版、右に比較先（最新版）を並べ、追加行を緑、削除・変更行を赤でハイライト表示。">
+                    </a>
+                    <figcaption>第2タブ「差分比較」：過去の登録版を選び、追加行（緑）や変更・削除行（赤）を左右比較します。「前の差分」「次の差分」で移動できます。</figcaption>
+                </figure>
+                <ol>
+                    <li>保存済み機器の個票上部にある<strong>「Config」</strong>ボタンを押します。</li>
+                    <li><strong>「+ 新しい版を登録」</strong>で設定テキストを貼り付けるか、UTF-8テキストファイルを読み込み、メモを添えて保存します（最大5世代、1版256KiB以内）。</li>
+                    <li><strong>差分比較:</strong> 「差分比較」タブを開き、プルダウンから比較元の過去版を選択すると、左右比較で行の追加（緑）・削除（赤）をハイライト表示します。</li>
+                    <li><strong>全文コピー:</strong> 「Config本文」タブの「全文コピー」でクリップボードへ一括取得できます。</li>
+                    <li><strong>履歴削除:</strong> 「履歴を削除」を押すと削除選択モードに入り、特定の版を選んで安全に削除できます（機器本体は削除されません）。</li>
+                </ol>
+                <p class="note"><strong>注意:</strong> 登録前にパスワード・共有鍵・SNMPコミュニティ名を必ずマスキングしてください。実機からの自動取得・適用は行いません。</p>
+            </section>
+
+            <section>
+                <h2 id="ledger-columns" tabindex="-1">台帳の表示項目とセル操作</h2>
+                <p>台帳右上の「表示項目」ドロップダウンで、用途に応じた列プリセットを切り替えます。</p>
+                <ul>
+                    <li><strong>標準:</strong> 名称、種別、主IP、追加IP、施設、フロア、監視状態、操作など日常業務に必要な列。</li>
+                    <li><strong>設置・資産:</strong> 設置場所詳細、資産番号、シリアル番号、導入年月日などを中心に表示。</li>
+                    <li><strong>ネットワーク・管理:</strong> MACアドレス、管理接続方式、ポート、担当部署、保守ベンダー、保守期限を表示。</li>
+                    <li><strong>すべて:</strong> 全25項目を展開。</li>
+                </ul>
+                <p>管理者は種別セルをクリックして機器種別をインライン変更できます。変更は下書きとして保持され、「変更を適用」で一括保存されます。</p>
+            </section>
+
+            <section>
+                <h2 id="ledger-filters" tabindex="-1">台帳の複数条件による絞り込み</h2>
+                <p>表示ビュー、施設、フロア、状態、種別、IP登録、配置状態、保守期限の8項目で多重絞り込みが可能です。</p>
+                <ul>
+                    <li><strong>複数選択（OR条件）:</strong> 各フィルターのボタンを開き、複数の値にチェックを入れると「いずれかに一致する機器」が表示されます。</li>
+                    <li><strong>項目間（AND条件）:</strong> 施設と種別など、異なる項目同士は「すべての条件に合致する機器」が表示されます。</li>
+                    <li><strong>解除:</strong> 条件チップの「×」で個別解除、「条件を解除」ボタンで全検索・全フィルターを一括解除します。</li>
+                </ul>
+                <p class="note">表示ビューを変更したときはチェック選択が解除されますが、その他の絞り込みでは画面外の選択も保持されます。一括編集やPing実行前に対象件数を確認してください。</p>
+            </section>
+
+            <section>
+                <h2 id="maintenance-outlook" tabindex="-1">保守期限の見通しと台帳への移動</h2>
+                <p>ダッシュボードの「資産・保守」タブ、または台帳の「保守期限」フィルターで、機器の保守終了時期を管理します。</p>
+                <ul>
+                    <li><strong>期限超過:</strong> 基準日時点で保守期限を過ぎている機器。</li>
+                    <li><strong>残り1年以内 / 残り1〜2年:</strong> 近い将来に機器更改や保守更新の検討が必要な機器。</li>
+                </ul>
+                <p>ダッシュボードの各区分件数を押すと、台帳が自動的に「保守管理」列付き・期限順ソートで開きます。</p>
+            </section>
+
+            <section>
+                <h2 id="ledger-ping" tabindex="-1">チェックした機器のPing（管理者のみ）</h2>
+                <p>台帳で選択した機器に対して、サーバーからICMP Pingを一括送信して疎通状態を確認します。</p>
+                <ol>
+                    <li>台帳のチェックボックスで対象機器を選択します（先頭セルクリックで反転）。</li>
+                    <li>台帳右上の<strong>「Ping（件数）」</strong>ボタンを押します。</li>
+                    <li>実行中は下部バーに進捗秒数が表示され、完了すると「OK」「NG」状態が更新されます。</li>
+                </ol>
+                <p class="note"><strong>重要（NGの意味）:</strong> PingのNGは機器の故障・停止を断定するものではありません。機器側のICMP応答無効化、ファイアウォールによる遮断、経路障害でもNGとなります。同様にOKもIP疎通を示すのみで、HTTP/SSHサービスの健全性を保証するものではありません。</p>
+            </section>
+
+            <section>
+                <h2 id="device-bulk" tabindex="-1">選択した機器の一括編集（管理者のみ）</h2>
+                <p>台帳で選んだ複数の機器に対し、施設・フロア・担当部署・保守期限などの属性を一括で更新します。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/device-bulk-input.webp" data-help-image data-caption="一括編集 1：変更する項目を指定" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-bulk-input.webp" width="1686" height="1422" loading="lazy" alt="一括編集の入力画面。施設はチェックONで本庁を入力、担当部署はONで空欄、フロアと設置場所などはOFFになっている。">
+                    </a>
+                    <figcaption>1. 変更したい項目にチェックを入れ、新しい値を入力します。チェックONで空欄の項目は値を「消去」します。</figcaption>
+                </figure>
+                <figure class="help-figure">
+                    <a href="assets/help/device-bulk-confirm.webp" data-help-image data-caption="一括編集 2：変更前後を確認して適用" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-bulk-confirm.webp" width="1666" height="1060" loading="lazy" alt="一括編集の確認画面。施設の変更後は青で本庁、担当部署の変更後は黄色で空欄にする、と表示。下部に戻ると49台に適用のボタンがある。">
+                    </a>
+                    <figcaption>2. 変更前後と対象台数を確認し、「適用」ボタンで確定すると自動保存されます。</figcaption>
+                </figure>
+                <ol>
+                    <li>台帳で1台以上の機器を選択し、上部の<strong>「一括編集」</strong>を押します。</li>
+                    <li>変更したい項目のチェックボックスをONにし、新しい値を入力します（OFFの項目は変更されません）。</li>
+                    <li><strong>「変更内容を確認」</strong>を押し、変更後の値（青色）や空欄化（黄色）を確認します。</li>
+                    <li><strong>「○台に適用」</strong>を押して確定すると、対象機器のデータが更新され自動保存されます。</li>
+                </ol>
+            </section>
+
+            <div class="help-page-footer-nav">
+                <a href="help-canvas.html" class="btn btn-secondary btn-sm">← 前へ：構成図</a>
+                <a href="help-views.html" class="btn btn-primary btn-sm">次へ：ビュー・ラック →</a>
+            </div>
+
+            <footer class="footer-close">
+                <button id="help-tab-close" type="button" class="btn btn-secondary">このタブを閉じる</button>
+                <p id="help-tab-close-notice" class="help-close-notice form-support" hidden>ブラウザのタブを閉じてください。</p>
+            </footer>
+        </main>
+    </div>
+
+    <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-title">
+        <header class="help-image-header">
+            <h2 id="help-image-title">操作ガイド画像</h2>
+            <button id="help-image-close" type="button" class="btn btn-secondary btn-sm" autofocus>閉じる</button>
+        </header>
+        <div class="help-image-scroll" tabindex="0" role="region" aria-label="拡大画像（矢印キーでスクロール）"><img id="help-image-preview" alt=""></div>
+        <p id="help-image-caption" class="form-support"></p>
+    </dialog>
+
+    <script src="js/help.js"></script>
+</body>
+</html>

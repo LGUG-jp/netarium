@@ -10,15 +10,9 @@
             aria-labelledby="view-manager-title"
         >
             <header class="view-manager-header">
-                <div>
-                    <h2 id="view-manager-title">
-                        ビュー管理
-                    </h2>
-
-                    <p>
-                        論理構成図・フロア配置図・ラック搭載図を管理します。
-                    </p>
-                </div>
+                <h2 id="view-manager-title">
+                    ビュー管理
+                </h2>
 
                 <button
                     type="button"
@@ -115,82 +109,68 @@
                     >
                     <p id="vm-name-error" class="form-error" aria-live="polite" hidden></p>
 
-                    <label for="vm-facility">
-                        施設
-                    </label>
+                    <div class="view-manager-field-row">
+                        <div class="view-manager-field">
+                            <label for="vm-facility">施設</label>
+                            <input id="vm-facility" type="text" data-max-length="100">
+                            <p id="vm-facility-error" class="form-error" aria-live="polite" hidden></p>
+                        </div>
+                        <div class="view-manager-field">
+                            <label for="vm-floor">フロア</label>
+                            <input id="vm-floor" type="text" data-max-length="50">
+                            <p id="vm-floor-error" class="form-error" aria-live="polite" hidden></p>
+                        </div>
+                    </div>
 
-                    <input
-                        id="vm-facility"
-                        type="text"
-                        data-max-length="100"
-                    >
-                    <p id="vm-facility-error" class="form-error" aria-live="polite" hidden></p>
-
-                    <label for="vm-floor">
-                        フロア
-                    </label>
-
-                    <input
-                        id="vm-floor"
-                        type="text"
-                        data-max-length="50"
-                    >
-                    <p id="vm-floor-error" class="form-error" aria-live="polite" hidden></p>
-
-                    <label for="vm-type">
-                        種別
-                    </label>
-
-                    <select id="vm-type">
-                        <option value="topology">
-                            論理・全体構成図
-                        </option>
-                        <option value="floor">
-                            物理・フロア配置図
-                        </option>
-                        <option value="rack">ラック搭載図</option>
-                    </select>
-                    <p id="vm-type-error" class="form-error" aria-live="polite" hidden></p>
-                    <p class="form-support">既存ビューとラックの種別は相互に変更できません。</p>
+                    <div class="view-manager-field-row">
+                        <div class="view-manager-field">
+                            <label for="vm-type">種別</label>
+                            <select id="vm-type" aria-describedby="vm-type-help">
+                                <option value="topology">論理・全体構成図</option>
+                                <option value="floor">物理・フロア配置図</option>
+                                <option value="rack">ラック搭載図</option>
+                            </select>
+                            <p id="vm-type-error" class="form-error" aria-live="polite" hidden></p>
+                        </div>
+                        <div class="view-manager-field view-manager-field-short">
+                            <label for="vm-sort-order">表示順</label>
+                            <input id="vm-sort-order" type="number" min="-999999" max="999999" step="1">
+                            <p id="vm-sort-order-error" class="form-error" aria-live="polite" hidden></p>
+                        </div>
+                    </div>
+                    <p id="vm-type-help" class="form-support">ラックと他の種別は相互に変更できません。</p>
 
                     <fieldset id="vm-rack-fields" hidden>
                         <legend>ラック設定</legend>
-                        <label for="vm-total-u">総U数</label>
-                        <input id="vm-total-u" type="number" min="1" max="60" step="1">
-                        <p id="vm-total-u-error" class="form-error" aria-live="polite" hidden></p>
-                        <label for="vm-location">設置場所（任意）</label>
-                        <input id="vm-location" type="text" data-max-length="150">
-                        <p id="vm-location-error" class="form-error" aria-live="polite" hidden></p>
-                        <p>総U数は1〜60Uです。搭載機器の範囲を切り捨てる縮小はできません。</p>
+                        <div class="view-manager-field-row">
+                            <div class="view-manager-field view-manager-field-short">
+                                <label for="vm-total-u">総U数（1〜60）</label>
+                                <input id="vm-total-u" type="number" min="1" max="60" step="1" aria-describedby="vm-rack-help">
+                                <p id="vm-total-u-error" class="form-error" aria-live="polite" hidden></p>
+                            </div>
+                            <div class="view-manager-field">
+                                <label for="vm-location">設置場所（任意）</label>
+                                <input id="vm-location" type="text" data-max-length="150">
+                                <p id="vm-location-error" class="form-error" aria-live="polite" hidden></p>
+                            </div>
+                        </div>
+                        <p id="vm-rack-help">搭載機器の範囲を切り捨てる縮小はできません。</p>
                     </fieldset>
 
-                    <div class="view-manager-floor-plan-actions">
+                    <div id="vm-floor-plan-actions" class="view-manager-floor-plan-actions" hidden>
                         <button
                             id="vm-floor-plan-btn"
                             type="button"
                             class="btn btn-secondary btn-sm"
-                            aria-describedby="vm-floor-plan-help"
+                            aria-describedby="vm-floor-plan-status vm-floor-plan-help"
                             disabled
                         >
-                            フロア図面
+                            図面を登録
                         </button>
-                        <span id="vm-floor-plan-help" aria-live="polite">
-                            種別に「物理・フロア配置図」を選択してください。
-                        </span>
+                        <span id="vm-floor-plan-status" hidden>登録済み</span>
+                        <span id="vm-floor-plan-help" aria-live="polite"></span>
                     </div>
 
-                    <label for="vm-sort-order">
-                        表示順
-                    </label>
-
-                    <input
-                        id="vm-sort-order"
-                        type="number"
-                        min="-999999"
-                        max="999999"
-                        step="1"
-                    >
-                    <p id="vm-sort-order-error" class="form-error" aria-live="polite" hidden></p>
 
                     <label for="vm-memo">
                         備考
@@ -212,6 +192,14 @@
                             hidden
                         >
                             このビューを再読込
+                        </button>
+                        <button
+                            id="view-history-btn"
+                            type="button"
+                            class="btn btn-secondary btn-sm admin-only"
+                            title="このビューの変更履歴を表示します"
+                        >
+                            変更履歴
                         </button>
                         <button
                             id="view-apply-btn"

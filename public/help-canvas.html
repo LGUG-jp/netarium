@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>構成図の操作 - Netarium 利用ガイド</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="assets/icons/brand/netarium-mark-compact.svg">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <header class="help-header-bar">
+        <div class="help-header-inner">
+            <a href="help.html" class="help-header-brand">
+                <img src="assets/icons/brand/netarium-logo.svg" width="127" height="32" alt="Netarium">
+                <span>利用ガイド</span>
+            </a>
+            <nav aria-label="機能別ナビゲーション">
+                <ul class="help-nav-list">
+                    <li><a href="help.html" class="help-nav-link">トップ</a></li>
+                    <li><a href="help-canvas.html" class="help-nav-link" aria-current="page">構成図</a></li>
+                    <li><a href="help-devices.html" class="help-nav-link">機器・台帳</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">ビュー・ラック</a></li>
+                    <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="help-layout">
+        <aside class="help-toc">
+            <details id="help-toc" open>
+                <summary>目次</summary>
+                <nav aria-label="章目次">
+                    <ol>
+                        <li><a href="#canvas">キャンバスの表示と基本操作</a></li>
+                        <li><a href="#modes">作業モードの切り替え</a></li>
+                        <li><a href="#connections">接続の作成と削除</a></li>
+                        <li><a href="#link-systems">接続系統の管理</a></li>
+                        <li><a href="#direct-links">リンクの共有</a></li>
+                        <li><a href="#view-links">ビュー内一覧と一括設定</a></li>
+                        <li><a href="#link-route">接続の経路調整</a></li>
+                        <li><a href="#link-crossings">重なりと交差の見分け方</a></li>
+                        <li><a href="#canvas-notes">キャンバスメモ</a></li>
+                        <li><a href="#printing">構成図の印刷・PDF出力</a></li>
+                    </ol>
+                </nav>
+            </details>
+        </aside>
+
+        <main class="help-container" id="help-content">
+            <h1>構成図の操作ガイド</h1>
+            <p>
+                キャンバス上の論理構成図および物理配置図における、機器の配置・接続・経路調整・メモ・印刷の手順を説明します。
+            </p>
+
+            <section>
+                <h2 id="canvas" tabindex="-1">キャンバスの表示と基本操作</h2>
+                <p>キャンバスはネットワーク構成図を描画・編集する主作業領域です。</p>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">操作</th><th scope="col">方法と動作</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">移動（パン）</th>
+                            <td>キャンバスの空白部分をドラッグすると、画面全体をスクロールできます。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">倍率変更（ズーム）</th>
+                            <td>マウスホイールの回転、または下部ステータスバー右端の「＋」「−」ボタンで拡大・縮小します。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">標準倍率（100%）</th>
+                            <td>ステータスバーの「現在倍率」を押すと100%に戻り、原点を左上端に合わせます。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">全体表示</th>
+                            <td>「全体」を押すと、配置済みの機器・メモが画面内に収まる倍率へ自動調整します。</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p class="note"><strong>注意:</strong> 初期表示および100%表示では原点を左上端に合わせ、配置不可領域用の余白を設けません。</p>
+            </section>
+
+            <section>
+                <h2 id="modes" tabindex="-1">作業モードの切り替え</h2>
+                <p>左パレットの「作業モード」ボタンで操作内容を切り替えます。</p>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">モード</th><th scope="col">権限</th><th scope="col">主な操作と動作</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">選択</th>
+                            <td>共通</td>
+                            <td>機器をクリックして右パネルで詳細を確認します。管理者はドラッグで移動、ダブルクリックで台帳個票を開きます。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">配置</th>
+                            <td>管理者のみ</td>
+                            <td>新規機器の種別を選んでキャンバスをクリックし、連続配置します。台帳から未配置機器の配置も可能です。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">接続</th>
+                            <td>管理者のみ</td>
+                            <td>同一ビュー内の機器同士を結ぶ接続線を作成します。接続元を固定して連続作成できます。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">メモ</th>
+                            <td>管理者のみ</td>
+                            <td>空白部分をクリックして注釈メモ（1000文字以内）を作成・配置します。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">印刷</th>
+                            <td>共通</td>
+                            <td>現在ビューの表示範囲または全体を紙やPDFへ出力するプレビュー画面を開きます。</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2 id="connections" tabindex="-1">接続の作成と削除</h2>
+                <p>接続は同一ビューに配置した機器同士を結びます。作成・削除は管理者のみ利用できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/connection-mode.webp" data-help-image data-caption="接続モード：接続元を固定して連続作成" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/connection-mode.webp" width="2832" height="1564" loading="lazy" alt="左の接続補助パネルで接続元の固定をチェックした状態。Canvas上に接続元と選択した接続を示し、右に接続情報を表示している。">
+                    </a>
+                    <figcaption>左パレットで接続元を固定し、Canvasで接続先を順に選んで連続作成します。右の接続情報でラベルや系統を編集します。</figcaption>
+                </figure>
+                <ol>
+                    <li>左パレットで<strong>「接続」</strong>を押します。</li>
+                    <li>接続元にする機器をクリックします（左パネルの<strong>「接続元を固定」</strong>をONにすると、同じ機器から複数の接続先へ連続して作成できます）。</li>
+                    <li>接続先にする機器をクリックすると、接続線が作成され自動保存されます。</li>
+                    <li>作成後、右パネルの「接続情報」で系統・VLAN・ラベル・ポート・備考を編集できます。</li>
+                    <li>削除する場合は、選択モードで接続線を選び、右パネルの<strong>「接続を削除」</strong>を押します。</li>
+                </ol>
+            </section>
+
+            <section>
+                <h2 id="link-systems" tabindex="-1">接続系統の管理</h2>
+                <p>接続系統は、全ビュー共通で接続線の用途（基幹LAN、庁内LAN、監視用など）を色分けする設定です。</p>
+                <ol>
+                    <li>上部バーの<strong>「管理」→「接続系統設定」</strong>を開きます。</li>
+                    <li>新規作成は<strong>「新規作成」</strong>を押し、系統名（100文字以内）と用意された8色から色を選んで<strong>「登録」</strong>を押します。</li>
+                    <li>既存系統の変更は一覧から選択し、名称・色を変更して下部の<strong>「適用」</strong>を押します。</li>
+                    <li>使用中の系統を削除する場合は、割り当て中の接続線の扱いを確認して削除を実行します。</li>
+                </ol>
+                <p class="note">閲覧者は系統名・色・使用件数の確認のみ可能で、登録・変更・削除は行えません。</p>
+            </section>
+
+            <section>
+                <h2 id="direct-links" tabindex="-1">ビュー・機器のリンクを共有する</h2>
+                <p>特定のビューや機器を直接開くURLを取得し、担当者間で共有できます。</p>
+                <ul>
+                    <li><strong>ビューのリンク:</strong> 上部バー中央のビュー選択欄右隣にあるコピーアイコンを押すと、現在ビューの直リンクをクリップボードに取得します。</li>
+                    <li><strong>機器のリンク:</strong> 右プロパティパネルまたは個票シート上部の<strong>「機器のリンクをコピー」</strong>を押すと、該当機器を指定した直リンクを取得します。</li>
+                </ul>
+                <p class="note">リンクを開くにはログインが必要です。未保存のビュー・機器は保存後にリンクをコピーしてください。リンクの所持によってアクセス権限が増えることはありません。</p>
+            </section>
+
+            <section>
+                <h2 id="view-links" tabindex="-1">ビュー内一覧と一括設定</h2>
+                <p>現在ビューに含まれる機器・接続の一覧確認と、接続属性の一括変更を行えます。</p>
+                <ol>
+                    <li>左パレットの<strong>「一覧」</strong>を押し、「機器」または「接続」タブを選びます。</li>
+                    <li>「機器」タブの<strong>「台帳で開く」</strong>を押すと、現在ビューで絞り込んだ状態で機器台帳を開きます。</li>
+                    <li>「接続」タブ下部の<strong>「一括設定」</strong>で、現在ビューの全接続に対して系統・VLAN・ラベル・備考を一括適用できます。</li>
+                    <li>「変更内容を確認」で変更前後を確認し、「適用」ボタンで確定すると自動保存されます。</li>
+                </ol>
+            </section>
+
+            <section>
+                <h2 id="link-route" tabindex="-1">選択した接続の経路を調整する（管理者のみ）</h2>
+                <p>自動計算された接続線の経路を手動経路へ切り替え、水平・垂直の区間や折れ目を任意の位置へ動かします。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/connection-route-adjust.webp" data-help-image data-caption="接続の経路調整：区間を動かし折れを追加" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/connection-route-adjust.webp" width="2846" height="1570" loading="lazy" alt="接続の経路調整画面。青い接続線の水平区間を選択し、上部に折れを追加・折れを削除・完了、右の接続情報に経路調整と自動経路を表示。">
+                    </a>
+                    <figcaption>選択した区間をドラッグして動かし、上部バーで折れ目を追加・削除します。「完了」で調整を終了します。</figcaption>
+                </figure>
+                <ol>
+                    <li>選択モードで調整したい接続線をクリックし、右パネルの<strong>「経路調整」</strong>を押します。</li>
+                    <li>青くハイライトされた区間をドラッグして、水平・垂直方向へ動かします。</li>
+                    <li>折れ目を増やしたい場合は上部バーの<strong>「折れを追加」</strong>、減らす場合は<strong>「折れを削除」</strong>を押します。</li>
+                    <li>上部バーの<strong>「完了」</strong>を押して調整モードを終了します（操作ごとに自動保存されます）。</li>
+                    <li>手動調整を破棄して自動経路に戻したい場合は、右パネルの<strong>「自動経路」</strong>を押します。</li>
+                </ol>
+                <p class="note">フロア図面自体の調整中は経路調整を起動できません。図面の調整を完了してから実行してください。</p>
+            </section>
+
+            <section>
+                <h2 id="link-crossings" tabindex="-1">接続の重なりと交差の見分け方</h2>
+                <p>同じスイッチから多数の接続線が平行に延びる場合、線の重なりや交差を視覚的に判別しやすく描画されます。</p>
+                <ul>
+                    <li><strong>平行区間の分離:</strong> 接続線は機器付近から自動的に分岐し、長い平行区間は一定間隔を離して表示します。</li>
+                    <li><strong>交差表現:</strong> 接続線同士が交差する箇所は交差判定を行い、別の線であることを明確にします。</li>
+                    <li><strong>重なりの解消:</strong> 機器が密集して線が重なる場合は、機器の位置を少し離すか「経路調整」で手動迂回させてください。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="canvas-notes" tabindex="-1">キャンバスにメモを置く（管理者のみ）</h2>
+                <p>キャンバスの任意の位置に注釈メモを配置できます。</p>
+                <ol>
+                    <li>左パレットの<strong>「メモ」</strong>を押し、空白部分をクリックします。</li>
+                    <li>入力欄に本文（1000文字以内）を入力します。改行もそのまま保持されます。</li>
+                    <li><span class="kbd">Ctrl</span>+<span class="kbd">Enter</span>、または外側をクリックして確定すると自動保存されます。</li>
+                    <li>既存メモの編集はダブルクリック、または選択して<span class="kbd">Enter</span>キーを押します。</li>
+                    <li>削除する場合は、選択して<span class="kbd">Delete</span>キー、または右パネルの「メモを削除」を押します。</li>
+                </ol>
+            </section>
+
+            <section>
+                <h2 id="printing" tabindex="-1">構成図を紙・PDFへ出力する</h2>
+                <p>現在表示中のビューをA4/A3用紙やPDFへ印刷します。</p>
+                <ol>
+                    <li>印刷したいビューを開き、左パレットの<strong>「印刷」</strong>を押します。</li>
+                    <li>印刷範囲（「全体」または「現在の表示範囲」）と用紙サイズ（A4/A3、縦/横）を選びます。</li>
+                    <li>印刷に含める機器種別や表示項目（IPアドレス、接続線、メモ等）をチェックします。</li>
+                    <li>プレビューを確認し、<strong>「印刷」</strong>ボタンを押してブラウザの印刷ダイアログから出力します。</li>
+                </ol>
+            </section>
+
+            <div class="help-page-footer-nav">
+                <a href="help.html" class="btn btn-secondary btn-sm">← 前へ：トップ</a>
+                <a href="help-devices.html" class="btn btn-primary btn-sm">次へ：機器・台帳 →</a>
+            </div>
+
+            <footer class="footer-close">
+                <button id="help-tab-close" type="button" class="btn btn-secondary">このタブを閉じる</button>
+                <p id="help-tab-close-notice" class="help-close-notice form-support" hidden>ブラウザのタブを閉じてください。</p>
+            </footer>
+        </main>
+    </div>
+
+    <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-title">
+        <header class="help-image-header">
+            <h2 id="help-image-title">操作ガイド画像</h2>
+            <button id="help-image-close" type="button" class="btn btn-secondary btn-sm" autofocus>閉じる</button>
+        </header>
+        <div class="help-image-scroll" tabindex="0" role="region" aria-label="拡大画像（矢印キーでスクロール）"><img id="help-image-preview" alt=""></div>
+        <p id="help-image-caption" class="form-support"></p>
+    </dialog>
+
+    <script src="js/help.js"></script>
+</body>
+</html>

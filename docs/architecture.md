@@ -28,7 +28,7 @@ bootstrap.php
   ├─ src/Autoloader.php
   ├─ src/Services/Auth/      認証・セッションの共通関数
   ├─ src/Core/Database.php   接続・設定・初期化
-  ├─ src/Core/DatabaseSchema.php スキーマ 14・移行・初期ビュー
+  ├─ src/Core/DatabaseSchema.php スキーマ 22・移行・初期ビュー
   └─ src/Core、Actions、Services、Repositories
 
 templates/                   Web非公開テンプレート
@@ -64,7 +64,7 @@ data/                        実行時データ（Web非公開）
 - `src/Services/Auth/PasswordSprayDetector.php`: 接続元別の横断失敗集計・警告、期間／保存件数の清掃
 - `src/Services/Auth/HttpAccess.php`: HTTP要求の認証・権限検査、応答。CSRF検査はSessionに置く
 - `src/Core/Database.php`: `connect`でPDO生成と共通初期化、`configure`で接続設定、`initialize`で設定・スキーマ移行・初期ビュー生成、`open`でAPI用保存先検証後の接続取得
-- `src/Core/DatabaseSchema.php`: `APP_DATABASE_SCHEMA_VERSION = 15`、ラック属性・直付け搭載・棚板・棚板上の所属を含む移行関数と初期ビュー生成。ドメインの CRUD は移さない
+- `src/Core/DatabaseSchema.php`: `APP_DATABASE_SCHEMA_VERSION = 22`、利用者の論理削除（`users.deleted_at`）・アドレス空間の到達性設定・機器 Config 履歴・変更履歴・IP セグメント・追加 IP・ラック属性・直付け搭載・棚板・棚板上の所属・フロア配置参照を含む移行関数と初期ビュー生成。ドメインの CRUD は移さない
 - `src/Core/`: Request、Response、Database、DatabaseSchema、ApiException、Config、AuditLog、ApiDispatcher
 - `src/Actions/`: ActionInterfaceを実装したエンドポイント
 - `src/Services/`: Auth、Topology、Monitoring、Csv、Backup、FloorPlan、DeviceImage、Storage、Quality
@@ -76,12 +76,13 @@ data/                        実行時データ（Web非公開）
 
 | テーブル | 役割 |
 |---|---|
-| `users` | ユーザー、パスワードハッシュ、権限、認証世代、`must_change_password` |
+| `users` | ユーザー、パスワードハッシュ、権限、認証世代、`must_change_password`、論理削除日時 `deleted_at` |
 | `login_rate_limits` | ユーザー名単位の失敗・照合中の予約回数と一時ロック |
 | `reauthentication_limits` | 利用者ID単位の本人変更時の再認証制限 |
 | `password_spray_failures`／`password_spray_warnings` | 接続元・対象のdigestによる有界失敗集計と警告間隔 |
 | `views` | 論理構成図、フロア配置図、またはラック搭載図（`view_type IN ('topology','floor','rack')`）、ビュー単位の`resource_revision` |
-| `devices` | 機器台帳の正本、機器単位の`resource_revision` |
+| `devices` | 機器台帳の正本、機器単位の`resource_revision`、所属セグメント`ip_segment_id`（nullable FK） |
+| `device_ip_addresses` | 機器の追加 IPv4（`id`、`device_id` FK、`ip`、任意の `label`、`sort_order`、所属セグメント`segment_id` nullable FK） |
 | `device_placements` | ビューごとの機器配置座標 |
 | `links` | ビュー内の機器間接続 |
 | `rack_settings` | ラックビュー固有の属性（総 U 数 `total_u`、設置場所 `location`） |
@@ -89,13 +90,33 @@ data/                        実行時データ（Web非公開）
 | `rack_shelves` | 全幅固定の棚板（`id`、所属ラック `view_id`、名称、前後面、開始 U、占有 U、奥行き） |
 | `rack_shelf_devices` | 棚板上の既存機器（`device_id` PK、`shelf_id`、棚内一意の `sort_order`） |
 | `floor_rack_placements` | 物理配置図上のラック参照（`rack_view_id` PK、`floor_view_id`、`x`、`y`） |
+| `address_spaces` | アドレス空間マスタ（`id` PK、`name`、`memo`、`ping_reachability`） |
+| `ip_segments` | IP セグメントマスタ（`id` PK、`address_space_id` FK、`cidr`、`name`、`purpose`、`facility`、`vlan_id`、`memo`） |
+| `change_history` | 機器・ビュー（ラック含む）の主要変更履歴（`event_id` による保存単位の関連付け、保持 90 日） |
+| `device_config_states` | 機器 Config 世代採番状態（機器 ID、リビジョン、次回採番世代） |
+| `device_configs` | 機器 Config（各機器直近 5 世代の本文、世代、作成者、メモ） |
 | `device_monitor_status` | 手動Pingの最新結果 |
 | `view_floor_plans` | フロア図面のメタデータと表示設定 |
 | `device_images` | 機器画像のメタデータと表示順 |
 | `app_meta` | データリビジョン、監視リビジョン、更新日時 |
 | `resource_sequences` | ID・リソース世代の単調カウンター（バックアップの復元対象外） |
 
-機器情報、配置情報、およびラック搭載情報は分離されています。
+機器情報、配置情報、ラック搭載情報、および IP 管理情報は分離されています。
+スキーマ 18 では、アドレス空間（`address_spaces`）と IP セグメント（`ip_segments`）のマスタテーブルを追加し、`devices.ip_segment_id` および `device_ip_addresses.segment_id` により管理 IP と追加 IP のそれぞれに独立した所属セグメントを保持します。両マスタテーブルは `INTEGER PRIMARY KEY AUTOINCREMENT` により削除済み ID の再利用を防止し、Web 復元時も `sqlite_sequence` の採番水準を維持して後続採番の衝突を防ぎます。
+スキーマ 21 では、アドレス空間に到達性設定（`address_spaces.ping_reachability`：`unset`、`reachable`、`unreachable`）を追加し、手動 Ping 疎通判定の論理境界として機能させます。
+`devices.ip` は管理 IP の正本です。`DeviceIpAddressRepository::getIpRecords()` は管理 IP を `kind = management`、追加 IP を `kind = additional` として列挙し、所属セグメントおよび結合したアドレス空間 ID（`address_space_id`）を返します。
+
+アドレス空間は IP アドレスの一意性を管理する独立した論理境界です。一方、VLAN ID（1〜4094）や施設は管理属性であり、アドレス空間を分割しません。
+同一アドレス空間内では CIDR 範囲の重複（完全一致や包含を含む）を拒否します（HTTP 400）。異なるアドレス空間間であれば同一 CIDR や同値 IP の登録を許可します。
+機器保存時の所属解決では、機器編集画面（詳細パネル・台帳個票）に所属選択 UI を配置せず、入力 IP に合致する CIDR が 1 件のみであれば自動選択し、複数候補や候補なしの場合は未分類（`null`）として保存して警告を表示します。IP 本体の変更時は以前の所属を解除し、新しい IP に基づいて単一候補判定を再実行します。
+
+IP 重複の検証境界はアドレス空間です。同一機器内の重複は API で拒否します。別機器との重複判定では、同一アドレス空間内の新規重複を確定的な衝突として拒否し（HTTP 400 `ip_space_conflict`）、異なるアドレス空間間での重複は許容します。未分類 IP を含む新規重複は確認要求（HTTP 400 `ip_confirmation_required`、クライアント確認フラグ `ip_conflicts_confirmed`）を行い、既存データに存在する重複ペアは変更なしの場合にそのまま保持します。
+ネットワーク区分の到達性設定は、サーバー側の `PingReachabilityPolicy::decisions` によって全機器の管理 IP および追加 IP の全登録と照合されます。管理 IP が「到達可能」区分に属し、同値 IP を持つ他機器の全登録が明示的に「到達不可」区分に属している場合に限り、例外的に Ping を許可します。複数の到達可能区分に重複する場合や未設定・未分類が混在する重複、および到達不可区分の機器は `skipped` と判定されます。到達性設定や所属セグメントの変更時は、`PingReachabilityMonitor` が新たに不許可となった影響機器のみを検出し、監視状態を `unknown` へリセットして `monitor_revision` を同期します。
+`reclassify_ips` は確認状態を機器 ID・IP 種別・追加 IP の ID の組で保持し、新たな警告に関係する変更済み IP 登録ごとに照合します。レコードの `ip_conflicts_confirmed: true` はその登録だけを、リクエスト直下の `ip_conflicts_confirmed: true` は一括変更の全対象を明示確認します。確認が必要な登録が未確認なら、一括変更と世代更新をすべてロールバックします。通常の機器保存・CSV 取込の機器単位の確認契約は維持します。
+
+セグメントの削除では全所属 IP を、範囲縮小では範囲外となった IP を未分類（`null`）に戻し、機器や追加 IP のレコード・ID は保持します。配下にセグメントを持つアドレス空間の削除は拒否します。
+`load_ip_management` はマスタ、IP 登録レコード、機器、全体の変更世代（`data_revision`）と監視世代（`monitor_revision`）を同一スナップショットで返します。変更 API（`create_ip_network`、`save_address_space`、`delete_address_space`、`save_ip_segment`、`delete_ip_segment`、`reclassify_ips`）は全体の変更世代を照合します。`create_ip_network` はネットワーク区分（`address_spaces`）と最初のセグメント（`ip_segments`）を単一トランザクションで原子的に作成し、`created_address_space_id` と `created_segment_id` を返します。再分類 API（`reclassify_ips`）は一意候補の一括設定および未分類一覧で個別選択された候補セグメントの設定に対応し、同一ネットワーク区分（アドレス空間）内の新規重複を拒否します。
+CSV は固定 20 列を維持し、IP と用途ラベルが不変の行は既存の `segment_id` を保持し、変更行・新規行は候補判定により一意候補を自動分類、曖昧または候補なしを未分類として警告します。
 同じ機器を複数の通常ビュー（論理・フロア）へ配置できますが、物理ラックへの所属は直付け `rack_mounts` または棚板上 `rack_shelf_devices` のいずれか最大 1 箇所です。
 ラックビュー（`view_type = 'rack'`）はビュー ID をラック ID として共用し、固有属性を `rack_settings` で管理します。
 搭載面は `front`（前面）、`rear`（背面）、`both`（前後占有）の 3 種類であり、`both` は全幅（`width_slot = 'full'`）のみ許可され、前後両面の同一 U 範囲を単一レコードで占有します。
@@ -134,8 +155,8 @@ DBスキーマ7の`links.route_mode`は`auto`または`manual`、`manual_route`�
 
 | 分類 | 対象 | 閉鎖条件 |
 |---|---|---|
-| 閲覧・選択・即時反映 | ダッシュボード、品質診断、Ping結果、管理接続・SSHヘルプ、経路ヘルプ、機器画像拡大、検索のビュー選択、台帳の配置先選択、印刷、表示設定 | ×・背景・Escで閉じる。即時反映した設定は戻さない |
-| 未適用編集 | 台帳、個票、ビュー管理、配置管理、接続系統設定、機器・接続の一括編集、利用者管理・パスワード変更 | 台帳の行下書きは検証・確定し、invalidなら閉鎖抑止。個票・ビュー・配置は適用／編集継続／取り消し確認、系統・一括編集・利用者入力は破棄確認。利用者APIや一括適用中は閉鎖抑止 |
+| 閲覧・選択・即時反映 | ダッシュボード、品質診断、Ping結果、管理接続・SSHヘルプ、経路ヘルプ、機器画像拡大、検索のビュー選択、台帳の配置先選択、印刷、表示設定、IP管理（閲覧）、変更履歴 | ×・背景・Escで閉じる。即時反映した設定は戻さない |
+| 未適用編集 | 台帳、個票、ビュー管理、配置管理、接続系統設定、機器・接続の一括編集、利用者管理・パスワード変更、IP管理（マスタ編集・再分類） | 台帳の行下書きは検証・確定し、invalidなら閉鎖抑止。個票・ビュー・配置・IP管理は適用／編集継続／取り消し確認、系統・一括編集・利用者入力は破棄確認。利用者APIや一括適用中は閉鎖抑止 |
 | 取込・破壊的操作の準備 | CSV取込、バックアップ復元、図面管理のファイル選択 | ファイル・検証結果などが残る時は破棄確認。検証・確定処理中は閉鎖抑止。最終取込・復元・差替え・削除の確認は別に維持 |
 | 未確定変更の選択確認 | 適用／編集継続／取り消しの共通確認 | ×・背景・Escでは編集継続へ戻す。親の入力を破棄せず、確認overlayを除去する |
 
@@ -256,9 +277,11 @@ DBスキーマ8の`canvas_notes`は`id`・`view_id`・`text`・`x`・`y`・`widt
 
 通常ビューの左のメモモードと選択メモは機器・配線・配置モード、図面調整・経路調整と排他にします。装飾・削除・完了は既存の共通コンテキストツールバーを利用します。背景・文字の色は各8色の四角を並べたプルダウンで選び、候補外の既存色も現在色の四角に表示して保持します。本文下書き・ドラッグ・数値装飾previewを確定モデルから分離し、本文確定、pointerup、色の選択、数値装飾change、削除で共通キューへ投入します。context終了では本文を確定し、未確定のドラッグと装飾previewを破棄して色一覧も閉じます。DOMをIDごとに再利用し、保存応答・採番でも入力欄を作り直しません。viewerは表示・テキスト選択のみで、APIでも管理者権限を要求します。
 
-Web バックアップは `netarium-config` 形式 1／DB スキーマ 16 で、JSON の `manifest.json` と `data/netarium.json` だけを出力します。
-メモ、接続系統・割当、ラック搭載・棚板・所属機器・フロアラック参照を含む 15 テーブル（`app_meta` は 4 キー）と画像参照メタデータを対象とし、画像実体・利用者・パスワード・認証状態を含めません。
-復元は同一 MAJOR 内の正規の安定版 SemVer（source <= target）と対応元スキーマ 11〜16 に限定し、元契約の厳密検証、現行構成への変換、復元先契約の再検証を行います。
+Web バックアップは `netarium-config` 形式 1／DB スキーマ 22 で、JSON の `manifest.json` と `data/netarium.json` だけを出力します。
+変更履歴、Config 履歴・採番状態、アドレス空間（到達性設定を含む）、IP セグメント、追加 IP、メモ、接続系統・割当、ラック搭載・棚板・所属機器・フロアラック参照を含む 21 テーブル（`app_meta` は 4 キー）と画像参照メタデータを対象とし、画像実体・利用者・パスワード・認証状態を含めません。
+復元は同一 MAJOR 内の正規の安定版 SemVer（source <= target）と対応元スキーマ 11〜22 に限定し、元契約の厳密検証、現行構成への変換、復元先契約の再検証を行います。
+旧スキーマ 11〜17 からの復元では空のマスタ配列（`address_spaces: []`、`ip_segments: []`）と未分類所属を、旧スキーマ 11〜18 からの復元では空の変更履歴（`change_history: []`）を、旧スキーマ 11〜19 からの復元では空の Config 履歴（`device_configs: []`、`device_config_states: []`）を、旧スキーマ 11〜20 からの復元ではアドレス空間の到達性設定（`ping_reachability = 'unset'`）を補完します。Web ZIP は利用者情報（`users`）を含まないため構成テーブル数は 21 件のまま維持されます。停止型完全バックアップ復元では旧スキーマ 11〜21 からの移行時に `users.deleted_at = NULL` として保持します。Web 復元時には復元した履歴にも 90 日保持ルールを適用し、復元操作自体は変更履歴を生成しません。また、復元先で疎通確認が不許可となる旧監視状態は `PingReachabilityMonitor` により未確認（`unknown`、スキップ理由付き）へ正規化します。
+現行スキーマ 22 の ZIP 往復では、90 日以内の変更履歴、Config 履歴の直近 1 世代、アドレス空間と IP セグメントの安定した ID、親子参照、所属、到達性設定、および同一空間内外の既存重複データを保持します。
 逆方向復元、未知形式・未対応スキーマ、不正な版表記・保存契約、旧画像同梱形式 2〜7 は拒否します。
 固定契約は [運用ガイド（復元）](operations.md#復元) を正本とします。
 
@@ -284,10 +307,11 @@ Web ZIP単独では全損時の画像・利用者を復旧できません。画�
 
 `data_revision`（API応答の`revision`）は全体の変更世代です。通常保存の競合判定には使わず、CSV取込、復元、明示的な全体スナップショットAPI`save`の整合確認に使用します。`save`は通常画面の保存経路ではなく、全体操作と合成データ投入用に残します。Ping結果は`monitor_revision`として別管理します。
 
-現行スキーマ 16 の全体保存 `save` では、`canvas_notes`、`rack_settings`、`rack_mounts`、`rack_shelves`、`rack_shelf_devices`、`floor_rack_placements` を配列として送信します。
+現行スキーマ 22 の全体保存 `save` では、`canvas_notes`、`rack_settings`、`rack_mounts`、`rack_shelves`、`rack_shelf_devices`、`floor_rack_placements` を配列として送信します。
 `canvas_notes` の省略・null・不正型は 400 で拒否します。
 既存ラックがある場合はラック属性・搭載配列、既存棚板がある場合は棚板・所属機器配列、既存フロアラック参照がある場合はその配置配列の欠落も 400 で拒否し、データとビュー世代を保持します。
 明示した空配列は削除の入力となりますが、搭載・所属機器が残る場合などは既存の整合性検証に従って拒否します。
+`devices[].additional_ips` は空配列で削除、省略時は既存値を保持します。明示的な `null` や不正型は 400 です。
 本文入力には UTF-16 単位の `textarea.maxLength` を使用せず、共通保存検証と API で Unicode コードポイント 1000 文字の上限を適用します。上限超過時は送信せず入力を保持し、本文を修正して再保存できます。
 通常ビューの保存や通常機器更新でラック搭載情報が失われない契約を維持します。
 
@@ -335,6 +359,8 @@ HTTP 409では構造化された競合対象を保留し、その対象に依存
 
 操作完了後は同一の`request_id`で`success`、`failure`、または`post_processing_required`を記録します。APIの正常・異常レスポンスにも`request_id`を含めることで、クライアント側の事象とサーバー側の監査履歴を紐付けて調査できます。また、バックアップ復元では`data/logs/restore.log`にも同一の`request_id`が記録され、復元履歴と監査ログを相互に照合できます。
 
+
+これとは別に、業務データの成功した変更前後の差分を表示する**変更履歴**（`change_history` テーブル）を SQLite DB に保存します。`save_resources`・`save`・CSV 取込のトランザクション内で論理差分を比較して原子的に確定し、実差分がない保存・入力エラー・409 競合・ロールバックは記録しません。同一保存内の複数対象（ラック間移設、フロア間ラック移動、機器削除に伴う関連ビュー整理、一括編集等）は共通の `event_id` で関連付け、必要に応じて `request_id` で操作監査ログと照合できます。対象削除後も 90 日間は削除時点の名称と主要差分を保持し、一覧取得時は常に直近 90 日以内に絞り、保存成功時・Web 復元時に期限切れ行を物理削除します。管理者のみ閲覧可能とし、通常の `load` 応答には含めません。
 
 ## 認証と権限
 

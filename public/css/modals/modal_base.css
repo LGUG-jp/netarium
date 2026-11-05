@@ -1,13 +1,25 @@
 /* ==============================
    ダイアログ
 ============================== */
+:root {
+    --modal-edge-space: 32px;
+}
+
+@media (max-width: 640px), (max-height: 640px) {
+    :root {
+        --modal-edge-space: 12px;
+    }
+}
+
 .placement-manager-overlay {
     position: fixed;
     inset: 0;
     z-index: 2100;
     display: grid;
-    place-items: center;
-    padding: var(--space-3);
+    place-items: start center;
+    padding: var(--modal-edge-space) 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
     background: var(--bg-overlay, rgba(15, 23, 42, 0.45));
     backdrop-filter: blur(2px);
 }
@@ -99,7 +111,8 @@
     display: flex;
     flex-direction: column;
     width: min(760px, 100%);
-    max-height: calc(100vh - 48px);
+    box-sizing: border-box;
+    max-height: calc(100dvh - 2 * var(--modal-edge-space));
     overflow: hidden;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
@@ -137,6 +150,38 @@
     margin: 4px 0 0;
     color: var(--text-muted);
     font-size: 12px;
+}
+
+/* 対象名は全文を折り返し、閉じる操作の領域を確保する。 */
+.modal-header-heading {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.modal-header-heading h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: var(--text-main);
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.modal-header-heading .modal-header-target {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
 }
 
 .placement-manager-footer p {
@@ -360,7 +405,7 @@
     .placement-manager-dialog {
         width: 100%;
         height: 100%;
-        max-height: none;
+        max-height: 100dvh;
         border-radius: 0;
     }
 
@@ -596,4 +641,662 @@
 .link-display-settings-dialog .placement-manager-footer {
     align-items: center;
     justify-content: flex-end;
+}
+
+/* IPアドレス管理。巨大なCIDRも50行ずつ表示する。 */
+#ip-management-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2200;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 32px 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    background: var(--bg-overlay, rgba(15, 23, 42, .45));
+    backdrop-filter: blur(2px);
+}
+#ip-management-overlay[hidden] { display: none !important; }
+.ip-management-dialog {
+    display: flex;
+    flex-direction: column;
+    width: min(1100px, 100%);
+    height: auto;
+    max-height: calc(100dvh - 64px);
+    box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--bg-panel, #fff);
+    color: var(--text-main, #333);
+    border: 1px solid var(--border-strong, #949494);
+    border-radius: var(--radius-md, 8px);
+    padding: 0;
+    box-shadow: var(--shadow-lg);
+}
+/* セグメント詳細だけ外枠を固定し、情報欄の開閉で空いた高さを一覧へ戻す。 */
+.ip-management-dialog.is-fixed-height { height: calc(100dvh - 64px); }
+.ip-management-dialog .modal-header,
+.ip-management-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ip-management-dialog .modal-header {
+    justify-content: space-between;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border-light);
+    padding: 12px 20px;
+    margin: 0;
+    background: var(--bg-panel, #fff);
+}
+.ip-management-dialog .modal-header h2 { margin: 0; font-size: 18px; min-width: 0; overflow-wrap: anywhere; }
+.ip-management-dialog .modal-header .btn { min-height: 32px; height: 32px; padding-block: 0; }
+.ip-management-refresh-btn { display: inline-flex; align-items: center; gap: 6px; }
+.ip-management-refresh-icon { flex-shrink: 0; display: block; }
+.ip-management-notice {
+    position: fixed;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: max-content;
+    max-width: min(640px, calc(100vw - 32px));
+    max-height: min(28vh, 200px);
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm, 4px);
+    border: 1px solid var(--border-strong, #949494);
+    border-left: 4px solid var(--primary);
+    background: var(--bg-panel, #fff);
+    color: var(--text-main, #333);
+    box-shadow: var(--shadow-lg);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+.ip-management-notice[hidden] { display: none !important; }
+.ip-management-notice.is-warning {
+    background: var(--warning-bg, #fef8e7);
+    border-color: var(--warning, #927200);
+    border-left: 4px solid var(--warning, #927200);
+    color: var(--warning-text, #876800);
+}
+.ip-management-notice.is-error {
+    background: var(--danger-bg, #fde8e8);
+    border-color: var(--danger, #ce0000);
+    border-left: 4px solid var(--danger, #ce0000);
+    color: var(--danger, #ce0000);
+}
+.ip-management-notice-text { flex: 1 1 auto; min-width: 0; }
+.ip-management-recovery-btn { flex: 0 0 auto; white-space: nowrap; }
+.ip-management-notice-close {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-xs, 2px);
+    background: transparent;
+    color: currentColor;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.75;
+}
+.ip-management-notice-close:hover:not(:disabled) { opacity: 1; background: rgba(0, 0, 0, 0.06); }
+.ip-management-form-error { margin: 4px 0 0; }
+.ip-management-dialog .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 20px 20px;
+}
+.ip-management-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+}
+.ip-management-breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text-muted);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-light);
+    overflow-wrap: anywhere;
+}
+.ip-management-breadcrumb-prefix { color: var(--text-muted); }
+.ip-management-breadcrumb-link {
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    border-radius: var(--radius-xs, 2px);
+    color: var(--primary);
+    font: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.ip-management-breadcrumb-link:hover:not(:disabled) { background: var(--primary-soft); }
+.ip-management-breadcrumb-current { color: var(--text-main); font-weight: 700; padding: 2px 4px; }
+.ip-management-section-header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin: 0;
+}
+.ip-management-section-header h3,
+.ip-management-section-header h4 { margin: 0; }
+.ip-management-heading-group { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ip-management-cidr-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm, 4px);
+    background: var(--primary-soft);
+    color: var(--primary);
+    border: 1px solid var(--primary);
+    font-size: 13px;
+    font-weight: 700;
+}
+.ip-management-segment-meta { margin: 0; color: var(--text-muted); font-size: 13px; }
+.ip-management-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+}
+.ip-management-search {
+    flex: 1 1 260px;
+    min-width: 0;
+    width: 100%;
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    box-sizing: border-box;
+    font-size: 14px;
+}
+.ip-management-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ip-management-candidate-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.ip-management-filter-chip {
+    min-height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-full, 9999px);
+    background: var(--bg-panel, #fff);
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.ip-management-filter-chip.is-active {
+    background: var(--primary-soft);
+    color: var(--primary);
+    border-color: var(--primary);
+    font-weight: 700;
+}
+.ip-management-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
+.ip-management-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 16px 18px;
+    border: 1px solid var(--border-light, #d8d8d8);
+    border-top: 4px solid var(--primary);
+    border-radius: var(--radius-md, 8px);
+    background: var(--bg-panel, #fff);
+    color: var(--text-main, #333);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    box-shadow: var(--shadow-sm);
+    transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.ip-management-card.is-unclassified { border-top-color: var(--neutral-border); }
+.ip-management-card.has-warning { border-top-color: var(--warning); }
+.ip-management-card:hover:not(:disabled) {
+    background: var(--bg-toolbar-hover, #f1f5f9);
+    border-color: var(--primary);
+    border-top-color: var(--primary);
+    box-shadow: var(--shadow-md);
+}
+.ip-management-card.has-warning:hover:not(:disabled) { border-top-color: var(--warning); }
+.ip-management-card:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.ip-management-card-body { display: grid; gap: 6px; min-width: 0; flex: 1 1 auto; }
+.ip-management-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.ip-management-card-icon { flex-shrink: 0; color: var(--primary); }
+.ip-management-card.is-unclassified .ip-management-card-icon { color: var(--neutral); }
+.ip-management-card.has-warning .ip-management-card-icon { color: var(--warning-text, #876800); }
+.ip-management-card-title { font-size: 15px; line-height: 1.35; }
+.ip-management-card-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.ip-management-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--radius-full, 9999px);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.4;
+}
+.ip-management-badge.is-warning {
+    background: var(--warning-soft, #fef8e7);
+    color: var(--warning-text, #876800);
+    border: 1px solid var(--warning, #927200);
+}
+.ip-management-badge.is-neutral {
+    background: var(--neutral-bg);
+    color: var(--text-muted);
+    border: 1px solid var(--border-light);
+}
+.ip-management-badge.is-reachability-reachable {
+    background: var(--success-bg, #eefaf2);
+    color: var(--success, #197a4b);
+    border: 1px solid var(--success, #197a4b);
+}
+.ip-management-badge.is-reachability-unreachable {
+    background: var(--neutral-bg, #f5f5f5);
+    color: var(--neutral, #4d4d4d);
+    border: 1px solid var(--neutral-border, #949494);
+}
+.ip-management-badge.is-reachability-unset {
+    background: var(--bg-surface, #ffffff);
+    color: var(--text-muted, #666666);
+    border: 1px dashed var(--border-light, #d8d8d8);
+}
+.ip-management-card-summary { color: var(--text-muted, #666); font-size: 13px; font-weight: 600; }
+.ip-management-card-arrow { font-size: 20px; color: var(--text-muted); flex-shrink: 0; }
+.ip-management-unclassified { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-light, #d8d8d8); }
+.ip-management-segment-overview {
+    padding: 14px 16px;
+    border: 1px solid var(--border-light, #d8d8d8);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-main, #f8fafc);
+    min-width: 0;
+}
+.ip-management-heading-group { min-width: 0; overflow-wrap: anywhere; }
+.ip-management-segment-overview .ip-management-heading-group { margin-right: auto; }
+.ip-management-cidr-badge { max-width: 100%; overflow-wrap: anywhere; }
+.ip-management-overview-details { margin-top: 14px; }
+.ip-management-overview-details[hidden] { display: none; }
+.ip-management-overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin: 0 0 12px;
+    padding: 0;
+}
+.ip-management-overview > div { min-width: 0; }
+.ip-management-overview dt { color: var(--text-muted, #666); font-size: 12px; }
+.ip-management-overview dd { margin: 4px 0 0; overflow-wrap: anywhere; font-weight: 700; font-size: 14px; }
+.ip-management-workspace { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.ip-management-workspace.is-readonly { grid-template-columns: minmax(0, 1fr); }
+.ip-management-list-panel { display: grid; gap: 12px; min-width: 0; }
+.ip-management-list-panel h4,
+.ip-management-membership-panel h4 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.ip-management-membership-panel {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding: 0 4px 0 16px;
+    border-left: 1px solid var(--border-light, #d8d8d8);
+    overflow-wrap: anywhere;
+}
+.ip-management-membership-panel[hidden] { display: none; }
+.ip-management-results { min-width: 0; }
+.is-segment-detail .ip-management-breadcrumb,
+.is-segment-detail .ip-management-segment-overview { flex: 0 0 auto; }
+.is-segment-detail .ip-management-workspace {
+    flex: 1 0 280px;
+    min-height: 280px;
+    align-items: stretch;
+}
+.is-segment-detail .ip-management-list-panel,
+.is-segment-detail .ip-management-results {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.is-segment-detail .ip-management-results { flex: 1 1 auto; }
+.is-segment-detail .ip-management-list-heading,
+.is-segment-detail .ip-management-filter-bar,
+.is-segment-detail .ip-management-results > :not(.ip-management-table-scroll) { flex: 0 0 auto; }
+.is-segment-detail .ip-management-table-scroll {
+    flex: 1 1 auto;
+    min-height: 160px;
+    max-height: none;
+}
+.is-segment-detail .ip-management-membership-panel {
+    align-content: start;
+    min-height: 0;
+    overflow-y: auto;
+}
+.ip-management-paging { margin: 0 0 12px; }
+.ip-management-paging-summary { font-size: 13px; font-weight: 600; color: var(--text-main); }
+.ip-management-conflict { border-left: 3px solid var(--danger, #ce0000); padding: 12px; display: grid; gap: 8px; overflow-wrap: anywhere; background: var(--danger-soft); border-radius: var(--radius-xs); }
+.ip-management-controls input[type="search"] { flex: 1 1 240px; }
+.ip-management-controls input[type="number"] { width: 88px; height: 32px; padding: 0 8px; box-sizing: border-box; }
+.ip-management-form { display: grid; gap: 12px; width: 100%; max-width: 760px; }
+.ip-management-form label { display: grid; gap: 4px; min-width: 0; font-weight: 600; font-size: 13px; }
+.ip-management-form input,
+.ip-management-form textarea,
+.ip-management-form select { width: 100%; min-width: 0; box-sizing: border-box; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 4px); font-size: 14px; }
+.ip-management-reachability { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm, 4px); }
+.ip-management-reachability legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+.ip-management-form .ip-management-reachability-option { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.ip-management-form .ip-management-reachability-option input { width: auto; flex: 0 0 auto; margin: 3px 0 0; padding: 0; }
+.ip-management-reachability-option > span { display: grid; gap: 2px; }
+.ip-management-reachability .form-support { margin: 0; font-weight: 400; }
+.ip-management-reachability-warning { padding: 10px; border: 1px solid var(--warning, #a56a00); border-radius: var(--radius-sm, 4px); background: var(--warning-soft, #fff7df); font-size: 13px; overflow-wrap: anywhere; }
+.ip-management-reachability-warning[hidden] { display: none; }
+.ip-management-reachability-warning ul { margin: 6px 0 0; padding-left: 20px; }
+.ip-management-reachability-notes { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.ip-duplicate-notice { margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
+.ip-management-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ip-management-form .ip-management-actions { justify-content: flex-end; }
+.ip-management-dialog .btn { width: auto; flex: 0 0 auto; }
+.ip-management-form .ip-management-actions .btn { box-sizing: border-box; min-height: 36px; height: 36px; padding-block: 0; font-size: 14px; line-height: 1.25; }
+.ip-management-delete { margin-right: auto; }
+.ip-management-table .ip-management-record {
+    display: table-row;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+}
+.ip-management-target {
+    scroll-margin-top: 48px;
+    scroll-margin-bottom: 24px;
+}
+.ip-management-table .ip-management-target > td { background: var(--primary-soft, #e8effe); }
+.ip-management-table .ip-management-target > .ip-management-ip-cell { border-left: 4px solid var(--primary); }
+.ip-management-target:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.ip-management-target-label {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--radius-xs, 2px);
+    background: var(--primary);
+    color: var(--text-invert, #fff);
+    font-size: 11px;
+    font-weight: 700;
+}
+.ip-management-cidr-preview {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg-main, #f8fafc);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm, 4px);
+    overflow-wrap: anywhere;
+}
+.ip-management-cidr-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+    gap: 8px 16px;
+}
+.ip-management-cidr-item { display: flex; flex-direction: column; gap: 2px; }
+.ip-management-cidr-label { font-size: 11px; color: var(--text-muted); }
+.ip-management-cidr-value { font-size: 13px; color: var(--text-main); }
+.ip-management-optional[open] { display: grid; gap: 12px; }
+.ip-management-optional summary { cursor: pointer; font-weight: 600; }
+.ip-management-invalid { color: var(--danger, #ce0000); border-color: var(--danger, #ce0000); background: var(--danger-soft, #fde8e8); }
+.ip-management-description { overflow-wrap: anywhere; white-space: pre-wrap; color: var(--text-muted); font-size: 13px; margin: 0; }
+.ip-management-table-scroll { max-height: clamp(180px, calc(100dvh - 600px), 420px); overflow: auto; }
+.ip-management-table { width: 100%; table-layout: fixed; }
+.ip-management-table col.ip-management-col-selection { width: 48px; }
+.ip-management-table col.ip-management-col-ip { width: 160px; }
+.ip-management-unclassified-table col.ip-management-col-candidates { width: 100px; }
+.ledger-sheet-table.ip-management-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    width: auto;
+    background: var(--bg-main, #f8fafc);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.ledger-sheet-table.ip-management-table th,
+.ledger-sheet-table.ip-management-table td {
+    padding: 6px 10px;
+    vertical-align: middle;
+}
+.ip-management-table th:first-child,
+.ip-management-selection-cell { text-align: center; }
+.ip-management-table input[type="checkbox"] { display: block; width: 16px; height: 16px; margin: 0 auto; padding: 0; }
+.ip-management-unclassified-table input[type="checkbox"][data-unavailable="true"] {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+.ip-management-table .ip-management-candidate-cell { color: var(--text-muted); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.ip-management-candidate-cell small { display: block; margin-top: 3px; font-size: 11px; }
+.ip-management-row-duplicate td { vertical-align: top; }
+.ip-management-ip-cell {
+    overflow-wrap: anywhere;
+    white-space: nowrap;
+}
+.ip-management-ip-wrap {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 30px;
+}
+.ip-management-ip-address { font-size: 13.5px; font-weight: 600; }
+.ip-management-devices-cell { min-width: 0; }
+.ip-management-device-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 3px 8px;
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
+}
+.ip-management-device-icon { flex-shrink: 0; width: 18px; height: 18px; object-fit: contain; }
+.ip-management-device-name { font-weight: 700; color: var(--text-main); overflow-wrap: anywhere; }
+.ip-management-ip-kind { font-size: 12px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.ip-management-ip-kind.is-management { color: var(--primary); }
+.ip-management-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: var(--radius-full, 9999px);
+    font-size: 11.5px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.ip-management-status-badge.is-registered { background: var(--primary-soft); color: var(--primary); }
+.ip-management-status-badge.is-unregistered { background: var(--neutral-bg); color: var(--text-muted); }
+.ip-management-status-badge.is-duplicate { background: var(--warning-soft); color: var(--warning-text); border: 1px solid var(--warning); }
+.ip-management-search-match td { background: var(--primary-soft, #e8effe); }
+.ip-management-search-match .ip-management-ip-cell { border-left: 4px solid var(--primary); }
+.ip-management-search-match .ip-management-ip-address { font-weight: 700; }
+.ip-management-search-support { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.ip-management-search-support p { margin: 0; }
+.ip-management-table .ip-management-device-link { flex-wrap: wrap; }
+.ip-management-table .ip-management-ip-kind { white-space: normal; overflow-wrap: anywhere; }
+.ip-management-membership-control { display: grid; gap: 16px; min-width: 0; }
+.ip-management-membership-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+}
+.ip-management-selection-count { font-size: 16px; font-weight: 600; }
+.ip-management-membership-summary output { color: var(--primary); font-size: 20px; font-weight: 700; }
+.is-segment-detail .ip-management-membership-summary output { font-size: 28px; }
+.ip-management-membership-summary .btn { min-width: 0; white-space: normal; }
+.ip-management-selection-scope,
+.ip-management-hidden-selection { margin: 0; color: var(--text-muted); font-size: 12px; }
+.ip-management-hidden-selection[hidden],
+.ip-management-membership-candidates[hidden] { display: none; }
+.ip-management-membership-panel .form-support { margin: 0; }
+.ip-management-membership-actions { display: grid; gap: 10px; min-width: 0; }
+.ip-management-membership-label { display: grid; gap: 6px; min-width: 0; font-size: 12px; }
+.ip-management-membership-select {
+    min-height: 36px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 13px;
+    background: var(--bg-panel, #fff);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ip-management-dialog .ip-management-membership-btn,
+.ip-management-dialog .ip-management-auto-reclassify-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    height: auto;
+    padding: 6px 10px;
+    font-size: 13px;
+    white-space: normal;
+}
+.ip-management-workspace.is-unclassified .ip-management-candidate-filters { flex-basis: 100%; min-width: 0; }
+.ip-management-unclassified-scroll {
+    max-height: clamp(200px, calc(100dvh - 350px), 420px);
+    min-width: 0;
+    overflow: auto;
+}
+.ip-management-unclassified-scroll .ip-management-device-name { min-width: 0; }
+.ip-management-reclassify-panel { display: grid; gap: 12px; min-width: 0; }
+.ip-management-reclassify-panel .ip-management-candidate-summary,
+.ip-management-reclassify-panel .ip-management-membership-candidates,
+.ip-management-auto-reclassify-reason {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+.ip-management-auto-reclassify-reason:empty { display: none; }
+.ip-management-reclassify-panel .ip-management-membership-actions {
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light, #d8d8d8);
+}
+@media (max-width: 820px) {
+    .ip-management-workspace { grid-template-columns: minmax(0, 1fr); }
+    .ip-management-overview { grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); }
+    .ip-management-membership-panel { padding: 16px 4px 0 0; border-left: 0; border-top: 1px solid var(--border-light, #d8d8d8); }
+    .ip-management-table-scroll { max-height: 280px; }
+    .is-segment-detail .ip-management-workspace { display: flex; flex-direction: column; }
+    .is-segment-detail .ip-management-list-panel { flex: 1 0 280px; min-height: 280px; }
+    .is-segment-detail .ip-management-membership-panel { flex: 0 0 auto; overflow-y: visible; }
+    .ledger-sheet-table.ip-management-table th, .ledger-sheet-table.ip-management-table td { padding: 6px; }
+    .ip-management-ip-cell { white-space: normal; }
+}
+@media (max-width: 540px) {
+    .ip-management-unclassified-table,
+    .ip-management-unclassified-table thead,
+    .ip-management-unclassified-table tbody { display: block; width: 100%; min-width: 0; }
+    .ip-management-unclassified-table { box-sizing: border-box; }
+    .ip-management-unclassified-table colgroup { display: none; }
+    .ip-management-unclassified-table thead {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--bg-main, #f8fafc);
+    }
+    .ip-management-unclassified-table thead tr,
+    .ip-management-unclassified-table .ip-management-record {
+        display: grid;
+        grid-template-columns: 48px 130px minmax(0, 1fr);
+        align-items: stretch;
+    }
+    .ledger-sheet-table.ip-management-unclassified-table th {
+        position: static;
+        min-width: 0;
+    }
+    .ip-management-unclassified-table th:nth-child(1),
+    .ip-management-unclassified-table .ip-management-selection-cell { grid-column: 1; grid-row: 1 / 3; align-content: center; }
+    .ip-management-unclassified-table th:nth-child(2),
+    .ip-management-unclassified-table .ip-management-ip-cell { grid-column: 2; grid-row: 1 / 3; align-content: center; }
+    .ip-management-unclassified-table th:nth-child(3),
+    .ip-management-unclassified-table .ip-management-devices-cell { grid-column: 3; grid-row: 1; }
+    .ip-management-unclassified-table th:nth-child(4),
+    .ip-management-unclassified-table .ip-management-candidate-cell { grid-column: 3; grid-row: 2; }
+    .ledger-sheet-table.ip-management-unclassified-table td { min-width: 0; }
+    .ledger-sheet-table.ip-management-unclassified-table .ip-management-devices-cell { border-bottom: 0; }
+    .ledger-sheet-table.ip-management-unclassified-table .ip-management-candidate-cell { padding-top: 0; }
+    .ip-management-unclassified-table .ip-management-device-link { padding-inline: 0; }
+    .ip-management-unclassified-table .ip-management-ip-wrap { gap: 4px; }
+    .ip-management-unclassified-table .ip-management-ip-address { font-size: 13px; }
+}
+.ip-management-confirm-dialog { width: min(520px, calc(100vw - 24px)); }
+.ip-management-confirm-body { display: grid; gap: 12px; }
+.ip-management-confirm-text { margin: 0; color: var(--text-main); font-weight: 600; }
+.ip-management-confirm-list { margin: 0; padding-left: 20px; color: var(--text-main); font-size: 13px; max-height: 220px; overflow-y: auto; }
+.ip-management-transfer-details { display: grid; gap: 10px; }
+.ip-management-transfer-target { margin: 0; font-size: 13px; font-weight: 700; color: var(--text-main); }
+.ip-management-transfer-flow { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; }
+.ip-management-transfer-box {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--bg-main, #f8fafc);
+    font-size: 12px;
+}
+.ip-management-transfer-box.is-to { border-color: var(--primary); background: var(--primary-soft); }
+.ip-management-transfer-badge { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+.ip-management-transfer-arrow { font-size: 18px; font-weight: 700; color: var(--text-muted); }
+.ip-management-transfer-warning {
+    margin: 0;
+    padding: 10px 12px;
+    border-left: 4px solid var(--warning);
+    background: var(--warning-soft);
+    color: var(--warning-text);
+    font-size: 12px;
+    font-weight: 600;
+}
+@media (max-width: 640px), (max-height: 640px) {
+    #ip-management-overlay { padding: 12px 8px; }
+    .ip-management-dialog { max-height: calc(100dvh - 24px); }
+    .ip-management-dialog.is-fixed-height { height: calc(100dvh - 24px); }
+    .ip-management-dialog .modal-header { padding: 10px 14px; }
+    .ip-management-dialog .modal-body { padding: 12px 14px 16px; }
+    .ip-management-transfer-flow { grid-template-columns: 1fr; }
+    .ip-management-notice {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        max-width: none;
+        transform: none;
+    }
 }

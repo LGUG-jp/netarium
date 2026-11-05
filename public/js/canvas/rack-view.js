@@ -91,6 +91,9 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
     section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true');
     section.setAttribute('aria-labelledby', 'rack-mount-title');
     const title = element('h2'); title.id = 'rack-mount-title';
+    const heading = element('div', 'modal-header-heading rack-mount-heading');
+    const target = element('p', 'modal-header-target');
+    heading.append(title, target);
     const form = element('form', 'rack-mount-form');
     const body = element('div', 'rack-mount-body');
     const actions = element('div', 'rack-mount-actions');
@@ -122,6 +125,25 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
     const mountText = mount => `${faceLabel(mount.face)}・${slotLabel(rackDisplaySlot(mount.width_slot, mount.face))} / ${mount.start_u}〜${Number(mount.start_u) + Number(mount.height_u) - 1}U（${mount.height_u}U占有） / 奥行き：${depthLabel(mount)}`;
     const selectedMount = () => !newDevice && (appState.rackMounts.find(row => Number(row.device_id) === Number(selectedId)) ||
         (shelfForDevice(selectedId) && { ...shelfForDevice(selectedId), width_slot: 'full', shelf: true }));
+    let previewDeviceId;
+    let sourcePreview = null;
+    function locationDetail(mount) {
+        return `${mount.shelf ? `棚板「${mount.name}」 / ` : ''}${mountText(mount)}`;
+    }
+    const comparison = element('div', 'rack-mount-comparison');
+    comparison.setAttribute('role', 'group'); comparison.setAttribute('aria-label', '搭載位置の比較');
+    function previewCard(label, className) {
+        const card = element('div', `rack-transfer-card ${className}`);
+        const rack = element('strong', 'rack-transfer-rack');
+        const detail = element('span', 'rack-transfer-detail');
+        card.append(element('span', 'rack-transfer-badge', label), rack, detail);
+        comparison.appendChild(card);
+        return { rack, detail };
+    }
+    const sourceCard = previewCard('現在の搭載位置', 'rack-transfer-from');
+    const destinationCard = previewCard('移設先（変更後）', 'rack-transfer-to');
+    destinationCard.detail.setAttribute('role', 'status');
+    body.appendChild(comparison);
     function hideCandidates() {
         candidates.hidden = true; search.setAttribute('aria-expanded', 'false'); search.removeAttribute('aria-activedescendant');
     }
@@ -193,33 +215,29 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
         deviceArea.append(mode, newArea);
     }
     body.appendChild(deviceArea);
+    const position = element('fieldset', 'rack-mount-position');
     if (deviceId != null) {
-        select(body, 'view', '搭載先ラック', appState.views.filter(row => row.view_type === 'rack').map(row => [row.id, row.name]), previous?.view_id || viewId);
-    } else {
-        body.appendChild(element('p', 'rack-mount-destination', `搭載先：${rackName(viewId)}`));
+        select(position, 'view', '搭載先ラック', appState.views.filter(row => row.view_type === 'rack').map(row => [row.id, row.name]), viewId);
     }
-    const position = element('div', 'rack-mount-position');
-    const rowPrimary = element('div', 'rack-mount-row rack-mount-row-primary');
-    const initialFace = previous?.face || face;
-    select(rowPrimary, 'face', '搭載面', [['front', '前面'], ['rear', '背面']], initialFace === 'rear' ? 'rear' : 'front');
-    const width = select(rowPrimary, 'width', '横幅位置', [['full', '全幅'], ['left', '左半分'], ['right', '右半分']],
-        rackDisplaySlot(previous?.width_slot || widthSlot, previous?.face || face));
-    const depth = select(rowPrimary, 'depth', '奥行き', [['half', '半分'], ['full', '全体']],
-        previous?.face === 'both' ? 'full' : previous?.depth || 'half');
-    const rowSecondary = element('div', 'rack-mount-row rack-mount-row-secondary');
+    const units = element('div', 'rack-mount-position-grid');
+    const dimensions = element('div', 'rack-mount-position-grid');
+    position.prepend(element('legend', '', '移設先の搭載位置を編集'));
+    position.append(units, dimensions);
     function number(parent, name, label, value) {
         const input = field(parent, name, label, element('input'));
         input.type = 'number'; input.min = '1'; input.max = '60'; input.step = '1'; input.value = String(value); input.required = true;
     }
-    number(rowSecondary, 'start', '開始U（最下段）', previous?.start_u || startU);
-    number(rowSecondary, 'height', '占有U数', previous?.height_u || heightU);
-    position.append(rowPrimary, rowSecondary);
-    body.appendChild(position);
-    const currentPosition = element('p', 'rack-mount-current');
-    const summary = element('p', 'rack-mount-summary'); summary.setAttribute('role', 'status');
+    number(units, 'start', '開始U（最下段）', previous?.start_u || startU);
+    number(units, 'height', '占有U数', previous?.height_u || heightU);
+    const initialFace = previous?.face || face;
+    select(dimensions, 'face', '搭載面', [['front', '前面'], ['rear', '背面']], initialFace === 'rear' ? 'rear' : 'front');
+    const width = select(dimensions, 'width', '横幅位置', [['full', '全幅'], ['left', '左半分'], ['right', '右半分']],
+        rackDisplaySlot(previous?.width_slot || widthSlot, previous?.face || face));
+    const depth = select(dimensions, 'depth', '奥行き', [['half', '半分'], ['full', '全体']],
+        previous?.face === 'both' ? 'full' : previous?.depth || 'half');
     const error = element('p', 'form-error'); error.setAttribute('role', 'alert'); error.id = 'rack-mount-error';
     for (const node of Object.values(fields)) node.setAttribute('aria-describedby', error.id);
-    body.append(currentPosition, summary, error,
+    body.append(position, error,
         element('p', 'rack-warning', '※ 横幅位置は各面から見た左右です。奥行きは半分／全体の簡易占有であり、現物寸法・棚板・金具・ケーブル・放熱等の物理的な干渉は保証しません。'));
     const legacyNotice = element('p', 'rack-warning rack-mount-legacy-notice',
         'この機器は旧形式の両面占有です。設定を保存すると選択した前面／背面へ変換します。両面の占有を維持するため奥行きの初期値は「全体」です。キャンセルでは変更しません。');
@@ -231,7 +249,7 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
         pendingTransfer = null; transferConfirmation.hide(); body.hidden = false;
         update(); submit.focus();
     };
-    actions.append(submit, button('キャンセル', () => pendingTransfer ? cancelTransfer() : closeMountDialog()));
+    actions.append(button('キャンセル', () => pendingTransfer ? cancelTransfer() : closeMountDialog()), submit);
     const destinationId = () => fields.view ? Number(fields.view.value) : Number(viewId);
     const current = () => dialog === overlay && Number(appState.currentViewId) === Number(originViewId) &&
         editable([destinationId(), ...(selectedMount() ? [selectedMount().view_id] : [])]);
@@ -269,15 +287,21 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
     }
     function update() {
         const mount = readMount(), mounted = selectedMount();
-        const moving = mounted && Number(mounted.view_id) !== mount.view_id;
-        title.textContent = moving ? '機器をラックへ移設' : mounted ? 'ラック搭載位置を変更' : '機器をラックへ搭載';
-        submit.textContent = pendingTransfer ? '移設を確定' : moving ? 'ラックへ移設' : mounted ? '搭載位置を変更' : 'ラックへ搭載';
-        currentPosition.hidden = !mounted;
-        currentPosition.textContent = mounted ? `現在：${rackName(mounted.view_id)} / ${mountText(mounted)}` : '';
+        // 元位置は機器を選び直すまで固定する。競合判定は引き続きselectedMount()の最新状態を使う。
+        if (previewDeviceId !== selectedId) {
+            previewDeviceId = selectedId;
+            sourcePreview = mounted ? { rack: rackName(mounted.view_id), detail: locationDetail(mounted), viewId: mounted.view_id, shelf: mounted.shelf } : null;
+            sourceCard.rack.textContent = sourcePreview?.rack || '未搭載';
+            sourceCard.detail.textContent = sourcePreview?.detail || '現在のラック・棚板への搭載はありません。';
+        }
+        const moving = sourcePreview && (sourcePreview.shelf || Number(sourcePreview.viewId) !== mount.view_id);
+        title.textContent = moving ? '機器をラックへ移設' : sourcePreview ? 'ラック搭載位置を変更' : '機器をラックへ搭載';
+        target.textContent = moving ? 'ラックへ移設：現在 → 移設先' : sourcePreview ? '搭載位置を変更：現在 → 変更後' : '搭載位置（指定先）';
+        submit.textContent = pendingTransfer ? '移設を確定' : moving ? 'ラックへ移設' : sourcePreview ? '搭載位置を変更' : 'ラックへ搭載';
+        destinationCard.rack.textContent = rackName(mount.view_id);
+        destinationCard.detail.textContent = mountText(mount);
         legacyNotice.hidden = mounted?.face !== 'both';
         const failure = positionError(mount);
-        summary.textContent = failure ? '搭載位置を確認してください。'
-            : `${mounted ? (moving ? '移設先' : '変更先（同じラック内）') : '搭載位置'}：${rackName(mount.view_id)} / ${mountText(mount)}`;
         error.textContent = failure || (!newDevice && !getDeviceById(selectedId) ? '候補から機器を選択してください。' : '');
         submit.disabled = submitting || !!failure || (!newDevice && !getDeviceById(selectedId));
     }
@@ -334,7 +358,7 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
             pendingTransfer = transferSnapshot(mount);
             transferConfirmation.show({
                 name: getDeviceById(selectedId).name,
-                from: { rack: rackName(source.view_id), detail: source.shelf ? shelfLocation(source) : mountText(source) },
+                from: { rack: rackName(source.view_id), detail: locationDetail(source) },
                 to: { rack: rackName(mount.view_id), detail: mountText(mount) }
             });
             body.hidden = true;
@@ -345,7 +369,7 @@ export function openRackMountDialog({ viewId, face = 'front', startU = 1, height
         if (saveRackMount(mount)) closeMountDialog();
         else error.textContent = '保存状態・権限を確認し、競合がある場合はラックを再読込してください。';
     });
-    form.append(body, confirmation, actions); section.append(title, form);
+    form.append(body, confirmation, actions); section.append(heading, form);
     overlay.appendChild(section); document.body.appendChild(overlay); dialog = overlay; update();
     registerModalOpen('rack-mount', overlay, deviceId == null ? '#rack-mount-search' : '#rack-mount-view', {
         onClose: () => { if (!candidates.hidden) hideCandidates(); else if (pendingTransfer) cancelTransfer(); else closeMountDialog(); }
@@ -552,7 +576,20 @@ export function renderRackView() {
             const icon = element('img', 'rack-device-icon'); icon.src = 'assets/icons/toolbar/shelf.svg'; icon.alt = '';
             row.append(icon, element('span', 'rack-device-name', shelf.name), element('span', '', `${shelfMembers(shelf.id).length}台`)); block.appendChild(row);
             block.title = `${shelfLocation(shelf)} / 奥行き：${depthLabel(shelf)}`;
-            block.addEventListener('click', () => showShelfPanel(shelf.id)); grid.appendChild(block);
+            let opening = null;
+            const selectable = () => block.isConnected && !isShelfAdding() && !rangeSelection &&
+                Number(appState.currentViewId) === Number(shelf.view_id);
+            block.addEventListener('click', event => {
+                if (event.detail > 1 || !selectable()) return;
+                opening = showShelfPanel(shelf.id);
+            });
+            block.addEventListener('dblclick', async () => {
+                if (!selectable() || !isCurrentUserAdmin()) return;
+                if (!await (opening || showShelfPanel(shelf.id)) || !selectable()) return;
+                block.focus({ preventScroll: true });
+                openShelfDialog({ viewId: shelf.view_id, shelfId: shelf.id });
+            });
+            grid.appendChild(block);
         }
         for (const mount of mounts.filter(row => rackFaces(row.face).includes(face))) {
             const device = getDeviceById(mount.device_id); if (!device) continue;
@@ -584,7 +621,7 @@ export function renderRackView() {
             /* slot already computed above */
             block.style.gridColumn = slot === 'full' ? '1 / span 2' : slot === 'left' ? '1' : '2';
             block.setAttribute('aria-pressed', String(Number(appState.editingDeviceId) === Number(device.id)));
-            let drag = null, suppressClick = false;
+            let drag = null, suppressClick = false, suppressDoubleClick = false;
             const resetDrag = () => {
                 if (drag && block.hasPointerCapture?.(drag.pointerId)) block.releasePointerCapture(drag.pointerId);
                 drag = null; block.classList.remove('rack-device-dragging', 'rack-device-invalid');
@@ -639,25 +676,25 @@ export function renderRackView() {
                 const moved = drag.moved, valid = drag.valid && isCurrent(), targetU = drag.curStartU, targetSlot = drag.curPhysicalSlot;
                 resetDrag();
                 if (!moved) return;
-                suppressClick = true; suppressCanvasClickOnce();
+                suppressClick = true; suppressDoubleClick = true; suppressCanvasClickOnce();
                 setTimeout(() => { suppressClick = false; }, 200);
                 if (valid && (targetU !== mount.start_u || targetSlot !== mount.width_slot)) {
                     saveRackMount({ ...mount, start_u: targetU, width_slot: targetSlot });
                 }
             });
             block.addEventListener('pointercancel', resetDrag);
-            block.addEventListener('click', async () => {
+            block.addEventListener('click', async event => {
+                if (!(event.detail > 1)) suppressDoubleClick = suppressClick || Boolean(drag?.moved);
                 if (suppressClick) { suppressClick = false; return; }
-                appState.editingDeviceId = Number(device.id);
-                for (const b of surface.querySelectorAll('.rack-device')) {
-                    b.setAttribute('aria-pressed', String(Number(b.dataset.deviceId) === Number(device.id)));
-                }
                 if (await openPanel(device)) {
+                    for (const b of surface.querySelectorAll('.rack-device')) {
+                        b.setAttribute('aria-pressed', String(Number(b.dataset.deviceId) === Number(device.id)));
+                    }
                     renderRackPanel(device);
                 }
             });
             block.addEventListener('dblclick', () => {
-                if (suppressClick) { suppressClick = false; return; }
+                if (suppressClick || suppressDoubleClick || drag?.moved) return;
                 if (!isCurrentUserAdmin()) return;
                 openRackMountDialog({ viewId: mount.view_id, deviceId: device.id });
             });

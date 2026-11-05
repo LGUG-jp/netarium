@@ -1,7 +1,7 @@
 # Docker / Linux Compose 配備・運用ガイド
 
 Netarium は、Windows Server + IIS 版に加え、Docker / Docker Compose による Linux コンテナ配備を公式にサポートします。
-PHP アプリケーション本体、SQLite DB スキーマ（スキーマ 16）、認証仕様、および停止型完全バックアップ（`netarium-full` 形式 1）のデータ形式は IIS 版と共通です。
+PHP アプリケーション本体、SQLite DB スキーマ（スキーマ 22）、認証仕様、および停止型完全バックアップ（`netarium-full` 形式 1）のデータ形式は IIS 版と共通です。
 
 ---
 
@@ -48,7 +48,7 @@ docker compose run --rm --no-deps web php scripts/check-install.php \
 ### 方式B: GHCR事前ビルド済みイメージ（推奨本番配備）
 
 ビルド環境を必要とせず、固定バージョンタグの公式イメージを利用します。`compose.image.yaml` を使用します。
-公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.3.0` です。候補版の検証や独自ビルドには方式 A のローカルビルドを利用します。
+公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.4.0` です。候補版の検証や独自ビルドには方式 A のローカルビルドを利用します。
 
 公式イメージが GitHub Packages 上で Public として公開された後は、認証なし（匿名 pull）で取得できます。GitHub Releases と GitHub Packages で公開状況を確認し、利用環境からイメージを取得できることを確認してください。
 
@@ -218,7 +218,7 @@ GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.3.0`）で運用している
 
 ## 8. 停止型完全バックアップ・復元・全損復旧
 
-完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の検証が必要です。復元先 `1.3.0`（現行スキーマ 16）では、同一 MAJOR 内の順方向（source <= target）の正規 SemVer、および移行経路が存在するスキーマ 11〜16（11..16）のバックアップを受け付けます。
+完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の検証が必要です。復元先 `1.4.0`（現行スキーマ 22）では、同一 MAJOR 内の順方向（source <= target）の正規 SemVer、および移行経路が存在するスキーマ 11〜22（11..22）のバックアップを受け付けます。
 
 ### 完全バックアップの採取
 
@@ -271,7 +271,7 @@ bash scripts/docker-restore.sh [-f compose.yaml|compose.image.yaml] <バック�
 ## 9. IIS版との互換性と未検証事項
 
 ### 形式互換性
-- Docker版とIIS版の完全バックアップ形式（`netarium-full` 形式 1）は、同一のPHPバックアップエンジン（`scripts/full-backup-helper.php`）を基盤とし、manifest構造・SHA-256検証・DBスキーマ（スキーマ 11〜16）を共有します。形式が同じでも未許可のアプリ版や未対応スキーマは拒否します。互換性の範囲は [更新ガイド](update.md#バックアップ互換性と切戻し手順) を参照してください。
+- Docker版とIIS版の完全バックアップ形式（`netarium-full` 形式 1）は、同一のPHPバックアップエンジン（`scripts/full-backup-helper.php`）を基盤とし、manifest構造・SHA-256検証・DBスキーマ（スキーマ 11〜22）を共有します。形式が同じでも未許可のアプリ版や未対応スキーマは拒否します。互換性の範囲は [更新ガイド](update.md#バックアップ互換性と切戻し手順) を参照してください。
 
 ### 実機 ZIP の確認範囲
 

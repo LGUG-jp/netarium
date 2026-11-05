@@ -1,4 +1,5 @@
 import { isValidIpv4, normalizeMacAddress } from './utils.js';
+import { normalizeAdditionalIps, validateDeviceIps } from './device-ip-addresses.js';
 
 const fields = {
     name: ['機器名称', 100], ip: ['IPアドレス', 45], facility: ['施設名', 100],
@@ -25,7 +26,7 @@ export function validateDateOrder(install, expiry) {
 }
 
 // UIに依存しないフィールド名で返す。複数機器編集も同じ制約を利用する。
-export function validateDeviceValues(input, devices = []) {
+export function validateDeviceValues(input) {
     const values = { ...input };
     const errors = {};
     for (const [field, [label, limit]] of Object.entries(fields)) {
@@ -34,10 +35,9 @@ export function validateDeviceValues(input, devices = []) {
     }
     if (!values.name) errors.name = '機器名称を入力してください';
     if (!errors.ip && values.ip && !isValidIpv4(values.ip)) errors.ip = 'IPアドレスの形式が不正です';
-    if (!errors.ip && values.ip) {
-        const duplicate = devices.find(row => Number(row.id) !== Number(values.id) && String(row.ip ?? '').trim() === values.ip);
-        if (duplicate) errors.ip = `IPアドレス ${values.ip} は「${duplicate.name || `機器ID ${duplicate.id}`}」で使用されています`;
-    }
+    values.additional_ips = normalizeAdditionalIps(values.additional_ips);
+    const addressError = validateDeviceIps(values);
+    if (addressError) errors.additional_ips = addressError;
     values.mac_address = normalizeMacAddress(values.mac_address);
     values.management_scheme = String(values.management_scheme ?? '').trim();
     if (!['', 'http', 'https', 'ssh'].includes(values.management_scheme)) errors.management_scheme = '管理接続方式が不正です';

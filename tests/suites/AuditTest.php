@@ -605,6 +605,7 @@ class AuditTest extends TestCase
         try {
             $client = new TestHttpClient($server->getBaseUrl());
             $this->assertTrue($client->login('admin', 'admin123'));
+            $adminUserId = (int)$client->get('/api.php?action=load')->getJson()['user']['id'];
 
             $auditDir = $server->getTempDir() . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR . 'audit';
 
@@ -715,7 +716,45 @@ class AuditTest extends TestCase
             $this->assertSame('success', $updateEntries[1]['outcome']);
             $this->assertSame($createdUserId, (int)$updateEntries[1]['target_id']);
 
-            // 6. Verify passwords never appear in the raw audit logs
+            // 6. Admin deletes user
+            $deleteRes = $client->postJson('/api.php?action=delete_user', [
+                'id' => $createdUserId,
+            ]);
+            $deleteRes->assertOk();
+            $deleteJson = $deleteRes->getJson();
+            $deleteRequestId = (string)$deleteJson['request_id'];
+
+            $entries = $this->readAuditEntries($auditDir);
+            $deleteEntries = array_values(array_filter($entries, static function (array $e) use ($deleteRequestId): bool {
+                return ($e['request_id'] ?? '') === $deleteRequestId;
+            }));
+            $this->assertSame(2, count($deleteEntries));
+            $this->assertSame('delete_user', $deleteEntries[1]['event']);
+            $this->assertSame('success', $deleteEntries[1]['outcome']);
+            $this->assertSame($adminUserId, (int)$deleteEntries[1]['actor_user_id']);
+            $this->assertSame('user', $deleteEntries[1]['target_type']);
+            $this->assertSame($createdUserId, (int)$deleteEntries[1]['target_id']);
+
+            // 7. Admin restores user
+            $restoreRes = $client->postJson('/api.php?action=restore_user', [
+                'id' => $createdUserId,
+            ]);
+            $restoreRes->assertOk();
+            $restoreJson = $restoreRes->getJson();
+            $restoreRequestId = (string)$restoreJson['request_id'];
+
+            $entries = $this->readAuditEntries($auditDir);
+            $restoreEntries = array_values(array_filter($entries, static function (array $e) use ($restoreRequestId): bool {
+                return ($e['request_id'] ?? '') === $restoreRequestId;
+            }));
+            $this->assertSame(2, count($restoreEntries));
+            $this->assertSame('restore_user', $restoreEntries[1]['event']);
+            $this->assertSame('success', $restoreEntries[1]['outcome']);
+            $this->assertSame($adminUserId, (int)$restoreEntries[1]['actor_user_id']);
+            $this->assertSame('user', $restoreEntries[1]['target_type']);
+            $this->assertSame($createdUserId, (int)$restoreEntries[1]['target_id']);
+
+            // 8. Verify passwords never appear in the raw audit logs
             $rawLogs = $this->readRawAuditContent($auditDir);
             $this->assertFalse(str_contains($rawLogs, $secretPassword), 'Secret password must not exist in audit log');
             $this->assertFalse(str_contains($rawLogs, $wrongPassword), 'Wrong password must not exist in audit log');
@@ -875,8 +914,8 @@ class AuditTest extends TestCase
 
             // Import CSV with a secret marker
             $secretCsvMarker = 'Secret_CSV_Marker_Audit_Unique_12345';
-            $csvData = "\xEF\xBB\xBF\"id\",\"name\",\"type\",\"ip\",\"facility\",\"floor\",\"location\",\"manufacturer\",\"model\",\"asset_number\",\"serial_number\",\"mac_address\",\"memo\",\"management_scheme\",\"management_port\",\"department\",\"maintenance_vendor\",\"install_date\",\"maintenance_expiry\"\n";
-            $csvData .= ",\"{$secretCsvMarker}\",\"switch\",\"192.168.10.99\",\"本庁舎\",\"2F\",\"会議室\",\"Cisco\",\"C9200\",\"AST-CSV99\",\"SER-CSV99\",\"00:AA:BB:CC:DD:EE\",\"CSVインポート機器\",\"https\",8443,\"情報政策課\",\"ベンダーA\",\"2024-04-01\",\"2027-03-31\"\n";
+            $csvData = "\xEF\xBB\xBF\"id\",\"name\",\"type\",\"ip\",\"additional_ips\",\"facility\",\"floor\",\"location\",\"manufacturer\",\"model\",\"asset_number\",\"serial_number\",\"mac_address\",\"memo\",\"management_scheme\",\"management_port\",\"department\",\"maintenance_vendor\",\"install_date\",\"maintenance_expiry\"\n";
+            $csvData .= ",\"{$secretCsvMarker}\",\"switch\",\"192.168.10.99\",,\"本庁舎\",\"2F\",\"会議室\",\"Cisco\",\"C9200\",\"AST-CSV99\",\"SER-CSV99\",\"00:AA:BB:CC:DD:EE\",\"CSVインポート機器\",\"https\",8443,\"情報政策課\",\"ベンダーA\",\"2024-04-01\",\"2027-03-31\"\n";
             $tempCsv = tempnam(sys_get_temp_dir(), 'audit_csv_');
             file_put_contents($tempCsv, $csvData);
 

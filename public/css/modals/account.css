@@ -46,6 +46,11 @@
     border: 1px solid var(--border-light);
     border-radius: var(--radius-md);
     background: var(--bg-panel-solid);
+    margin-bottom: 12px;
+}
+
+.account-create-form[hidden] {
+    display: none;
 }
 
 .account-user-section {
@@ -153,16 +158,28 @@
 }
 
 
-.account-user-section {
-    margin-top: 16px;
-}
 
 .account-section-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
     margin-bottom: 12px;
+}
+
+.account-heading-left {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.account-heading-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 .account-user-list-wrap {
@@ -196,6 +213,44 @@
 
 .account-user-list tr:last-child td {
     border-bottom: 0;
+}
+
+.account-user-list.account-deleted-list {
+    min-width: 480px;
+}
+
+.account-user-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0;
+}
+
+.account-user-tab {
+    padding: 6px 14px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #64748b;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.account-user-tab[aria-selected="true"] {
+    background: #ffffff;
+    color: #0f172a;
+    font-weight: 600;
+    border-color: #94a3b8;
+}
+
+.account-user-tab:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+#user-create-toggle-btn[aria-expanded="true"] {
+    background: #e2e8f0;
+    border-color: #94a3b8;
+    color: #0f172a;
 }
 
 .account-user-list select {

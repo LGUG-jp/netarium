@@ -13,6 +13,12 @@
     overflow-y: auto;
 }
 
+.management-connection-description {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .management-connection-summary {
     display: grid;
     gap: 8px;
@@ -254,7 +260,7 @@
 
 .management-ssh-help-dialog {
     width: min(520px, 100%);
-    max-height: min(85vh, 600px);
+    max-height: min(600px, calc(100dvh - 2 * var(--modal-edge-space)));
 }
 
 .management-ssh-help-content {

@@ -201,6 +201,73 @@ for (const spec of imports) {
     });
 }
 
+test('CSV: 追加 IP の全削除・新規 JSON を安全に表示し、対象付き警告を確定時にも確認する', async t => {
+    const { dom, requests, api } = await setup(t, 'templates/modals/csv_import.php');
+    const oldIps = JSON.stringify([{ ip: '192.0.2.20', label: '削除する用途' }]);
+    const newIps = JSON.stringify([
+        { ip: '192.0.2.30', label: '<img src=x onerror=alert(1)>' },
+        { ip: '192.0.2.31', label: '保守' }
+    ]);
+    const warning = 'IP 192.0.2.30 は ID 9「既存機器」と重複します';
+    const preview = {
+        import_token: 'additional-ips-token', can_commit: true,
+        summary: { total: 3, insert: 1, update: 1, unchanged: 1, warning: 1, error: 0 },
+        rows: [
+            { line: 2, id: 1, operation: 'update', name: '全削除機器', ip: '192.0.2.10',
+                changed_fields: ['additional_ips'],
+                changes: [{ field: 'additional_ips', label: '追加IPv4アドレス', before: oldIps, after: '[]' }] },
+            { line: 3, operation: 'insert', name: '追加 IP 付き新規機器', ip: '',
+                changes: [{ field: 'additional_ips', label: '追加IPv4アドレス', before: '[]', after: newIps }],
+                warnings: [{ message: warning }] },
+            { line: 4, id: 2, operation: 'unchanged', name: '空欄で既存保持', ip: '',
+                changed_fields: [], changes: [] }
+        ]
+    };
+    api(action => {
+        assert.equal(action, 'preview_devices_csv_import');
+        return response(preview);
+    });
+    openDevicesCsvImport();
+    selectFile(dom, 'devices-csv-import-file', resetDevicesCsvImportPreview, 'csv');
+    await previewDevicesCsvImport();
+    const rows = dom.get('devices-csv-import-rows').children;
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].querySelector('.csv-import-change-label').textContent, '追加IPv4アドレス');
+    assert.equal(rows[1].querySelector('.csv-import-change-label').textContent, '追加IPv4アドレス');
+    assert.equal(rows[0].querySelector('.csv-import-change-before').textContent, oldIps);
+    assert.equal(rows[0].querySelector('.csv-import-change-after').textContent, '[]（全削除）');
+    assert.match(rows[1].textContent, /新規登録/);
+    assert.equal(rows[1].querySelector('.csv-import-change-after').textContent, newIps);
+    assert.equal(rows[1].querySelector('img'), null, '用途ラベルを HTML として解釈しない');
+    assert.equal(rows[1].classList.contains('csv-import-row-warning'), true);
+    assert.ok(rows[1].textContent.includes(warning));
+    assert.equal(rows[2].querySelector('.csv-import-change-list').textContent, '変更なし');
+    assert.equal(dom.get('devices-csv-warning').textContent, '1');
+    assert.equal(dom.get('devices-csv-commit-btn').disabled, false, '警告だけなら確定可能');
+    const confirmations = [];
+    let accept = false;
+    window.confirm = globalThis.confirm = message => { confirmations.push(message); return accept; };
+    await commitDevicesCsvImport();
+    assert.ok(confirmations[0].includes(`行 3: ${warning}`));
+    assert.match(confirmations[0], /警告行: 1件/);
+    assert.equal(requests.length, 1, '確認キャンセルでは確定 API を呼ばない');
+    assert.equal(dom.get('devices-csv-import-result').hidden, false);
+    assert.equal(rows[0].querySelector('.csv-import-change-after').textContent, '[]（全削除）');
+    accept = true;
+    api((action, input) => {
+        if (action === 'commit_devices_csv_import') {
+            assert.equal(input.import_token, 'additional-ips-token');
+            return response({ revision: 2, monitor_revision: 1 });
+        }
+        assert.equal(action, 'load');
+        return response({ revision: 2, monitor_revision: 1, views: [], devices: [] });
+    });
+    await commitDevicesCsvImport();
+    assert.ok(confirmations[1].includes(`行 3: ${warning}`));
+    assert.equal(requests.filter(request => request.action === 'commit_devices_csv_import').length, 1);
+    assert.equal(dom.get('devices-csv-import-overlay').hidden, true);
+});
+
 test('backup: 長い選択名を安全に表示し、検証拒否でも保持して選択解除で消す', async t => {
     const { dom, requests } = await setup(t, 'templates/modals/backup.php');
     openBackupRestore();
@@ -555,6 +622,127 @@ test('利用者管理: 一覧更新失敗では下書きを保持し、再表示
     assert.equal(accountRows(dom).active.checked, false);
     assert.equal(accountRows(dom).row.querySelector('.account-reset-password').value, '');
     assert.equal(requests.every(request => request.action === 'list_users'), true);
+});
+
+test('利用者管理: 削除は対象名と結果を確認し、削除済みタブから復元でき、他行の未適用変更を失わない', async t => {
+    const { dom, api, requests } = await setup(t, 'templates/modals/account.php');
+    initializeAccountManagement();
+    const other = { id: 9, username: 'synthetic-other', role: 'viewer', is_active: true, is_deleted: false };
+    let users = [structuredClone(initialUser), other];
+    api((action, input) => {
+        if (action === 'list_users') return response({ users });
+        if (action === 'delete_user') {
+            users = users.map(user => user.id === input.id ? { ...user, is_active: false, is_deleted: true, deleted_at: '2026-11-04 10:00:00' } : user);
+            return response({ message: '削除しました' });
+        }
+        assert.equal(action, 'restore_user');
+        users = users.map(user => user.id === input.id ? { ...user, is_deleted: false, deleted_at: null } : user);
+        return response({ message: '復元しました' });
+    });
+    await openUserManagement();
+    const body = dom.get('account-user-list-body');
+    const rowOf = id => Array.from(body.querySelectorAll('tr[data-user-id]')).find(row => row.dataset.userId === String(id));
+    rowOf(9).querySelector('.account-user-role').value = 'admin';
+
+    const messages = [];
+    window.confirm = message => { messages.push(message); return messages.length > 1; };
+    const target = rowOf(7);
+    await body.dispatch('click', { target: target.querySelector('[data-account-action="delete"]') });
+    assert.equal(requests.some(request => request.action === 'delete_user'), false, '拒否では削除しない');
+    await body.dispatch('click', { target: target.querySelector('[data-account-action="delete"]') });
+    await drain();
+    assert.match(messages[0], new RegExp(initialUser.username));
+    assert.match(messages[0], /削除済み一覧へ移動します。ログインできなくなりますが、操作履歴は保持され、後から復元できます。/);
+    assert.equal(dom.get('account-status').textContent, '削除しました');
+    assert.equal(rowOf(7), undefined);
+    assert.equal(rowOf(9).querySelector('.account-user-role').value, 'admin', '他行の未適用変更を保持');
+
+    const deletedBody = dom.get('account-deleted-list-body');
+    assert.equal(deletedBody.querySelectorAll('tr[data-user-id]').length, 1);
+    assert.equal(deletedBody.querySelector('[data-account-action="update"]'), null);
+    assert.equal(deletedBody.querySelector('[data-account-action="reset"]'), null);
+    assert.equal(deletedBody.querySelector('[data-account-action="delete"]'), null);
+
+    messages.length = 0;
+    window.confirm = message => { messages.push(message); return true; };
+    await deletedBody.dispatch('click', { target: deletedBody.querySelector('[data-account-action="restore"]') });
+    await drain();
+    assert.match(messages[0], /復元後は無効状態です。利用再開する場合は有効化してください/);
+    assert.equal(requests.filter(request => request.action === 'restore_user').length, 1);
+    assert.equal(dom.get('account-status').textContent, '復元しました');
+    assert.equal(deletedBody.querySelectorAll('tr[data-user-id]').length, 0);
+    assert.equal(rowOf(7) !== undefined, true);
+});
+
+test('利用者管理: 登録フォームは初期折りたたみで展開・格納・キャンセル・成功時自動格納とフォーカス遷移を行う', async t => {
+    const { dom, api, requests } = await setup(t, 'templates/modals/account.php');
+    initializeAccountManagement();
+    let users = [structuredClone(initialUser)];
+    api((action, input) => {
+        if (action === 'list_users') return response({ users });
+        if (action === 'create_user') {
+            users.push({ id: 10, username: input.username, role: input.role, is_active: true });
+            return response({ message: '登録しました' });
+        }
+    });
+    await openUserManagement();
+
+    const form = dom.get('user-create-form');
+    const toggleBtn = dom.get('user-create-toggle-btn');
+    const cancelBtn = dom.get('user-create-cancel-btn');
+    const username = dom.get('user-create-username');
+
+    // 1. 初期状態は折りたたみ
+    assert.equal(form.hidden, true);
+    assert.equal(toggleBtn.getAttribute('aria-expanded'), 'false');
+
+    // 2. パスワード条件の表示確認
+    const hint = dom.get('user-create-password-hint');
+    assert.equal(hint.querySelector('.password-requirements-title').textContent, 'パスワードの条件');
+    assert.equal(hint.querySelectorAll('li').length, 2);
+
+    // 3. 展開操作
+    await toggleBtn.dispatch('click');
+    assert.equal(form.hidden, false);
+    assert.equal(toggleBtn.getAttribute('aria-expanded'), 'true');
+    assert.equal(document.activeElement, username);
+
+    // 4. 未入力での再トグル格納
+    await toggleBtn.dispatch('click');
+    assert.equal(form.hidden, true);
+    assert.equal(toggleBtn.getAttribute('aria-expanded'), 'false');
+    assert.equal(document.activeElement, toggleBtn);
+
+    // 5. 入力途中の格納確認（拒否・許可）
+    let confirmations = 0;
+    window.confirm = () => { confirmations++; return confirmations > 1; };
+    await toggleBtn.dispatch('click');
+    username.value = 'draft-user';
+    await toggleBtn.dispatch('click');
+    assert.equal(form.hidden, false, '破棄拒否時は開いたまま保持');
+    assert.equal(username.value, 'draft-user');
+    await toggleBtn.dispatch('click');
+    assert.equal(form.hidden, true, '破棄許可時は格納');
+    assert.equal(username.value, '');
+
+    // 6. キャンセルボタンでの格納
+    await toggleBtn.dispatch('click');
+    assert.equal(form.hidden, false);
+    await cancelBtn.dispatch('click');
+    assert.equal(form.hidden, true);
+    assert.equal(document.activeElement, toggleBtn);
+
+    // 7. 登録成功時の自動格納
+    await toggleBtn.dispatch('click');
+    username.value = 'new-user';
+    dom.get('user-create-password').value = 'password-valid-123';
+    dom.get('user-create-password-confirm').value = 'password-valid-123';
+    await form.dispatch('submit');
+    await drain();
+    assert.equal(form.hidden, true, '登録成功後は自動格納');
+    assert.equal(toggleBtn.getAttribute('aria-expanded'), 'false');
+    assert.equal(document.activeElement, toggleBtn);
+    assert.equal(dom.get('account-status').textContent, '登録しました');
 });
 
 test('利用者登録: 上限超過を編集でき、近傍エラーと先頭不正項目へのフォーカスで送信を止める', async t => {

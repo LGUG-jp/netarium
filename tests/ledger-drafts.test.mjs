@@ -51,6 +51,8 @@ class Element {
     setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
     matches(selector) {
         if (selector.startsWith('#')) return this.id === selector.slice(1);
+        const role = selector.match(/^\[role="([^"]+)"\]$/);
+        if (role) return this.getAttribute('role') === role[1];
         const field = selector.match(/\[data-field="([^"]+)"\]/);
         if (field) return this.dataset.field === field[1];
         if (selector === '[data-field]') return Boolean(this.dataset.field);
@@ -85,7 +87,7 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
     const originals = new Map(['window', 'document', 'fetch', 'confirm', 'localStorage', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLButtonElement'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     t.after(() => { for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
     const body = new Element('body');
-    for (const id of ['ledger-overlay', 'ledger-table-body', 'ledger-device-sheet-overlay', 'ledger-sheet-body', 'ledger-sheet-save-btn', 'ledger-sheet-title', 'ledger-save-btn']) {
+    for (const id of ['ledger-overlay', 'ledger-table-body', 'ledger-device-sheet-overlay', 'ledger-sheet-tabs', 'ledger-sheet-body', 'ledger-sheet-save-btn', 'ledger-sheet-title', 'ledger-save-btn']) {
         const element = new Element(id.endsWith('btn') ? 'button' : 'div', id); elements.set(id, element); body.appendChild(element);
     }
     elements.get('ledger-device-sheet-overlay').hidden = true;
@@ -213,6 +215,33 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         assert.equal(ledger.activeLedgerDeviceId, null);
         await ledger.openLedgerDetail(1);
         assert.equal(elements.get('ledger-device-sheet-overlay').hidden, false);
+    });
+
+    await t.test('個票のタブ切替は両タブの下書きとDOMを保持し、非表示タブのエラーへ戻れる', async () => {
+        const sheet = elements.get('ledger-sheet-body');
+        const before = calls.length;
+        const name = field(sheet, 'name');
+        input(name, 'two-tab draft');
+        elements.get('ledger-sheet-tab-1').click();
+        assert.equal(elements.get('ledger-sheet-panel-0').hidden, true);
+        assert.equal(elements.get('ledger-sheet-panel-1').hidden, false);
+        input(field(sheet, 'management_port'), '70000');
+        elements.get('ledger-sheet-tab-0').click();
+        assert.equal(field(sheet, 'name'), name);
+        assert.equal(name.value, 'two-tab draft');
+        assert.equal(calls.length, before);
+        assert.equal(await ledger.saveLedgerSheet(), false);
+        assert.equal(elements.get('ledger-sheet-panel-1').hidden, false);
+        assert.equal(document.activeElement, field(sheet, 'management_port'));
+        input(field(sheet, 'management_port'), '8443');
+        ledger.renderLedgerDeviceSheet(appState.devices[0]);
+        assert.equal(elements.get('ledger-sheet-panel-1').hidden, false);
+        assert.equal(field(sheet, 'name').value, 'two-tab draft');
+        input(field(sheet, 'name'), appState.devices[0].name);
+        input(field(sheet, 'management_port'), appState.devices[0].management_port);
+        assert.equal(await ledger.closeLedgerDetailPane(), true);
+        await ledger.openLedgerDetail(1);
+        assert.equal(elements.get('ledger-sheet-panel-0').hidden, false);
     });
 
     await t.test('個票の文字数超過は即時エラーと下書きを保持し、適用を拒否する', async () => {

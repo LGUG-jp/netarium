@@ -22,12 +22,14 @@ class TestServer
     private string $logFile = '';
     private string $dbPath = '';
     private ?string $prependFile = null;
+    private ?int $outputBuffering = null;
     private bool $skipInit = false;
-    public function __construct(?string $projectRoot = null, ?string $prependFile = null)
+    public function __construct(?string $projectRoot = null, ?string $prependFile = null, ?int $outputBuffering = null)
     {
         $this->projectRoot = $projectRoot
             ?? (string)realpath(__DIR__ . '/..');
         $this->prependFile = $prependFile;
+        $this->outputBuffering = $outputBuffering;
         $this->docRoot = $this->projectRoot
             . DIRECTORY_SEPARATOR
             . 'public';
@@ -74,7 +76,7 @@ class TestServer
 
     public function spawnWorker(): self
     {
-        $worker = new self($this->projectRoot, $this->prependFile);
+        $worker = new self($this->projectRoot, $this->prependFile, $this->outputBuffering);
         $worker->tempDir = $this->tempDir;
         $worker->dbPath = $this->dbPath;
         $worker->logFile = $this->tempDir . DIRECTORY_SEPARATOR . 'server_' . bin2hex(random_bytes(4)) . '.log';
@@ -126,6 +128,10 @@ class TestServer
             '-d',
             'max_execution_time=300',
         ];
+        if ($this->outputBuffering !== null) {
+            $cmd[] = '-d';
+            $cmd[] = 'output_buffering=' . $this->outputBuffering;
+        }
         if ($this->prependFile !== null && $this->prependFile !== '') {
             $cmd[] = '-d';
             $cmd[] = sprintf('auto_prepend_file=%s', $this->prependFile);

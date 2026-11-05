@@ -143,6 +143,7 @@ export function getDeviceSearchText(device) {
         device.name,
         getDeviceTypeSearchText(device),
         device.ip,
+        ...(device.additional_ips || []).flatMap(row => [row.ip, row.label]),
         device.facility,
         device.floor,
         device.location,

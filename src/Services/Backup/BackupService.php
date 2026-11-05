@@ -20,6 +20,8 @@ use Netarium\Services\Topology\DeviceFields;
 use Netarium\Services\Topology\LinkRoute;
 use Netarium\Services\Topology\CanvasNote;
 use Netarium\Services\Topology\LinkSystemService;
+use Netarium\Services\Topology\ChangeHistoryService;
+use Netarium\Services\Topology\DeviceConfigService;
 
 
 class BackupService
@@ -153,7 +155,7 @@ class BackupService
         $tables = $this->fetchBackupTables();
         $bytes = strlen(json_encode($this->dataDocument($tables), JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
         $reserve = CapacityService::BYTES_PER_MIB;
-        CapacityService::assertBackupUsage(2, $bytes + $reserve, 0, $config);
+        $this->assertBackupExportUsage($bytes + $reserve, 0, $config);
         return [
             'data_bytes' => $bytes,
             'file_count' => 2,
@@ -213,7 +215,7 @@ class BackupService
                 department,
                 maintenance_vendor,
                 install_date,
-                maintenance_expiry
+                maintenance_expiry" . ($schemaVersion >= 18 ? ', ip_segment_id' : '') . "
             FROM devices
             ORDER BY id
         ")->fetchAll();
@@ -319,6 +321,15 @@ class BackupService
         ");
 
         $appMeta = $metaStmt->fetchAll();
+        $changeHistory = [];
+        if ($schemaVersion >= 19) {
+            // Export the retention window without modifying the source DB.
+            $historyStmt = $this->db->prepare(
+                'SELECT id, event_id, request_id, occurred_at, actor_user_id, actor_name, target_type, target_id, target_name, operation, summary, changes_json FROM change_history WHERE occurred_at >= :cutoff ORDER BY id'
+            );
+            $historyStmt->execute([':cutoff' => ChangeHistoryService::cutoffUtc()]);
+            $changeHistory = $historyStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
 
         return [
             'views' => $views,
@@ -331,7 +342,7 @@ class BackupService
             'view_floor_plans' => $floorPlans,
             'device_images' => $deviceImages,
             'app_meta' => $appMeta,
-            ...(in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? [
+            ...($schemaVersion >= 12 ? [
                 'rack_settings' => $this->db->query('SELECT view_id, total_u, location FROM rack_settings ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC),
                 'rack_mounts' => $this->db->query('SELECT device_id, view_id, face, start_u, height_u, width_slot'
                     . ($schemaVersion >= 14 ? ', depth' : '') . ' FROM rack_mounts ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
@@ -340,8 +351,24 @@ class BackupService
                 'rack_shelves' => $this->db->query('SELECT * FROM rack_shelves ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
                 'rack_shelf_devices' => $this->db->query('SELECT * FROM rack_shelf_devices ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
             ] : []),
-            ...($schemaVersion === 16 ? [
+            ...($schemaVersion >= 16 ? [
                 'floor_rack_placements' => $this->db->query('SELECT * FROM floor_rack_placements ORDER BY rack_view_id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion >= 17 ? [
+                'device_ip_addresses' => $this->db->query('SELECT id, device_id, ip, label, sort_order'
+                    . ($schemaVersion >= 18 ? ', segment_id' : '') . ' FROM device_ip_addresses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion >= 18 ? [
+                'address_spaces' => $this->db->query('SELECT id, name, memo' . ($schemaVersion >= 21 ? ', ping_reachability' : '') . ' FROM address_spaces ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+                'ip_segments' => $this->db->query('SELECT id, address_space_id, cidr, name, purpose, facility, vlan_id, memo FROM ip_segments ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion >= 19 ? [
+                'change_history' => $changeHistory,
+            ] : []),
+            ...($schemaVersion >= 20 ? [
+                'device_config_states' => $this->db->query('SELECT device_id, revision, next_generation FROM device_config_states ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC),
+                // Web構成情報ZIPは各機器の直近1世代のみ。採番状態は空履歴の機器も含めて保持する。
+                'device_configs' => $this->db->query('SELECT id, device_id, generation, content, created_at, actor_user_id, actor_name, memo FROM device_configs AS config WHERE id = (SELECT latest.id FROM device_configs AS latest WHERE latest.device_id = config.device_id ORDER BY latest.created_at DESC, latest.generation DESC LIMIT 1) ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
             ] : []),
         ];
     }
@@ -431,6 +458,12 @@ class BackupService
                 'rack_shelves' => count($tables['rack_shelves']),
                 'rack_shelf_devices' => count($tables['rack_shelf_devices']),
                 'floor_rack_placements' => count($tables['floor_rack_placements']),
+                'device_ip_addresses' => count($tables['device_ip_addresses']),
+                'address_spaces' => count($tables['address_spaces']),
+                'ip_segments' => count($tables['ip_segments']),
+                'change_history' => count($tables['change_history']),
+                'device_configs' => count($tables['device_configs']),
+                'device_config_states' => count($tables['device_config_states']),
                 'files' => 1,
                 'total_bytes' => $entry['size'],
             ],
@@ -439,7 +472,7 @@ class BackupService
         $manifestPath = $workDirectory . DIRECTORY_SEPARATOR . 'manifest.json';
         $this->writeBackupJsonFile($manifestPath, $manifest);
         $bytes = $entry['size'] + (int)filesize($manifestPath);
-        CapacityService::assertBackupUsage(2, $bytes, 0, $config);
+        $this->assertBackupExportUsage($bytes, 0, $config);
         CapacityService::requireFreeSpace($workDirectory, $limits['backup']['max_zip_bytes'] + $limits['workspace_reserve_bytes'], '構成情報ZIP作業領域');
         $zip = new ZipArchive();
         if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::EXCL) !== true) {
@@ -455,7 +488,7 @@ class BackupService
         if ($size === false || $size <= 0 || $sha === false) {
             throw new RuntimeException('構成情報ZIPを確認できません');
         }
-        CapacityService::assertBackupUsage(2, $bytes, $size, $config);
+        $this->assertBackupExportUsage($bytes, $size, $config);
         return [
             'manifest' => $manifest,
             'zip_path' => $zipPath,
@@ -463,6 +496,15 @@ class BackupService
             'zip_sha256' => $sha,
             'capacity' => CapacityService::backupUsage(2, $bytes, $size, 0, 0, $config),
         ];
+    }
+
+    private function assertBackupExportUsage(int $bytes, int $zipBytes, array $config): void
+    {
+        try {
+            CapacityService::assertBackupUsage(2, $bytes, $zipBytes, $config);
+        } catch (ApiException $e) {
+            throw new ApiException($e->getMessage() . '。Web構成情報ZIPを出力できません。サーバー側の停止型完全バックアップを利用してください', $e->getHttpStatus());
+        }
     }
 
     private function matchesImageAttributes(array $row, string $path): bool
@@ -898,9 +940,13 @@ class BackupService
         $this->requireExactBackupKeys(
             $summary,
             array_merge(['views', 'devices', 'placements', 'links', 'link_systems', 'canvas_notes', 'floor_plans', 'device_images', 'files', 'total_bytes'],
-                in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings', 'rack_mounts'] : [],
+                $schemaVersion >= 12 ? ['rack_settings', 'rack_mounts'] : [],
                 $schemaVersion >= 15 ? ['rack_shelves', 'rack_shelf_devices'] : [],
-                $schemaVersion === 16 ? ['floor_rack_placements'] : []),
+                $schemaVersion >= 16 ? ['floor_rack_placements'] : [],
+                $schemaVersion >= 17 ? ['device_ip_addresses'] : [],
+                $schemaVersion >= 18 ? ['address_spaces', 'ip_segments'] : [],
+                $schemaVersion >= 19 ? ['change_history'] : [],
+                $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : []),
             'manifest.summary'
         );
 
@@ -1132,7 +1178,7 @@ class BackupService
             $name = $this->requireJsonString($view['name'], 'views.name', 100, false);
             $type = (string)$view['view_type'];
 
-            if (!in_array($type, in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['topology', 'floor', 'rack'] : ['topology', 'floor'], true)) {
+            if (!in_array($type, $schemaVersion >= 12 ? ['topology', 'floor', 'rack'] : ['topology', 'floor'], true)) {
                 throw new ApiException('views.view_typeが不正です', 400);
             }
 
@@ -1159,12 +1205,13 @@ class BackupService
             'management_scheme', 'management_port', 'department', 'maintenance_vendor', 'install_date', 'maintenance_expiry',
             'resource_revision',
         ];
+        if ($schemaVersion >= 18) { $expectedKeys[] = 'ip_segment_id'; }
 
         $devicesById = [];
         $allowedTypes = [
             'switch', 'l3_switch', 'router', 'firewall', 'ap', 'server', 'printer', 'other',
         ];
-        if (in_array($schemaVersion, [13, 14, 15, 16], true)) {
+        if ($schemaVersion >= 13) {
             $allowedTypes[] = 'pc';
         }
 
@@ -1188,9 +1235,8 @@ class BackupService
             }
 
             $ip = $this->requireJsonString($device['ip'] ?? '', 'devices.ip', 50, true);
-
             if ($ip !== '' && !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-                throw new ApiException('devices.ipの形式が不正です', 400);
+                throw new ApiException('devices.ipのIPv4形式が不正です', 400);
             }
 
             $fields = DeviceFields::normalizeAndValidate($device, "devices[{$id}]: ");
@@ -1201,6 +1247,7 @@ class BackupService
                 'name' => $this->requireJsonString($device['name'], 'devices.name', 100, false),
                 'type' => $type,
                 'ip' => $ip,
+                ...($schemaVersion >= 18 ? ['ip_segment_id' => $this->backupSegmentId($device['ip_segment_id'], 'devices.ip_segment_id')] : []),
                 'x' => $this->requireJsonNumber($device['x'], 'devices.x'),
                 'y' => $this->requireJsonNumber($device['y'], 'devices.y'),
                 'facility' => $this->requireJsonString($device['facility'] ?? '', 'devices.facility', 100, true),
@@ -1222,6 +1269,116 @@ class BackupService
         }
 
         return $devicesById;
+    }
+
+    public function validateBackupDeviceIpAddresses(array $rows, array $devicesById, int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
+    {
+        $result = [];
+        $seenIds = [];
+        $seenIps = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                throw new ApiException('device_ip_addressesの行形式が不正です', 400);
+            }
+            $this->requireExactBackupKeys($row, array_merge(['id', 'device_id', 'ip', 'label', 'sort_order'],
+                $schemaVersion >= 18 ? ['segment_id'] : []), 'device_ip_addresses');
+            $id = ResourceId::parse($row['id'], 'device_ip_addresses.id', ResourceId::MAX_RESTORE);
+            $deviceId = ResourceId::parse($row['device_id'], 'device_ip_addresses.device_id', ResourceId::MAX_RESTORE);
+            if (isset($seenIds[$id]) || !isset($devicesById[$deviceId])) {
+                throw new ApiException('追加IPのID重複または機器参照が不正です', 400);
+            }
+            $ip = $this->requireJsonString($row['ip'], 'device_ip_addresses.ip', 15, false);
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                || isset($seenIps[$deviceId][$ip]) || $ip === trim($devicesById[$deviceId]['ip'])) {
+                throw new ApiException('追加IPのIPv4形式が不正、または機器内で重複しています', 400);
+            }
+            $seenIds[$id] = true;
+            $seenIps[$deviceId][$ip] = true;
+            $result[] = [
+                'id' => $id, 'device_id' => $deviceId, 'ip' => $ip,
+                'label' => $this->requireExactBackupString($row['label'], 'device_ip_addresses.label', 100),
+                'sort_order' => $this->requireJsonInteger($row['sort_order'], 'device_ip_addresses.sort_order', 0, 2147483647),
+                ...($schemaVersion >= 18 ? ['segment_id' => $this->backupSegmentId($row['segment_id'], 'device_ip_addresses.segment_id')] : []),
+            ];
+        }
+        usort($result, static fn(array $a, array $b): int => $a['id'] <=> $b['id']);
+        return $result;
+    }
+
+    private function backupSegmentId(mixed $value, string $field): ?int
+    {
+        return $value === null ? null : ResourceId::parse($value, $field, ResourceId::MAX_RESTORE);
+    }
+
+    private function requireExactBackupString(mixed $value, string $field, int $maxLength, bool $allowEmpty = true): string
+    {
+        $this->requireJsonString($value, $field, $maxLength, $allowEmpty);
+        $length = preg_match_all('/./us', $value);
+        if ($length === false || $length > $maxLength) {
+            throw new ApiException("{$field}は{$maxLength}文字以内で入力してください", 400);
+        }
+        return $value;
+    }
+
+    /** 保存時の重複確認を通さず、既存データの所属と範囲だけを検証する。 */
+    public function validateBackupIpManagement(array $spaces, array $segments, array $devices, array $addresses, int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
+    {
+        $spacesById = [];
+        foreach ($spaces as $row) {
+            if (!is_array($row)) { throw new ApiException('address_spacesの行形式が不正です', 400); }
+            $this->requireExactBackupKeys($row, array_merge(['id', 'name', 'memo'], $schemaVersion >= 21 ? ['ping_reachability'] : []), 'address_spaces');
+            $id = ResourceId::parse($row['id'], 'address_spaces.id', ResourceId::MAX_RESTORE);
+            if (isset($spacesById[$id])) { throw new ApiException('アドレス空間IDが重複しています', 400); }
+            $name = $this->requireExactBackupString($row['name'], 'address_spaces.name', 100, false);
+            if (trim($name) === '') { throw new ApiException('アドレス空間名は必須です', 400); }
+            $spacesById[$id] = ['id' => $id, 'name' => $name,
+                'memo' => $this->requireExactBackupString($row['memo'], 'address_spaces.memo', 1000)];
+            if ($schemaVersion >= 21) {
+                if (!is_string($row['ping_reachability']) || !in_array($row['ping_reachability'], ['unset', 'reachable', 'unreachable'], true)) {
+                    throw new ApiException('address_spaces.ping_reachabilityが不正です', 400);
+                }
+                $spacesById[$id]['ping_reachability'] = $row['ping_reachability'];
+            }
+        }
+        $segmentsById = [];
+        $ranges = [];
+        foreach ($segments as $row) {
+            if (!is_array($row)) { throw new ApiException('ip_segmentsの行形式が不正です', 400); }
+            $this->requireExactBackupKeys($row, ['id', 'address_space_id', 'cidr', 'name', 'purpose', 'facility', 'vlan_id', 'memo'], 'ip_segments');
+            $id = ResourceId::parse($row['id'], 'ip_segments.id', ResourceId::MAX_RESTORE);
+            $spaceId = ResourceId::parse($row['address_space_id'], 'ip_segments.address_space_id', ResourceId::MAX_RESTORE);
+            if (isset($segmentsById[$id]) || !isset($spacesById[$spaceId])) {
+                throw new ApiException('セグメントID重複またはアドレス空間参照が不正です', 400);
+            }
+            $cidr = $this->requireExactBackupString($row['cidr'], 'ip_segments.cidr', 18, false);
+            $range = \Netarium\Services\Topology\Ipv4Cidr::parse($cidr);
+            if ($range['cidr'] !== $cidr) { throw new ApiException('CIDRが正規形ではありません', 400); }
+            foreach ($ranges[$spaceId] ?? [] as $other) {
+                if ($range['start'] <= $other['end'] && $other['start'] <= $range['end']) {
+                    throw new ApiException('同じアドレス空間のセグメント範囲が重複しています', 400);
+                }
+            }
+            $ranges[$spaceId][] = $range;
+            $segmentsById[$id] = [
+                'id' => $id, 'address_space_id' => $spaceId, 'cidr' => $cidr,
+                'name' => $this->requireExactBackupString($row['name'], 'ip_segments.name', 100),
+                'purpose' => $this->requireExactBackupString($row['purpose'], 'ip_segments.purpose', 100),
+                'facility' => $this->requireExactBackupString($row['facility'], 'ip_segments.facility', 100),
+                'vlan_id' => $this->requireNullableJsonInteger($row['vlan_id'], 'ip_segments.vlan_id', 1, 4094),
+                'memo' => $this->requireExactBackupString($row['memo'], 'ip_segments.memo', 1000),
+            ];
+        }
+        foreach (['ip_segment_id' => $devices, 'segment_id' => $addresses] as $field => $records) {
+            foreach ($records as $row) {
+                if (!array_key_exists($field, $row)) { throw new ApiException('IP所属フィールドがありません', 400); }
+                $id = $this->backupSegmentId($row[$field], $field);
+                if ($id !== null && (!isset($segmentsById[$id])
+                    || !\Netarium\Services\Topology\Ipv4Cidr::contains($segmentsById[$id]['cidr'], $row['ip']))) {
+                    throw new ApiException('IPの所属セグメント参照またはアドレス範囲が不正です', 400);
+                }
+            }
+        }
+        return ['address_spaces' => array_values($spacesById), 'ip_segments' => array_values($segmentsById)];
     }
 
     public function validateBackupDeviceImages(
@@ -1654,14 +1811,18 @@ class BackupService
         int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
     ): array
     {
-        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16], true)) {
+        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22], true)) {
             throw new ApiException('未対応の構成スキーマです', 400);
         }
         $this->requireExactBackupKeys($tables, array_merge(['views', 'devices', 'device_monitor_status',
             'device_placements', 'links', 'link_systems', 'canvas_notes', 'view_floor_plans', 'device_images', 'app_meta'],
-            in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings', 'rack_mounts'] : [],
+            $schemaVersion >= 12 ? ['rack_settings', 'rack_mounts'] : [],
             $schemaVersion >= 15 ? ['rack_shelves', 'rack_shelf_devices'] : [],
-            $schemaVersion === 16 ? ['floor_rack_placements'] : []), 'テーブル');
+            $schemaVersion >= 16 ? ['floor_rack_placements'] : [],
+            $schemaVersion >= 17 ? ['device_ip_addresses'] : [],
+            $schemaVersion >= 18 ? ['address_spaces', 'ip_segments'] : [],
+            $schemaVersion >= 19 ? ['change_history'] : [],
+            $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : []), 'テーブル');
         $this->validateRestoreIds($tables);
         $notes = $this->requireBackupTable($tables, 'canvas_notes');
         foreach ($notes as $row) {
@@ -1715,7 +1876,7 @@ class BackupService
                 }
             }
         }
-        if (in_array($schemaVersion, [12, 13, 14, 15, 16], true)) {
+        if ($schemaVersion >= 12) {
             $rackSettings = $this->requireBackupTable($tables, 'rack_settings');
             $rackMounts = $this->requireBackupTable($tables, 'rack_mounts');
             foreach ($rackSettings as $row) {
@@ -1738,7 +1899,7 @@ class BackupService
                 }
             }
         }
-        $floorRacks = $schemaVersion === 16 ? $this->requireBackupTable($tables, 'floor_rack_placements') : [];
+        $floorRacks = $schemaVersion >= 16 ? $this->requireBackupTable($tables, 'floor_rack_placements') : [];
         foreach ($floorRacks as $row) {
             if (!is_array($row)) { throw new ApiException('ラック配置の行形式が不正です', 400); }
             $this->requireExactBackupKeys($row, ['floor_view_id', 'rack_view_id', 'x', 'y'], 'floor_rack_placements');
@@ -1760,9 +1921,26 @@ class BackupService
             'view_floor_plans' => $validatedFloorPlans,
             'device_images' => $validatedDeviceImages,
             'app_meta' => $validatedMeta,
-            ...(in_array($schemaVersion, [12, 13, 14, 15, 16], true) ? ['rack_settings' => $rackSettings, 'rack_mounts' => $rackMounts] : []),
+            ...($schemaVersion >= 12 ? ['rack_settings' => $rackSettings, 'rack_mounts' => $rackMounts] : []),
             ...($schemaVersion >= 15 ? ['rack_shelves' => $rackShelves, 'rack_shelf_devices' => $rackShelfDevices] : []),
-            ...($schemaVersion === 16 ? ['floor_rack_placements' => $floorRacks] : []),
+            ...($schemaVersion >= 16 ? ['floor_rack_placements' => $floorRacks] : []),
+            ...($schemaVersion >= 17 ? ['device_ip_addresses' => $this->validateBackupDeviceIpAddresses(
+                $this->requireBackupTable($tables, 'device_ip_addresses'), $validatedDevices, $schemaVersion
+            )] : []),
+            ...($schemaVersion >= 18 ? $this->validateBackupIpManagement(
+                $this->requireBackupTable($tables, 'address_spaces'),
+                $this->requireBackupTable($tables, 'ip_segments'),
+                $validatedDevices, $this->requireBackupTable($tables, 'device_ip_addresses'), $schemaVersion
+            ) : []),
+            ...($schemaVersion >= 19 ? ['change_history' => ChangeHistoryService::validateBackupRows(
+                $this->requireBackupTable($tables, 'change_history')
+            )] : []),
+            ...($schemaVersion >= 20 ? DeviceConfigService::validateBackupRows(
+                $this->requireBackupTable($tables, 'device_configs'),
+                $this->requireBackupTable($tables, 'device_config_states'),
+                array_keys($validatedDevices),
+                $limits['device_configs']['max_total_bytes'] ?? DeviceConfigService::DEFAULT_MAX_TOTAL_BYTES
+            ) : []),
         ];
     }
 
@@ -1771,14 +1949,26 @@ class BackupService
         $mapping = ['views' => 'views', 'devices' => 'devices', 'placements' => 'device_placements',
             'links' => 'links', 'link_systems' => 'link_systems', 'canvas_notes' => 'canvas_notes',
             'floor_plans' => 'view_floor_plans', 'device_images' => 'device_images'];
-        if (in_array($manifest['schema_version'], [12, 13, 14, 15, 16], true)) {
+        if ($manifest['schema_version'] >= 12) {
             $mapping += ['rack_settings' => 'rack_settings', 'rack_mounts' => 'rack_mounts'];
         }
         if ($manifest['schema_version'] >= 15) {
             $mapping += ['rack_shelves' => 'rack_shelves', 'rack_shelf_devices' => 'rack_shelf_devices'];
         }
-        if ($manifest['schema_version'] === 16) {
+        if ($manifest['schema_version'] >= 16) {
             $mapping += ['floor_rack_placements' => 'floor_rack_placements'];
+        }
+        if ($manifest['schema_version'] >= 17) {
+            $mapping += ['device_ip_addresses' => 'device_ip_addresses'];
+        }
+        if ($manifest['schema_version'] >= 18) {
+            $mapping += ['address_spaces' => 'address_spaces', 'ip_segments' => 'ip_segments'];
+        }
+        if ($manifest['schema_version'] >= 19) {
+            $mapping += ['change_history' => 'change_history'];
+        }
+        if ($manifest['schema_version'] >= 20) {
+            $mapping += ['device_configs' => 'device_configs', 'device_config_states' => 'device_config_states'];
         }
         foreach ($mapping as $key => $table) {
             if (($manifest['summary'][$key] ?? null) !== count($this->requireBackupTable($tables, $table))) {
@@ -1811,6 +2001,28 @@ class BackupService
         }
         if ($sourceSchemaVersion < 16) {
             $tables['floor_rack_placements'] = [];
+        }
+        if ($sourceSchemaVersion < 17) {
+            $tables['device_ip_addresses'] = [];
+        }
+        if ($sourceSchemaVersion < 18) {
+            $tables['address_spaces'] = [];
+            $tables['ip_segments'] = [];
+            foreach ($tables['devices'] as &$device) { $device['ip_segment_id'] = null; }
+            unset($device);
+            foreach ($tables['device_ip_addresses'] as &$address) { $address['segment_id'] = null; }
+            unset($address);
+        }
+        if ($sourceSchemaVersion < 19) {
+            $tables['change_history'] = [];
+        }
+        if ($sourceSchemaVersion < 20) {
+            $tables['device_configs'] = [];
+            $tables['device_config_states'] = [];
+        }
+        if ($sourceSchemaVersion < 21) {
+            foreach ($tables['address_spaces'] as &$space) { $space['ping_reachability'] = 'unset'; }
+            unset($space);
         }
         return $this->validateCompleteBackupRestoreData($tables, $config, APP_DATABASE_SCHEMA_VERSION);
     }
@@ -1897,14 +2109,18 @@ class BackupService
     private function validateRestoreIdState(): void
     {
         $sequences = $this->db->query('SELECT name, value FROM resource_sequences')->fetchAll(PDO::FETCH_KEY_PAIR);
-        $imageSequence = $this->db->query("SELECT seq FROM sqlite_sequence WHERE name = 'device_images'")->fetchColumn();
+        $sqliteSequences = $this->db->query('SELECT name, seq FROM sqlite_sequence')->fetchAll(PDO::FETCH_KEY_PAIR);
         foreach ([
             'devices' => 'devices', 'views' => 'views', 'placements' => 'device_placements',
             'links' => 'links', 'canvas_notes' => 'canvas_notes', 'link_systems' => 'link_systems',
             'device_images' => 'device_images',
             'rack_shelves' => 'rack_shelves',
+            'address_spaces' => 'address_spaces', 'ip_segments' => 'ip_segments',
+            'change_history' => 'change_history',
+            'device_configs' => 'device_configs',
         ] as $name => $table) {
-            $counter = $name === 'device_images' ? ($imageSequence === false ? 0 : $imageSequence) : ($sequences[$name] ?? null);
+            $counter = in_array($name, ['device_images', 'address_spaces', 'ip_segments', 'change_history', 'device_configs'], true)
+                ? ($sqliteSequences[$name] ?? 0) : ($sequences[$name] ?? null);
             $currentMax = $this->db->query("SELECT COALESCE(MAX(id), 0) FROM {$table}")->fetchColumn();
             if (!is_int($counter) || $counter < 0 || $counter > ResourceId::MAX_RESTORE ||
                 !is_int($currentMax) || $currentMax > ResourceId::MAX_RESTORE) {
@@ -2275,6 +2491,11 @@ class BackupService
                 'size' => $result['zip_size'],
                 'sha256' => $result['zip_sha256'],
             ];
+        } catch (Throwable $e) {
+            if (is_file($zipPath)) {
+                unlink($zipPath);
+            }
+            throw $e;
         } finally {
             $this->removeDirectoryTree($workDirectory);
         }
@@ -2284,7 +2505,7 @@ class BackupService
 
 
 
-    public function cleanupAutomaticBackups(string $directory, int $keepCount, int $keepDays): bool
+    public function cleanupAutomaticBackups(string $directory, int $keepCount, int $keepDays, string $preservePath): bool
     {
         if (!is_dir($directory)) {
             return true;
@@ -2321,7 +2542,8 @@ class BackupService
 
         usort(
             $fileDetails,
-            static fn(array $a, array $b): int => $b['mtime'] <=> $a['mtime']
+            static fn(array $a, array $b): int => (($b['path'] === $preservePath) <=> ($a['path'] === $preservePath))
+                ?: ($b['mtime'] <=> $a['mtime']) ?: strcmp($b['path'], $a['path'])
         );
 
         $kept = 0;
@@ -2329,7 +2551,7 @@ class BackupService
         foreach ($fileDetails as $item) {
             $kept++;
 
-            if ($kept <= $keepCount && $item['mtime'] >= $cutoffTime) {
+            if ($item['path'] === $preservePath || ($kept <= $keepCount && $item['mtime'] >= $cutoffTime)) {
                 continue;
             }
 
@@ -2375,6 +2597,9 @@ class BackupService
         string $restoredAt
     ): void
     {
+        $this->db->exec('DELETE FROM device_configs');
+        $this->db->exec('DELETE FROM device_config_states');
+        $this->db->exec('DELETE FROM device_ip_addresses');
         $this->db->exec('DELETE FROM rack_mounts');
         $this->db->exec('DELETE FROM rack_shelves');
         $this->db->exec('DELETE FROM rack_settings');
@@ -2387,6 +2612,16 @@ class BackupService
         $this->db->exec('DELETE FROM device_images');
         $this->db->exec('DELETE FROM device_monitor_status');
         $this->db->exec('DELETE FROM devices');
+        $this->db->exec('DELETE FROM ip_segments');
+        $this->db->exec('DELETE FROM address_spaces');
+        $this->db->exec('DELETE FROM change_history');
+        foreach (['address_spaces', 'ip_segments'] as $table) {
+            foreach ($backupData[$table] as $row) {
+                $fields = array_keys($row);
+                $this->db->prepare("INSERT INTO {$table} (" . implode(', ', $fields)
+                    . ') VALUES (:' . implode(', :', $fields) . ')')->execute($row);
+            }
+        }
         // Web構成ZIPが所有するキーだけを置換し、認証・環境の状態は保持する。
         $this->db->exec("DELETE FROM app_meta WHERE meta_key IN
             ('data_revision', 'monitor_revision', 'last_saved_at', 'last_monitored_at')");
@@ -2416,12 +2651,12 @@ class BackupService
 
         $deviceStmt = $this->db->prepare("
             INSERT INTO devices (
-                id, name, type, ip, x, y, facility, floor, location,
+                id, name, type, ip, ip_segment_id, x, y, facility, floor, location,
                 manufacturer, model, asset_number, serial_number, mac_address, memo,
                 management_scheme, management_port, department, maintenance_vendor,
                 install_date, maintenance_expiry
             ) VALUES (
-                :id, :name, :type, :ip, :x, :y, :facility, :floor, :location,
+                :id, :name, :type, :ip, :ip_segment_id, :x, :y, :facility, :floor, :location,
                 :manufacturer, :model, :asset_number, :serial_number, :mac_address, :memo,
                 :management_scheme, :management_port, :department, :maintenance_vendor,
                 :install_date, :maintenance_expiry
@@ -2434,6 +2669,7 @@ class BackupService
                 ':name' => $dev['name'],
                 ':type' => $dev['type'],
                 ':ip' => $dev['ip'],
+                ':ip_segment_id' => $dev['ip_segment_id'],
                 ':x' => $dev['x'],
                 ':y' => $dev['y'],
                 ':facility' => $dev['facility'],
@@ -2457,7 +2693,7 @@ class BackupService
         foreach ($backupData['rack_settings'] as $row) { $rackSettingStmt->execute($row); }
         $rackMountStmt = $this->db->prepare('INSERT INTO rack_mounts (device_id, view_id, face, start_u, height_u, width_slot, depth) VALUES (:device_id, :view_id, :face, :start_u, :height_u, :width_slot, :depth)');
         foreach ($backupData['rack_mounts'] as $row) { $rackMountStmt->execute($row); }
-        foreach (['rack_shelves', 'rack_shelf_devices', 'floor_rack_placements'] as $table) {
+        foreach (['rack_shelves', 'rack_shelf_devices', 'floor_rack_placements', 'device_ip_addresses', 'device_config_states', 'device_configs'] as $table) {
             foreach ($backupData[$table] as $row) {
                 $fields = array_keys($row);
                 $this->db->prepare("INSERT INTO {$table} (" . implode(', ', $fields)
@@ -2591,6 +2827,35 @@ class BackupService
             ]);
         }
 
+        $historyRows = $backupData['change_history'] ?? [];
+        if ($historyRows !== []) {
+            $historyStmt = $this->db->prepare("
+                INSERT INTO change_history (
+                    id, event_id, request_id, occurred_at, actor_user_id, actor_name,
+                    target_type, target_id, target_name, operation, summary, changes_json
+                ) VALUES (
+                    :id, :event_id, :request_id, :occurred_at, :actor_user_id, :actor_name,
+                    :target_type, :target_id, :target_name, :operation, :summary, :changes_json
+                )
+            ");
+            foreach ($historyRows as $hRow) {
+                $historyStmt->execute([
+                    ':id' => $hRow['id'],
+                    ':event_id' => $hRow['event_id'],
+                    ':request_id' => $hRow['request_id'],
+                    ':occurred_at' => $hRow['occurred_at'],
+                    ':actor_user_id' => $hRow['actor_user_id'],
+                    ':actor_name' => $hRow['actor_name'],
+                    ':target_type' => $hRow['target_type'],
+                    ':target_id' => $hRow['target_id'],
+                    ':target_name' => $hRow['target_name'],
+                    ':operation' => $hRow['operation'],
+                    ':summary' => $hRow['summary'],
+                    ':changes_json' => $hRow['changes_json'],
+                ]);
+            }
+            (new ChangeHistoryService($this->db))->pruneExpired();
+        }
         $this->db->exec('PRAGMA user_version = ' . APP_DATABASE_SCHEMA_VERSION);
 
         $metaStmt = $this->db->prepare("
@@ -2609,6 +2874,7 @@ class BackupService
                 ':meta_value' => (string)$v,
             ]);
         }
+        (new \Netarium\Services\Monitoring\PingReachabilityMonitor($this->db))->reconcile([]);
     }
 
     public function commitBackupRestore(string $token, string $confirmation, array $config): array
@@ -2709,7 +2975,7 @@ class BackupService
         $errors = [];
         try {
             if (!$this->cleanupAutomaticBackups((string)$config['backup_auto_directory'],
-                (int)($config['backup_auto_keep_count'] ?? 2), (int)($config['backup_auto_keep_days'] ?? 7))) {
+                (int)($config['backup_auto_keep_count'] ?? 2), (int)($config['backup_auto_keep_days'] ?? 7), $preRestoreBackup['path'])) {
                 $errors[] = 'automatic_backup_cleanup';
             }
         } catch (Throwable $e) {

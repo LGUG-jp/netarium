@@ -118,27 +118,29 @@ CI で同じ検証を行う場合は、早期の原因切り分けや環境差�
 
 | 検証 | ローカル | 現行の CI |
 | --- | --- | --- |
-| PHP 構文 | 変更した PHP ファイルを確認。PHP 未変更なら原則不要 | [PHP Syntax Check](../.github/workflows/php-syntax-check.yml) が全 PHP ファイルを確認 |
-| PowerShell 構文・文字コード | 変更したスクリプトの構文・ASCII/BOM 条件を確認。未変更なら原則不要 | 同 workflow は `scripts/*.ps1` の ASCII/BOM を検査。PowerShell の構文・動作までは保証しない |
-| JavaScript | 通常は対象ファイルを明示したテストと関連する起動・結合確認 | アプリの JavaScript 全件・対象機能のテストを一律に実行する CI はないため、CI 成功だけで代替しない |
-| PHP API 回帰 | 通常は対象経路、コア改修・リリース判定は必要な全件回帰 | PHP 構文検査や Docker smoke を PHP API 全件回帰の代わりにしない |
-| 公開・リリース安全性 | 公開処理・抽出ルールの変更時は該当テストを実行。無関係な機能変更では重複実行不要 | `Private release safety checks`（開発リポジトリ専用の `.github/workflows/release-check.yml`。公開配布には含めない）が export-public-snapshot / release-sync / release-control / release-finalize の 4 テストファイルを実行 |
-| Docker 統合 | Docker・配備・実行環境依存の変更時に必要な経路を確認。通常の画面変更ではローカル再現不要 | [Docker 検証ワークフロー](../.github/workflows/docker-poc.yml) が起動・HTTP・永続化・バックアップ復元・更新などを確認。起動条件と実行範囲は workflow 定義を参照 |
+| PHP 構文 | 変更した PHP ファイルを確認。PHP 未変更なら原則不要 | [Lightweight CI](../.github/workflows/php-syntax-check.yml) の `checks` ジョブが全 PHP ファイルの構文を確認 |
+| PowerShell 構文・文字コード | 変更したスクリプトの構文・ASCII/BOM 条件を確認。未変更なら原則不要 | 同 `checks` ジョブが `scripts/*.ps1` の ASCII および BOM を検査。PowerShell の構文や動作までは保証しない |
+| 公開スナップショット・リリース安全性 | 公開資材や抽出ルール、公開処理の変更時に確認。無関係な機能変更では重複実行不要 | 同 `checks` ジョブが Docker を起動せずに公開スナップショットの抽出可能性を検証し、Private リポジトリでのみ外部資格情報なしで安全境界テスト 4 ファイルを実行 |
+| JavaScript | 通常は対象ファイルを明示したテストと関連する起動・結合確認 | アプリの JavaScript 全件や対象機能のテストを一律に実行する CI はないため、CI 成功だけで代替しない |
+| PHP API 回帰 | 通常は対象経路、コア改修・リリース判定は必要な全件回帰 | 軽量 CI や Docker CI を PHP API 全件回帰の代わりにしない |
+| Docker 統合 | Docker・配備・実行環境依存の変更時に必要な経路を確認。通常の画面変更ではローカル再現不要 | [Docker CI](../.github/workflows/docker-poc.yml) が手動起動またはリリース公開ワークフロー（`release-publish.yml`）からの呼び出しで全段（full）を検証。PR では自動起動しない |
 
 起動条件と実行範囲の正本は workflow 定義です。
-PHP Syntax Check と Private release safety checks は `main` への push と `main` 向け PR が対象です。
-Docker 検証の起動条件と実行範囲は workflow 定義で確認し、範囲判定コードを使用する構成では、そのコードも確認します。
-CI の構成変更はこの方針と分けて扱い、説明だけで検査が削減済みとはみなしません。
+Lightweight CI（`.github/workflows/php-syntax-check.yml`）は `main` への push とすべての Pull Request で実行されます。
+PR の変更内容を問わず一律に `checks` の 1 ジョブで実行します。
+全 PR および `main` push を対象として維持する理由は、Public `main` への確定（finalize）などの push コミットでも構文と安全性を確実に検査するためです。
+concurrency 設定により、同一 PR の古い run のみ自動キャンセルし、`main` への push はキャンセルせずに完了させます。
+Docker 検証（`.github/workflows/docker-poc.yml`）は PR では起動せず、手動実行またはリリース公開時のゲートとして全段（full）を実行します。
 ローカルの commit だけでは Actions は起動せず、PR 作成や PR ブランチへの push などに応じて実行されます。
 文書変更で CI が起動しても、それを理由にローカルで同じ検査を追加実行しません。
 CI に任せた検証は対象コミットと実行結果を確認し、未起動・スキップ・実行中を成功とみなしません。
-workflow の変更時はこの表も更新し、検査範囲や起動条件を削減する場合は、その変更の影響を別途検討します。
+workflow の変更時はこの表も更新し、検査範囲や起動条件を変更する場合は、その変更の影響を別途検討します。
 
 <a id="github-actionsの固定参照と更新203"></a>
 
 ### GitHub Actionsの固定参照と更新
 
-[`php-syntax-check.yml`](../.github/workflows/php-syntax-check.yml)は、`main`へのpushと`main`向けPull RequestでPHP 8.5の全PHPファイルを構文確認します。第三者Actionsの`uses`は40桁のfull commit SHAへ固定し、対応するリリース版をコメントへ記録します。
+[`php-syntax-check.yml`](../.github/workflows/php-syntax-check.yml)は、`main`へのpushとすべてのPull RequestでPHP 8.5の全PHPファイルを構文確認します。第三者Actionsの`uses`は40桁のfull commit SHAへ固定し、対応するリリース版をコメントへ記録します。
 
 | Actionの公式配布元 | 採用版 | 固定commit SHA |
 | --- | --- | --- |
@@ -162,56 +164,46 @@ token権限はworkflow全体で`contents: read`だけを指定します。リポ
 
 SHA固定の対象はAction本体です。`ubuntu-latest`のイメージ、PHP 8.5のパッチ版、setup-phpが取得する外部配布物まで固定する変更ではなく、外部依存全体の不変性を保証しません。総合セキュリティ監査とリリース判断は、この workflow の確認と分けて扱います。
 
-<a id="ci-ワークフローの実行範囲と検証段階299"></a>
+<a id="ci-ワークフローの実行範囲と検証段階299361"></a>
 
 ### CI ワークフローの実行範囲と検証段階
 
-Netarium の継続的インテグレーション（CI）は、変更内容に応じて実行コストと検証深度を分離しています。
-すべての変更に対して画一的なコンテナ検証を実行せず、変更経路に応じた段階的検証を実施します。
+Netarium の継続的インテグレーション（CI）は、PR 時の軽量検査とリリース時の全段検証を分離しています。
+日常の Pull Request に対して画一的なコンテナ検証を実行せず、変更の早期フィードバックに絞った軽量 CI を実施します。
 
-#### 公開スナップショット検証（Public snapshot check）
+#### 軽量 CI（Lightweight CI / checks）
 
-公開スナップショットの整合性検査（`.github/workflows/public-snapshot-check.yml`）は、すべての Pull Request および `main` ブランチへの push を契機として自動起動します。
-Docker コンテナを起動せず、Node.js 環境で `scripts/export-public-snapshot.mjs` を直接実行します。
-このワークフローは、マニフェスト出力先を公開資材ディレクトリ外の一時領域（`RUNNER_TEMP` 配下）へ隔離した上で、公開資材の抽出可能性とマニフェスト整合性を短時間で検証します。
+軽量 CI ワークフロー（`.github/workflows/php-syntax-check.yml`）は、すべての Pull Request および `main` ブランチへの push を契機として自動起動します。
+Docker コンテナを起動せず、単一の `checks` ジョブで以下の静的検査と安全性確認を一括実行します。
 
-#### Docker CI の段階制御（Docker CI）
+1. 全 PHP ファイルの構文検査（`php -l`）
+2. 配備用 PowerShell スクリプト（`scripts/*.ps1`）の ASCII および BOM 検査
+3. Docker を起動しない公開スナップショットの抽出可能性検査（`scripts/export-public-snapshot.mjs`）
+4. 外部資格情報を持たない隔離環境でのリリース安全性検査（Private リポジトリ限定で `tests/export-public-snapshot.test.mjs`、`tests/release-sync.test.mjs`、`tests/release-control.test.mjs`、`tests/release-finalize.test.mjs` を実行）
 
-Docker 環境の検証（`.github/workflows/docker-poc.yml`）は、すべての Pull Request および手動起動（`workflow_dispatch`）で動作します。
-Pull Request では paths フィルターによる事前除外を行わず、全 PR を対象として前段の判定ジョブ（`scope` ジョブ）を起動します。
-判定ジョブは `scripts/ci-docker-scope.mjs` を実行し、基底コミット（`base`）と先端コミット（`head`）の共通祖先から PR 側の Git 差分を求めます。
-base 側だけの更新は含めず、削除・改名では旧経路も判定します。
+全 PR および `main` push を対象として維持する理由は、Public `main` への確定 push を含むすべての基幹ブランチ更新において、安全境界の維持を同一の基準で保証するためです。
+concurrency の制御により、PR では後続の push が古い実行を自動キャンセルしますが、`main` への push では処理をキャンセルせずに最後まで実行します。
 
-判定結果（`mode` 出力）に応じて、後続のコンテナ検証ジョブ（`smoke` ジョブ）の挙動を次の 3 段階に制御します。
+#### Docker CI（Docker CI / full）
 
-- **`none`（コンテナ検証スキップ）**：コンテナ検証ジョブを起動せず、CI 実行を終了します。
-- **`smoke`（基本動作スモーク）**：Docker Compose の構文確認、PoC イメージのビルド、PHP 拡張と SQLite バージョンの照合、Linux ping 疎通確認、配備初期化診断、特権 bootstrap 秘密の Volume 外発行、操作ロック検証、HTTP 疎通（404 応答、`nosniff` ヘッダー、ヘルスチェック）、および `tests/docker-poc-http-smoke.sh` による認証付き API 疎通を検証します。
-- **`full`（全段検証）**：`smoke` の全検証に加え、SQLite データおよびセッションの永続化確認（コンテナ再作成前後の整合性照合）、停止型完全バックアップの採取と復元、更新・復旧スクリプト（`scripts/docker-update.sh` および `scripts/docker-restore.sh`）による実動作検証、ならびに公開スナップショットからの Docker ビルドを検証します。
+Docker 環境の検証（`.github/workflows/docker-poc.yml`）は、通常の Pull Request では自動起動しません。
+差分判定による段階制御を行わず、手動起動（`workflow_dispatch`）またはリリース公開ワークフロー（`release-publish.yml`）からの呼び出し（`workflow_call`）により、常に全段（`full`）を一括検証します。
 
-変更ファイルと判定モードの対応規則は以下のとおりです。
-未知の `src/` 配下のコードは `full` とし、複数区分が混在する場合は `full`、`smoke`、`none` の順で最も上位のモードを選択します。
+`full` ジョブでは、Docker Compose の構文確認、イメージビルド、PHP 拡張および SQLite バージョンの照合、Linux ping 疎通、配備初期化診断、特権 bootstrap 秘密の分離発行、操作ロック検証、HTTP 疎通および認証付き API 疎通に加えて、以下の全手順を検証します。
 
-| 変更対象 | 判定モード | 理由と範囲 |
-| --- | --- | --- |
-| ドキュメント（`*.md`、`*.markdown`） | `none` | Docker コンテナの実行経路に影響しないため |
-| ブラウザ用資材（`public/js/**`、`public/css/**`） | `none` | Docker CI はブラウザ側 JavaScript を実行しないため |
-| 一般テスト（`tests/*.test.mjs` のうち下記以外） | `none` | コンテナ検証経路外のフロントエンド単体テストであるため |
-| PHP テンプレート（`templates/**/*.php`） | `smoke` | 画面描画用 PHP の構文および基本表示の検証を要するため |
-| 監視・品質診断 PHP（`src/Actions/Quality/`、`src/Services/Quality/`、`src/Actions/Monitoring/`、`src/Services/Monitoring/`） | `smoke` | 診断および監視ロジックの動作確認を要するため |
-| 一般公開 PHP（`public/*.php` のうち下記コア以外） | `smoke` | 公開画面の基本疎通確認を要するため |
-| コアバックエンド PHP（上記以外の `src/**/*.php`、未知の新規コード） | `full` | 認証、DB、データ保存、整合性保護など全体へ影響するため |
-| コア公開エントリポイント（`login.php`、`logout.php`、`setup.php`、`api.php`、`image_upload.php`、`floor_plan.php`、`device_image.php`、`healthcheck.php`）および `public/web.config` | `full` | 認証、主要 API、設定受取など基幹経路に該当するため |
-| ルート PHP コード（`bootstrap.php` およびルート直下の全 `*.php`） | `full` | アプリケーションの初期化および共通基盤に該当するため |
-| Docker・構成・配備資材（`Dockerfile*`、`.dockerignore`、`compose*.yaml`、`docker/**`、`config/**`、`resources/**`、`scripts/**` ※Markdown を除く） | `full` | コンテナ構成、実行環境設定、配備スクリプトの変更であるため |
-| CI ワークフロー定義および判定コード（`.github/workflows/docker-poc.yml`、`.github/workflows/public-snapshot-check.yml`、`tests/ci-docker-scope.test.mjs`） | `full` | CI 自身の動作契約および判定精度の検証を要するため |
-| Docker・バックアップテスト（`tests/docker-*`、`tests/full-backup*`） | `full` | コンテナ・バックアップの回帰試験に直結するため |
+- SQLite データおよびセッションの永続化確認（コンテナ再作成前後の整合性照合）
+- 停止型完全バックアップの採取と復元検証
+- 更新および復旧スクリプト（`scripts/docker-update.sh` および `scripts/docker-restore.sh`）による実動作検証
+- 公開スナップショットからの Docker ビルドと Apache 構文検査
 
-手動実行（`workflow_dispatch`）では入力パラメータを受け付けず、選択したブランチまたはタグに対して常に `full` モードで動作します。
-固定したリリース候補コミットに対する最終確認には、この手動実行を用います。
+手動実行（`workflow_dispatch`）では入力パラメータを必要とせず、選択したブランチまたはタグの SHA に対して常に `full` モードで動作します。
+固定したリリース候補コミットに対する事前確認には、この手動実行を用います。
+また、正式リリース公開時（`release-publish.yml`）にも固定された候補コミット SHA を渡して呼び出し、Public への書き込み前にコンテナ全段検証の合格を必須条件とします。
 
-#### その他のワークフローとローカル検証の切り分け
+同じ検証で検出した完全バックアップの `$appRoot` 未定義警告は、スキーマ検証関数がワーカーのインストールルートを明示的に取り込むことで修正しました。
+現在スキーマのバックアップ回帰では、PHP 診断を出力せずに ZIP を生成できることも検査します。
 
-既存の PHP 構文検査ワークフロー（`.github/workflows/php-syntax-check.yml`）および開発リポジトリ専用の安全性検査ワークフロー（`.github/workflows/release-check.yml`）の責務と実行契機は変更していません。
+#### ローカル検証との切り分け
 
 GitHub Actions はアプリケーションの全 JavaScript 単体テスト（`node --test tests/*.test.mjs`）を一括実行する構成にはなっていません。
 フロントエンドの単体テストや UI ロジックの検証は、開発者がローカル環境で対象テストを実行して確認します。
@@ -537,7 +529,7 @@ php tests/regression_test.php
 - `AuthTest`: 認証・権限制御（admin / viewerのアクセス可否、未認証401、CSRFトークン不備403）、利用者管理、最後のadmin保護、既存セッション失効、パスワード変更、セッションをまたぐログイン試行制限、親プロセス環境変数（`NETARIUM_DB_FILE`）に対するテスト用DBの完全隔離検証、初期設定ページのリダイレクト
 - `LoadSaveTest`: データ読み込み（スキーマ・初期シード検証）、保存とリビジョン加算、`data_revision`による409競合検知、入力バリデーション
 - `ResourceSaveTest`: 別機器・別ビューの独立保存、同一対象の409、batch rollback、同時writerの競合、ID採番・関連参照、削除cascadeと画像整理失敗時の保存確定維持、全体保存によるresource失効、busy時の503、スキーマ5・6・7・8からの移行、手動経路とメモの保存・削除・採番・不正入力の全件rollback、メモ変更と所属変更によるビュー世代更新、系統マスタCRUD・使用中削除保護・権限・系統割当の検証と世代分離
-- `PingTest`: 疎通確認と結果構造、混在outcome、監視世代更新と未選択保持、構成世代の409、プライベートIP制限、個別タイムアウト理由、全体期限後の部分保存、100件上限、Ping排他
+- `PingTest`: 疎通確認と結果構造、混在outcome、監視世代更新と未選択保持、全機器の管理IP・追加IPによる重複保護（未分類・別空間・選択対象外・重複解消）、構成世代の409とスキップを含む原子的更新、プライベートIP制限、個別タイムアウト理由、全体期限後の部分保存、100件上限、Ping排他
 - `CsvTest`: テンプレートCSVダウンロード、機器台帳CSVエクスポート、CSV取込プレビュー（multipart/form-data）およびコミット
 - `BackupTest`: `netarium-config`形式1／スキーマ11のJSON専用ZIP生成、構成・手動経路・メモ・系統と割当の復元、画像SHAと初回補完、画像影響プレビューと不一致参照の除外、画像実体非破壊、利用者・全セッション保全、旧形式2〜7・アプリ版／スキーマ不一致・未知列の拒否、容量・ID境界、世代非再利用、操作ロックと自動構成退避の確認
 - `OperationGateTest`: 復元排他ロックと通常処理の共有ロックの相互拒否

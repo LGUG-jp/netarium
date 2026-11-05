@@ -160,7 +160,7 @@ test('配備PowerShellスクリプトに非ASCII文字やBOMが含まれる場�
 
 test('release専用ツールとworkflowを除外し、manifest-dirを公開候補から分離する', t => {
     const excluded = ['scripts/release-sync.mjs', 'scripts/release-control.mjs', 'tests/release-sync.test.mjs', 'tests/release-control.test.mjs',
-        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', '.github/workflows/release-check.yml'];
+        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', 'docs/repository-rules.md'];
     const { output, result, repo, manifestDir } = snapshotFixture(t, '# Public fixture\n', Object.fromEntries(excluded.map(name => [name, 'Private release implementation\n'])), { separateManifest: true });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     for (const name of excluded) assert.ok(!fs.existsSync(path.join(output, name)), name);
@@ -170,9 +170,10 @@ test('release専用ツールとworkflowを除外し、manifest-dirを公開候�
 });
 
 test('Public finalizeの実装・workflow・テストはexport後も残り、非公開release toolingは除外される', t => {
-    const included = ['scripts/release-finalize.mjs', '.github/workflows/release-finalize.yml', 'tests/release-finalize.test.mjs'];
+    const included = ['scripts/release-finalize.mjs', '.github/workflows/release-finalize.yml', 'tests/release-finalize.test.mjs',
+        '.github/workflows/php-syntax-check.yml'];
     const excluded = ['scripts/release-sync.mjs', 'scripts/release-control.mjs', 'tests/release-sync.test.mjs', 'tests/release-control.test.mjs',
-        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', '.github/workflows/release-check.yml'];
+        '.github/workflows/release-candidate.yml', '.github/workflows/release-publish.yml', 'docs/repository-rules.md'];
     const files = Object.fromEntries([
         ...included.map(name => [name, fs.readFileSync(new URL('../' + name, import.meta.url), 'utf8')]),
         ...excluded.map(name => [name, 'Excluded release implementation\n'])

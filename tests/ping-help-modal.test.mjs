@@ -78,6 +78,7 @@ test('実機器個票の同一Pingヘルプは親の入力・stackを保持し�
     const input = dom.get('ledger-sheet-body').querySelector('[data-field="name"]');
     input.value = '保持する未適用入力';
     await input.dispatch('input');
+    await dom.get('ledger-sheet-tab-1').click();
     for (const dismiss of [() => close.click(), () => overlay.click(), escape]) {
         opener.focus();
         await opener.click();

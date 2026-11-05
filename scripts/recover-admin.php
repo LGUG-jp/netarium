@@ -159,6 +159,7 @@ try {
                 password_hash = :password_hash,
                 role = 'admin',
                 is_active = 1,
+                deleted_at = NULL,
                 auth_revision = auth_revision + 1,
                 password_revision = password_revision + 1,
                 password_changed_at = :password_changed_at,

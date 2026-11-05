@@ -36,6 +36,37 @@ function hasAccountDraft() {
     });
 }
 
+function hasCreateUserDraft() {
+    const form = getElement('user-create-form');
+    if (!form) return false;
+    return Array.from(form.querySelectorAll('input, select')).some(input => {
+        if (input.id === 'user-create-role') return input.value !== 'viewer';
+        return input.value !== '';
+    });
+}
+
+function toggleCreateUserForm(forceOpen = null) {
+    const form = getElement('user-create-form');
+    const toggleBtn = getElement('user-create-toggle-btn');
+    if (!form || !toggleBtn) return;
+
+    const shouldOpen = forceOpen !== null ? forceOpen : form.hidden;
+    if (shouldOpen) {
+        form.hidden = false;
+        toggleBtn.setAttribute('aria-expanded', 'true');
+        getElement('user-create-username')?.focus();
+    } else {
+        if (hasCreateUserDraft() && !window.confirm('未確定の入力を破棄して閉じますか？')) {
+            return;
+        }
+        form.reset();
+        clearAuthErrors(form);
+        form.hidden = true;
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        toggleBtn.focus();
+    }
+}
+
 function getElement(id) {
     return document.getElementById(id);
 }
@@ -79,7 +110,15 @@ function showAccountMode(mode) {
 
 export function closeAccountManagement() {
     if (accountBusy || (hasAccountDraft() && !window.confirm('未確定の入力を破棄して閉じますか？'))) return false;
-    getElement('user-create-form')?.reset();
+    const form = getElement('user-create-form');
+    if (form) {
+        form.reset();
+        form.hidden = true;
+    }
+    const toggleBtn = getElement('user-create-toggle-btn');
+    if (toggleBtn) {
+        toggleBtn.setAttribute('aria-expanded', 'false');
+    }
     getElement('password-change-content')?.reset();
     getElement('account-overlay')?.querySelectorAll('input[type="password"]').forEach(input => { input.value = ''; });
     getElement('account-user-list-body')?.querySelectorAll('.account-user-role, .account-user-active').forEach(input => {
@@ -113,7 +152,16 @@ export async function openUserManagement() {
 
     overlay.hidden = false;
     showAccountMode('users');
-    registerModalOpen('account', overlay, '#user-create-username', { onClose: closeAccountManagement });
+    showUserTab('users');
+    const form = getElement('user-create-form');
+    if (form) {
+        form.hidden = true;
+    }
+    const toggleBtn = getElement('user-create-toggle-btn');
+    if (toggleBtn) {
+        toggleBtn.setAttribute('aria-expanded', 'false');
+    }
+    registerModalOpen('account', overlay, '#user-create-toggle-btn', { onClose: closeAccountManagement });
     await refreshUserList();
 }
 
@@ -173,6 +221,10 @@ function renderUserList(users) {
     }));
     body.replaceChildren();
 
+    const deletedUsers = users.filter(user => user.is_deleted === true);
+    users = users.filter(user => user.is_deleted !== true);
+    renderDeletedList(deletedUsers);
+
     if (users.length === 0) {
         body.innerHTML = '<tr><td colspan="5">利用者が登録されていません</td></tr>';
         return;
@@ -181,6 +233,7 @@ function renderUserList(users) {
     users.forEach(user => {
         const row = document.createElement('tr');
         row.dataset.userId = String(user.id);
+        row.dataset.username = String(user.username || '');
 
         const username = document.createElement('td');
         username.textContent = String(user.username || '');
@@ -233,11 +286,13 @@ function renderUserList(users) {
                     autocomplete="new-password"
                 >
                 <button type="button" class="btn btn-sm btn-secondary" data-account-action="reset">再設定</button>
+                <button type="button" class="btn btn-sm btn-danger btn-secondary" data-account-action="delete">削除</button>
             </div>
             <span id="account-reset-password-${user.id}-error" class="account-field-error" hidden aria-live="polite"></span>
         `;
         if (draft) actions.querySelector('.account-reset-password').value = draft.password;
         actions.querySelector('.account-reset-password').setAttribute('aria-label', `${user.username || ''}の再設定パスワード`);
+        actions.querySelector('[data-account-action="delete"]').setAttribute('aria-label', `${user.username || ''}を削除`);
         row.append(actions);
         body.append(row);
         validatePasswordInput(actions.querySelector('.account-reset-password'));
@@ -245,6 +300,59 @@ function renderUserList(users) {
             control.dataset.accountWasDisabled = String(control.disabled);
             control.disabled = true;
         });
+    });
+}
+
+function renderDeletedList(users) {
+    const body = getElement('account-deleted-list-body');
+    if (!body) return;
+    body.replaceChildren();
+
+    const count = getElement('account-deleted-count');
+    if (count) count.textContent = users.length > 0 ? `（${users.length}）` : '';
+
+    if (users.length === 0) {
+        body.innerHTML = '<tr><td colspan="4">削除済みの利用者はいません</td></tr>';
+        return;
+    }
+
+    users.forEach(user => {
+        const row = document.createElement('tr');
+        row.dataset.userId = String(user.id);
+        row.dataset.username = String(user.username || '');
+
+        const name = document.createElement('td');
+        name.textContent = String(user.username || '');
+        const role = document.createElement('td');
+        role.textContent = user.role === 'admin' ? 'admin' : 'viewer';
+        const deletedAt = document.createElement('td');
+        deletedAt.textContent = String(user.deleted_at || '');
+        const actions = document.createElement('td');
+        actions.className = 'account-user-actions';
+        const restore = document.createElement('button');
+        restore.type = 'button';
+        restore.className = 'btn btn-sm btn-secondary';
+        restore.dataset.accountAction = 'restore';
+        restore.textContent = '復元';
+        restore.setAttribute('aria-label', `${user.username || ''}を復元`);
+        actions.append(restore);
+        row.append(name, role, deletedAt, actions);
+        if (accountBusy) {
+            restore.dataset.accountWasDisabled = 'false';
+            restore.disabled = true;
+        }
+        body.append(row);
+    });
+}
+
+function showUserTab(tab) {
+    const deleted = tab === 'deleted';
+    getElement('account-user-list-wrap').hidden = deleted;
+    getElement('account-deleted-list-wrap').hidden = !deleted;
+    document.querySelectorAll('[data-account-tab]').forEach(button => {
+        const selected = (button.dataset.accountTab === 'deleted') === deleted;
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = selected ? 0 : -1;
     });
 }
 
@@ -319,6 +427,56 @@ async function resetUserPassword(row) {
     }
 }
 
+async function deleteUser(row) {
+    if (accountBusy) return;
+    const id = Number(row.dataset.userId || 0);
+    const name = row.dataset.username || '';
+    const role = row.querySelector('.account-user-role');
+    const active = row.querySelector('.account-user-active');
+    const hasDraft = role.value !== role.dataset.baseline || active.checked !== (active.dataset.baseline === 'true');
+
+    const message = `利用者「${name}」を削除しますか？\n\nこの利用者を削除済み一覧へ移動します。ログインできなくなりますが、操作履歴は保持され、後から復元できます。`
+        + (hasDraft ? '\n\nこの利用者の未適用の変更は破棄されます。' : '');
+    if (!window.confirm(message)) return;
+
+    try {
+        setAccountBusy(true);
+        const data = await apiFetch('delete_user', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+        await refreshUserList();
+        setStatus(data.message || '利用者を削除済み一覧へ移動しました', 'success');
+    } catch (error) {
+        setStatus(error.message, 'error');
+    } finally {
+        setAccountBusy(false);
+    }
+}
+
+async function restoreUser(row) {
+    if (accountBusy) return;
+    const id = Number(row.dataset.userId || 0);
+    const name = row.dataset.username || '';
+
+    if (!window.confirm(`利用者「${name}」を復元しますか？\n\n復元後は無効状態です。利用再開する場合は有効化してください。`)) return;
+
+    try {
+        setAccountBusy(true);
+        const data = await apiFetch('restore_user', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+        await refreshUserList();
+        showUserTab('users');
+        setStatus(data.message || '利用者を復元しました。無効状態のため、利用再開する場合は有効化してください', 'success');
+    } catch (error) {
+        setStatus(error.message, 'error');
+    } finally {
+        setAccountBusy(false);
+    }
+}
+
 async function submitCreateUser(event) {
     event.preventDefault();
     if (accountBusy) return;
@@ -336,7 +494,7 @@ async function submitCreateUser(event) {
 
     try {
         setAccountBusy(true);
-        await apiFetch('create_user', {
+        const data = await apiFetch('create_user', {
             method: 'POST',
             body: JSON.stringify({
                 username: usernameEl.value,
@@ -346,9 +504,18 @@ async function submitCreateUser(event) {
             })
         });
 
-        getElement('user-create-form')?.reset();
-        clearAuthErrors(getElement('user-create-form'));
+        const form = getElement('user-create-form');
+        form?.reset();
+        clearAuthErrors(form);
+        if (form) form.hidden = true;
+        const toggleBtn = getElement('user-create-toggle-btn');
+        if (toggleBtn) {
+            toggleBtn.setAttribute('aria-expanded', 'false');
+            toggleBtn.focus();
+        }
+
         await refreshUserList();
+        setStatus(data.message || '利用者を登録しました', 'success');
     } catch (error) {
         setStatus(error.message, 'error');
     } finally {
@@ -382,6 +549,8 @@ async function submitPasswordChange(event) {
 }
 
 export function initializeAccountManagement() {
+    getElement('user-create-toggle-btn')?.addEventListener('click', () => toggleCreateUserForm());
+    getElement('user-create-cancel-btn')?.addEventListener('click', () => toggleCreateUserForm(false));
     getElement('user-create-form')?.addEventListener('submit', submitCreateUser);
     getElement('password-change-content')?.addEventListener('submit', submitPasswordChange);
     ['user-create-form', 'password-change-content'].forEach(id => {
@@ -405,7 +574,29 @@ export function initializeAccountManagement() {
             updateUser(row);
         } else if (button.dataset.accountAction === 'reset') {
             resetUserPassword(row);
+        } else if (button.dataset.accountAction === 'delete') {
+            deleteUser(row);
         }
+    });
+
+    getElement('account-deleted-list-body')?.addEventListener('click', event => {
+        const button = event.target instanceof Element
+            ? event.target.closest('[data-account-action="restore"]')
+            : null;
+        const row = button?.closest('tr');
+        if (button && row) restoreUser(row);
+    });
+
+    const tabs = Array.from(document.querySelectorAll('[data-account-tab]'));
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => showUserTab(tab.dataset.accountTab));
+        tab.addEventListener('keydown', event => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            const next = tabs[(tabs.indexOf(tab) + 1) % tabs.length];
+            showUserTab(next.dataset.accountTab);
+            next.focus();
+        });
     });
 
 }
