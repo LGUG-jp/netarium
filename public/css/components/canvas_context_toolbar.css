@@ -47,6 +47,65 @@
 
 .canvas-context-toolbar [data-canvas-context="floor-plan"] {
     display: flex;
+    flex-wrap: wrap;
+}
+
+.floor-plan-toolbar-opacity-group,
+.floor-plan-toolbar-rotation {
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.canvas-context-toolbar [data-canvas-context="floor-plan"] > strong {
+    font-size: 12px;
+}
+
+.canvas-context-toolbar .floor-plan-toolbar-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+}
+
+.canvas-context-toolbar .floor-plan-toolbar-opacity {
+    flex-wrap: nowrap;
+    gap: 4px;
+    font-size: 12px;
+}
+
+.floor-plan-toolbar-rotation label {
+    font-size: 12px;
+}
+
+.canvas-context-toolbar[data-active-context="floor-plan"] .btn {
+    min-height: 32px;
+    padding-inline: 8px;
+    font-size: 12px;
+}
+
+.canvas-context-toolbar #floor-plan-temporary-visible,
+.canvas-context-toolbar .floor-plan-opacity-error,
+.canvas-context-toolbar .floor-plan-rotation-error {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    max-width: calc(100vw - 32px);
+    padding: 4px 8px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    font-size: 12px;
+    white-space: normal;
+}
+
+.canvas-context-toolbar .floor-plan-opacity-error,
+.canvas-context-toolbar .floor-plan-rotation-error {
+    width: 280px;
+    color: var(--danger);
+    z-index: 1;
 }
 
 .floor-plan-toolbar-actions {
@@ -57,6 +116,13 @@
 }
 
 
+@media (max-width: 480px) {
+    .canvas-context-toolbar[data-active-context="floor-plan"] .btn {
+        padding-inline: 6px;
+    }
+}
+
+
 @media (max-width: 900px) {
     .canvas-context-toolbar {
         top: calc(var(--toolbar-height) + var(--space-2));
@@ -64,6 +130,7 @@
         left: var(--space-2);
         max-width: none;
         transform: none;
+        width: auto;
     }
 
     .canvas-context-toolbar-content {
@@ -75,6 +142,11 @@
         flex: 1 1 100%;
         text-align: center;
         white-space: normal;
+    }
+    .canvas-context-toolbar .floor-plan-toolbar-opacity-group > span,
+    .canvas-context-toolbar .floor-plan-toolbar-rotation > span {
+        flex: 0 0 auto;
+        text-align: left;
     }
 }
 

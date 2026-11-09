@@ -38,7 +38,7 @@ let server, requests, failure, held, release;
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
 const freshPlan = (overrides = {}) => ({ view_id: 1, original_name: 'synthetic.png', mime_type: 'image/png',
     file_size: 4, image_width: 800, image_height: 600, image_url: '/floor.png?revision=1',
-    x: 0, y: 0, scale: 1, opacity: 1, is_visible: 1, revision: 1, ...overrides });
+    x: 0, y: 0, scale: 1, opacity: 1, rotation: 0, is_visible: 1, revision: 1, ...overrides });
 // サーバー状態はローカルappStateから独立。loadは保存の成否/競合を本当に区別する。
 async function http(url, options = {}) {
     const action = new URL(url, 'http://localhost/').searchParams.get('action');
@@ -386,7 +386,7 @@ for (const outcome of ['saved', 'retry', 'conflict']) {
             assert.equal(await queue.reloadConflictedResource('views', 1), true);
             assert.deepEqual(coords(), [70, 0, 1]);
             assert.equal(queue.hasResourceConflict('views', 1), false);
-            assert.equal(image().style.transform, 'translate(70px, 0px) scale(1)');
+            assert.match(image().style.transform, /^translate\(70px, 0px\).*rotate\(0deg\).*scale\(1\)/);
         } else {
             assert.equal(appState.appStatus.state, 'saved');
             assert.equal(appState.views[0].resource_revision, 3);
@@ -661,4 +661,312 @@ test('管理dialogの通常close/Escは起動元へ戻り、未適用view入力�
     floor.openFloorPlanManager(); window.APP_CONFIG.user.isAdmin = false; floor.closeFloorPlanManager();
     assert.equal(getTopModalContainer(), null);
     floor.openFloorPlanManager(); assert.equal(dom.get('floor-plan-manager-overlay').hidden, true);
+});
+
+async function angleInput(value, commit) {
+    const input = dom.get('floor-plan-rotation');
+    input.focus();
+    input.value = value;
+    await input.dispatch('input');
+    if (commit === 'Enter') await input.dispatch('keydown', { key: 'Enter' });
+    else if (commit) await input.dispatch(commit);
+}
+
+async function opacityInput(value, commit) {
+    const input = dom.get('floor-plan-opacity-value');
+    input.focus();
+    input.value = value;
+    await input.dispatch('input');
+    if (commit === 'Enter') await input.dispatch('keydown', { key: 'Enter' });
+    else if (commit) await input.dispatch(commit);
+}
+
+test('不透明度数値はpreviewを分離しEnter/blurで保存しsliderと同期する', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    for (const [value, commit] of [['10', 'Enter'], ['55', 'blur'], ['100', 'Enter']]) {
+        await opacityInput(value);
+        assert.equal(Number(dom.get('floor-plan-opacity').value), Number(value));
+        assert.equal(image().style.opacity, String(Number(value) / 100));
+        assert.equal(appState.floorPlans[0].opacity, Number(server.floor_plans[0].opacity));
+        floor.renderFloorPlanManager(); floor.renderFloorPlan();
+        assert.equal(dom.get('floor-plan-opacity-value').value, value);
+        await dom.get('floor-plan-opacity-value').dispatch(commit === 'Enter' ? 'keydown' : commit, { key: 'Enter' });
+        await flush();
+        assert.equal(server.floor_plans[0].opacity, Number(value) / 100);
+    }
+    dom.get('floor-plan-opacity').value = '31';
+    await dom.get('floor-plan-opacity').dispatch('input');
+    assert.equal(Number(dom.get('floor-plan-opacity-value').value), 31);
+    await dom.get('floor-plan-opacity').dispatch('change'); await flush();
+    assert.equal(server.floor_plans[0].opacity, 0.31);
+});
+
+test('角度の有効入力は中心回転をpreviewしEnter/blurだけで確定する', async () => {
+    installPlan({ x: 40, y: 60, scale: 0.7, opacity: 0.5 });
+    floor.openFloorPlanManager(); await edit();
+    await angleInput('-180');
+    assert.equal(appState.floorPlans[0].rotation, 0, 'previewは保存状態に混入しない');
+    const frame = layer.querySelector('.floor-plan-editor-frame');
+    for (const event of ['canvas:view-transformed', 'canvas:render-complete']) {
+        eventBus.emit(event);
+        assert.ok(Math.abs(parseFloat(frame.style.left) - 600) < 1e-7);
+        assert.ok(Math.abs(parseFloat(frame.style.top) - 480) < 1e-7);
+    }
+    assert.equal(requests.length, 0);
+    await dom.get('floor-plan-rotation').dispatch('keydown', { key: 'Enter' }); await flush();
+    assert.equal(server.floor_plans[0].rotation, -180);
+    await angleInput('180', 'blur'); await flush();
+    assert.equal(server.floor_plans[0].rotation, 180);
+    assert.deepEqual(coords(), [40, 60, 0.7]);
+    assert.equal(server.floor_plans[0].opacity, 0.5);
+});
+
+for (const invalid of ['', '-', '+', '1.23', '1.00', '-0.01', '-181', '181', 'Infinity', 'text', '1e1']) {
+    test(`角度の不正入力${JSON.stringify(invalid)}は説明を示し、保存や再同期で入力を破壊しない`, async () => {
+        installPlan({ rotation: 25 }); floor.openFloorPlanManager(); await edit();
+        await angleInput('40');
+        await angleInput(invalid, 'Enter');
+        assert.equal(dom.get('floor-plan-rotation').getAttribute('aria-invalid'), 'true');
+        assert.equal(dom.get('floor-plan-rotation-error').hidden, false);
+        assert.match(dom.get('floor-plan-rotation-error').textContent, /小数第1位/);
+        assert.match(image().style.transform, /rotate\(25deg\)/);
+        floor.renderFloorPlanManager(); floor.updateCurrentFloorPlanElement();
+        assert.equal(dom.get('floor-plan-rotation').value, invalid);
+        await dom.get('floor-plan-rotation').dispatch('blur'); await flush();
+        assert.equal(requests.length, 0);
+        assert.equal(appState.floorPlans[0].rotation, 25);
+        await angleInput('0', 'Enter'); await flush();
+        assert.equal(dom.get('floor-plan-rotation').getAttribute('aria-invalid'), 'false');
+        assert.equal(server.floor_plans[0].rotation, 0);
+    });
+}
+
+test('左右回転は0.1度ずつ境界で止まり0入力で戻せて位置サイズresetは角度と不透明度を保つ', async () => {
+    installPlan({ x: 10, y: 20, scale: 0.7, opacity: 0.25, rotation: 180 });
+    floor.openFloorPlanManager(); await edit();
+    await dom.get('floor-plan-rotate-right').dispatch('click'); await flush();
+    assert.equal(requests.length, 0);
+    await dom.get('floor-plan-rotate-left').dispatch('click'); await flush();
+    assert.equal(server.floor_plans[0].rotation, 179.9);
+    await dom.get('floor-plan-reset-btn').dispatch('click'); await flush();
+    assert.deepEqual(coords(), [0, 0, 1]);
+    assert.equal(server.floor_plans[0].rotation, 179.9);
+    assert.equal(server.floor_plans[0].opacity, 0.25);
+    await angleInput('0', 'Enter'); await flush();
+    assert.equal(server.floor_plans[0].rotation, 0);
+    assert.equal(server.floor_plans[0].opacity, 0.25);
+    await angleInput('-180', 'blur'); await flush();
+    const count = requests.length;
+    await dom.get('floor-plan-rotate-left').dispatch('click'); await flush();
+    assert.equal(requests.length, count);
+});
+
+test('未確定角度は不透明度の保存に混入せず応答待ちも入力を保つ', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    await angleInput('12.3');
+    held = 'update_floor_plan_settings';
+    dom.get('floor-plan-opacity').value = '50';
+    await dom.get('floor-plan-opacity').dispatch('input');
+    await dom.get('floor-plan-opacity').dispatch('change');
+    const saving = flush(); await setImmediate();
+    try {
+        assert.equal(requests[0].payload.rotation, 0);
+        floor.renderFloorPlanManager();
+        assert.equal(dom.get('floor-plan-rotation').value, '12.3');
+        await dom.get('floor-plan-rotation').dispatch('keydown', { key: 'Enter' });
+        for (let i = 0; i < 3; i++) await dom.get('floor-plan-rotate-right').dispatch('click');
+    } finally { release?.(); }
+    await saving; await flush();
+    const settings = requests.filter(row => row.action === 'update_floor_plan_settings');
+    assert.deepEqual(settings.map(row => row.payload.rotation), [0, 12.6]);
+    assert.deepEqual(settings.map(row => row.payload.expected_revision), [1, 2]);
+    assert.equal(server.floor_plans[0].rotation, 12.6);
+    assert.equal(Number(dom.get('floor-plan-rotation').value), 12.6);
+});
+
+for (const reason of ['auth', 'conflict', 'replace']) {
+    test(`未確定角度は${reason}で破棄し保存しない`, async () => {
+        installPlan({ rotation: 30 }); floor.openFloorPlanManager(); await edit();
+        await angleInput('90');
+        if (reason === 'auth') { appState.authExpired = true; eventBus.emit('auth:expired'); }
+        else if (reason === 'conflict') {
+            appState.resourceConflicts.views.set(1, {});
+            eventBus.emit('save-state:changed');
+        } else context.finishCanvasContextToolbar('replace');
+        assert.equal(appState.floorPlanAdjustMode, false);
+        assert.equal(appState.floorPlans[0].rotation, 30);
+        assert.match(image().style.transform, /rotate\(30deg\)/);
+        await flush();
+        assert.equal(requests.length, 0);
+    });
+}
+
+test('角度の保存失敗は確定値を保って再試行し未確認保存も既存確認経路へ渡す', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit(); failure = 400;
+    await angleInput('30', 'Enter'); await flush();
+    assert.equal(appState.floorPlans[0].rotation, 30);
+    assert.equal(server.floor_plans[0].rotation, 0);
+    await flush(); assert.equal(server.floor_plans[0].rotation, 30);
+    failure = 'network';
+    await angleInput('60', 'blur'); await flush();
+    assert.equal(appState.appStatus.state, 'unconfirmed');
+    assert.equal(appState.floorPlans[0].rotation, 60);
+    assert.equal(await queue.confirmPendingSave(), 'retry');
+    await flush(); assert.equal(server.floor_plans[0].rotation, 60);
+});
+
+test('完了は有効角度を確定し不正入力は捨てて通常Canvasに戻る', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    await angleInput('75');
+    await dom.get('floor-plan-finish-btn').dispatch('click'); await flush();
+    assert.equal(server.floor_plans[0].rotation, 75);
+    assert.equal(appState.floorPlanAdjustMode, false);
+    floor.openFloorPlanManager(); await edit();
+    await angleInput('181');
+    const count = requests.length;
+    await dom.get('floor-plan-finish-btn').dispatch('click'); await flush();
+    assert.equal(requests.length, count);
+    assert.equal(server.floor_plans[0].rotation, 75);
+    assert.equal(dom.get('floor-plan-rotation-error').hidden, true);
+});
+
+for (const value of ['0.1', '-0.1', '12.3', '178.3', '-12', '25', '-180', '180', '+0.1', '.1']) {
+    test(`角度${value}はnumber stepMismatchに依存せず小数第1位まで保存する`, async () => {
+        installPlan(); floor.openFloorPlanManager(); await edit();
+        const input = dom.get('floor-plan-rotation');
+        input.validity = { stepMismatch: true, badInput: false };
+        try {
+            await angleInput(value, 'Enter'); await flush();
+            assert.equal(input.getAttribute('aria-invalid'), 'false');
+            assert.equal(server.floor_plans[0].rotation, Number(value));
+            assert.equal(input.value, Number(value).toFixed(1));
+        } finally { delete input.validity; }
+    });
+}
+
+test('連続した左右回転は十分の一整数で計算し保存中の最新値へ集約する', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    held = 'update_floor_plan_settings';
+    await angleInput('0.1', 'Enter');
+    const saving = flush(); await setImmediate();
+    try {
+        for (let i = 0; i < 100; i++) await dom.get('floor-plan-rotate-right').dispatch('click');
+        for (let i = 0; i < 103; i++) await dom.get('floor-plan-rotate-left').dispatch('click');
+        assert.equal(appState.floorPlans[0].rotation, -0.2);
+        assert.equal(dom.get('floor-plan-rotation').value, '-0.2');
+    } finally { release?.(); }
+    await saving; await flush();
+    assert.deepEqual(requests.map(row => row.payload.rotation), [0.1, -0.2]);
+});
+
+for (const invalid of ['', '-', '+', '9', '101', '50.5', '50.0', 'Infinity', 'text']) {
+    test(`不透明度の不正入力${JSON.stringify(invalid)}は非保存で説明を保ちsliderで置換できる`, async () => {
+        installPlan({ opacity: 0.4 }); floor.openFloorPlanManager(); await edit();
+        await opacityInput('75');
+        await opacityInput(invalid, 'Enter');
+        assert.equal(dom.get('floor-plan-opacity-value').getAttribute('aria-invalid'), 'true');
+        assert.equal(dom.get('floor-plan-opacity-error').hidden, false);
+        assert.equal(image().style.opacity, '0.4');
+        floor.renderFloorPlanManager(); floor.renderFloorPlan();
+        assert.equal(dom.get('floor-plan-opacity-value').value, invalid);
+        await dom.get('floor-plan-opacity-value').dispatch('blur'); await flush();
+        assert.equal(requests.length, 0);
+        dom.get('floor-plan-opacity').value = '32';
+        await dom.get('floor-plan-opacity').dispatch('input');
+        assert.equal(dom.get('floor-plan-opacity-value').getAttribute('aria-invalid'), 'false');
+        assert.equal(Number(dom.get('floor-plan-opacity-value').value), 32);
+        await dom.get('floor-plan-opacity').dispatch('change'); await flush();
+        assert.equal(server.floor_plans[0].opacity, 0.32);
+    });
+}
+
+test('未確定不透明度は角度や位置resetの保存に混入せず保存応答後もpreviewを保つ', async () => {
+    installPlan({ x: 30 }); floor.openFloorPlanManager(); await edit();
+    await opacityInput('75');
+    held = 'update_floor_plan_settings';
+    await angleInput('12.3', 'Enter');
+    const saving = flush(); await setImmediate();
+    try {
+        assert.equal(requests[0].payload.opacity, 1);
+        assert.equal(image().style.opacity, '0.75');
+        floor.renderFloorPlanManager(); floor.renderFloorPlan();
+        assert.equal(dom.get('floor-plan-opacity-value').value, '75');
+        await dom.get('floor-plan-reset-btn').dispatch('click');
+    } finally { release?.(); }
+    await saving; await flush();
+    assert.ok(requests.every(row => row.payload.opacity === 1));
+    assert.equal(image().style.opacity, '0.75');
+    await dom.get('floor-plan-opacity-value').dispatch('blur'); await flush();
+    assert.equal(server.floor_plans[0].opacity, 0.75);
+});
+
+for (const reason of ['auth', 'conflict', 'replace', 'permission', 'view']) {
+    test(`未確定不透明度は${reason}で破棄し保存しない`, async () => {
+        installPlan({ opacity: 0.4 }); floor.openFloorPlanManager(); await edit();
+        await opacityInput('75');
+        if (reason === 'auth') { appState.authExpired = true; eventBus.emit('auth:expired'); }
+        else if (reason === 'conflict') {
+            appState.resourceConflicts.views.set(1, {});
+            eventBus.emit('save-state:changed');
+        } else if (reason === 'permission') {
+            window.APP_CONFIG.user.isAdmin = false;
+            eventBus.emit('save-state:changed');
+        } else if (reason === 'view') {
+            appState.currentViewId = 2;
+            floor.renderFloorPlan();
+        } else context.finishCanvasContextToolbar('replace');
+        assert.equal(appState.floorPlanAdjustMode, false);
+        assert.equal(appState.floorPlans[0].opacity, 0.4);
+        await flush();
+        assert.equal(requests.length, 0);
+    });
+}
+
+test('完了は有効な不透明度を確定し不正入力は破棄する', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    await opacityInput('65');
+    await dom.get('floor-plan-finish-btn').dispatch('click'); await flush();
+    assert.equal(server.floor_plans[0].opacity, 0.65);
+    floor.openFloorPlanManager(); await edit();
+    await opacityInput('101');
+    const count = requests.length;
+    await dom.get('floor-plan-finish-btn').dispatch('click'); await flush();
+    assert.equal(requests.length, count);
+    assert.equal(server.floor_plans[0].opacity, 0.65);
+    assert.equal(dom.get('floor-plan-opacity-error').hidden, true);
+});
+
+test('numberのbadInputは有効に見える値でも保存せず説明を表示する', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    for (const [id, enter] of [['floor-plan-rotation', angleInput], ['floor-plan-opacity-value', opacityInput]]) {
+        const input = dom.get(id);
+        input.validity = { badInput: true, stepMismatch: false };
+        try {
+            await enter(id === 'floor-plan-rotation' ? '12.3' : '50', 'Enter');
+            assert.equal(input.getAttribute('aria-invalid'), 'true');
+            await input.dispatch('blur'); await flush();
+            assert.equal(requests.length, 0);
+        } finally { delete input.validity; }
+    }
+});
+
+test('sliderの遅延確定イベントは数値欄の未確定previewを確定しない', async () => {
+    installPlan(); floor.openFloorPlanManager(); await edit();
+    await opacityInput('62');
+    await dom.get('floor-plan-opacity').dispatch('blur'); await flush();
+    assert.equal(requests.length, 0);
+    assert.equal(appState.floorPlans[0].opacity, 1);
+    assert.equal(image().style.opacity, '0.62');
+    await dom.get('floor-plan-opacity-value').dispatch('keydown', { key: 'Enter' }); await flush();
+    assert.equal(server.floor_plans[0].opacity, 0.62);
+});
+
+test('Esc終了は有効な小数角度と不透明度のpreviewを確定する', async () => {
+    installPlan(); await manager.closeViewManager(); floor.openFloorPlanManager(); await edit();
+    await angleInput('-0.1');
+    await opacityInput('62');
+    await escape(); await flush();
+    assert.equal(appState.floorPlanAdjustMode, false);
+    assert.equal(server.floor_plans[0].rotation, -0.1);
+    assert.equal(server.floor_plans[0].opacity, 0.62);
 });

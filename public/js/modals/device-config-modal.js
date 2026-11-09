@@ -5,7 +5,7 @@
  * 添付UIモック基準（5画面構成: 未登録・登録/編集・閲覧・削除モード・差分比較）
  */
 
-import { appState } from '../core/state.js';
+import { appState, getDeviceById } from '../core/state.js';
 import { apiFetch } from '../core/api-client.js';
 import { eventBus } from '../core/event-bus.js';
 import { registerModalOpen, registerModalClose } from '../core/modal-focus.js';
@@ -21,6 +21,8 @@ let overlay, dialog, header, toolbar, deleteBanner, notice, body, closeButton;
 let device = null, items = [], revision = 0, deviceRevision = 0;
 let selectedId = null, sourceId = null, mode = 'view', draft = null;
 let selected = new Set(), busy = false, loaded = false, conflict = false, sequence = 0;
+let navigation = null, transitioning = false;
+let previousDeviceButton, nextDeviceButton;
 
 function node(tag, text = null, className = '') {
     const el = document.createElement(tag);
@@ -114,12 +116,19 @@ function ensureDom() {
     targetLabel.appendChild(targetName);
 
     headerLeft.append(title, targetLabel);
+    const navigationBar = node('div', null, 'device-config-navigation');
+    navigationBar.setAttribute('role', 'group');
+    navigationBar.setAttribute('aria-label', '機器の切り替え');
+    previousDeviceButton = button('前へ', () => navigateDevice(-1), navigationBar, 'secondary', 'device-config-prev');
+    previousDeviceButton.setAttribute('aria-label', '一覧の前の機器を表示');
+    nextDeviceButton = button('次へ', () => navigateDevice(1), navigationBar, 'secondary', 'device-config-next');
+    nextDeviceButton.setAttribute('aria-label', '一覧の次の機器を表示');
 
-    closeButton = button('×', () => closeDeviceConfig(), null, 'secondary', 'close-device-config-btn');
+    closeButton = button('×', () => closeDeviceConfig(), navigationBar, 'secondary', 'close-device-config-btn');
     closeButton.className = 'modal-close-btn';
     closeButton.setAttribute('aria-label', '個票へ戻る');
 
-    header.append(headerLeft, closeButton);
+    header.append(headerLeft, navigationBar);
 
     // 通知バー
     notice = node('p', '', 'device-config-notice');
@@ -160,7 +169,12 @@ async function load({ retainDraft = false } = {}) {
     const seq = ++sequence;
     try {
         const data = await apiFetch('load_device_configs', { query: new URLSearchParams({ device_id: device.id }) });
-        if (seq !== sequence) return;
+        if (seq !== sequence || appState.authExpired) return;
+        if (navigation && !getDeviceById(device.id)) {
+            loaded = false;
+            message('対象の機器が削除されています。個票に戻って状態を確認してください。');
+            return;
+        }
         adopt(data);
         if (!retainDraft) {
             mode = 'view';
@@ -168,7 +182,7 @@ async function load({ retainDraft = false } = {}) {
         }
         message(retainDraft ? '履歴を再読込しました。保持した入力を確認して保存してください。' : '');
     } catch (error) {
-        if (seq !== sequence) return;
+        if (seq !== sequence || appState.authExpired) return;
         errorMessage(error);
     } finally {
         if (seq === sequence) {
@@ -178,13 +192,58 @@ async function load({ retainDraft = false } = {}) {
     }
 }
 
+function renderNavigation() {
+    const blocked = busy || transitioning || Boolean(confirmation) || appState.authExpired;
+    previousDeviceButton.disabled = blocked || navigation?.getAdjacentDeviceId(-1) == null;
+    nextDeviceButton.disabled = blocked || navigation?.getAdjacentDeviceId(1) == null;
+    closeButton.disabled = busy || transitioning || Boolean(confirmation);
+}
+
+function resetDevice(target) {
+    device = { id: Number(target.id), name: target.name || '' };
+    deviceRevision = Number(target.resource_revision);
+    items = [];
+    revision = 0;
+    selectedId = sourceId = null;
+    selected.clear();
+    searchState = { versionId: null, query: '', matches: [], currentIndex: -1 };
+    loaded = false;
+    conflict = false;
+    mode = 'view';
+    draft = null;
+    body.hidden = appState.authExpired;
+    document.getElementById('device-config-name').textContent = device.name || `ID ${device.id}`;
+    message('');
+}
+
+async function navigateDevice(direction) {
+    if (!navigation || busy || transitioning || confirmation || appState.authExpired || !requireAdminUiAction()) return false;
+    const targetId = navigation.getAdjacentDeviceId(direction);
+    if (targetId == null) return false;
+    transitioning = true;
+    renderNavigation();
+    try {
+        if (mode === 'edit' && !await leaveEditor()) return false;
+        if (appState.authExpired || navigation.getAdjacentDeviceId(direction) !== targetId) return false;
+        const target = await navigation.navigate(direction, targetId);
+        if (!target || appState.authExpired) return false;
+        sequence++;
+        resetDevice(target);
+        await load();
+        return true;
+    } finally {
+        transitioning = false;
+        renderNavigation();
+    }
+}
+
 function historyLabel(item) {
     return `${formatStatusTime(item.created_at)} · ${item.actor_name}${item.memo ? ` · ${item.memo}` : ''}`;
 }
 
 function render() {
     if (!overlay || overlay.hidden) return;
-    closeButton.disabled = busy;
+    renderNavigation();
     toolbar.replaceChildren();
     body.replaceChildren();
     dialog.setAttribute('aria-busy', String(busy));
@@ -503,6 +562,7 @@ function renderEditorContent() {
                 throw new Error('ファイルが大きすぎます（Config本文は256 KiBまで）');
             }
             const text = validateConfigText(new TextDecoder('utf-8', { fatal: true }).decode(await source.arrayBuffer()));
+            if (draft !== originalDraft || overlay.hidden || appState.authExpired) return;
             if (draft.content !== originalContent) {
                 throw new Error('読込中に本文が編集されました。もう一度ファイルを選択してください');
             }
@@ -988,6 +1048,7 @@ async function saveDraft() {
 
     busy = true;
     render();
+    const seq = sequence;
     try {
         const data = await apiFetch('save_device_config', {
             method: 'POST',
@@ -1000,6 +1061,7 @@ async function saveDraft() {
                 memo: draft.memo,
             }),
         });
+        if (seq !== sequence || appState.authExpired) return false;
         adopt(data);
         draft = null;
         mode = 'view';
@@ -1013,12 +1075,12 @@ async function saveDraft() {
         }
         return true;
     } catch (error) {
-        errorMessage(error);
+        if (seq === sequence && !appState.authExpired) errorMessage(error);
         return false;
     } finally {
         busy = false;
         render();
-        focusBody();
+        if (!overlay.hidden && !appState.authExpired) focusBody();
     }
 }
 
@@ -1027,6 +1089,7 @@ function closeConfirmation() {
     confirmation.remove();
     confirmation = null;
     registerModalClose('device-config-delete');
+    renderNavigation();
     return true;
 }
 
@@ -1074,6 +1137,7 @@ function confirmDelete() {
         if (busy) return;
         busy = true;
         confirmation.querySelectorAll('button').forEach(el => { el.disabled = true; });
+        const seq = sequence;
         try {
             const data = await apiFetch('delete_device_configs', {
                 method: 'POST',
@@ -1085,6 +1149,7 @@ function confirmDelete() {
                     ids,
                 }),
             });
+            if (seq !== sequence || appState.authExpired) return;
             adopt(data);
             mode = 'view';
             busy = false;
@@ -1093,6 +1158,7 @@ function confirmDelete() {
             await load();
             showToast(`${ids.length}件のConfig履歴を削除しました`, 'success');
         } catch (failure) {
+            if (seq !== sequence || appState.authExpired) return;
             busy = false;
             errorMessage(failure);
             if (conflict) {
@@ -1111,45 +1177,43 @@ function confirmDelete() {
     confirmation.appendChild(box);
     document.body.appendChild(confirmation);
     registerModalOpen('device-config-delete', confirmation, cancelBtn, { onClose: closeConfirmation });
+    renderNavigation();
 }
 
 export async function closeDeviceConfig() {
     if (!overlay || overlay.hidden) return true;
-    if (busy || confirmation) return false;
-    if (mode === 'edit' && !await leaveEditor()) return false;
-    sequence++;
-    overlay.hidden = true;
-    suspended.forEach(el => {
-        if (el && el.isConnected) el.hidden = false;
-    });
-    suspended = [];
-    registerModalClose('device-config');
-    items = [];
-    draft = null;
-    device = null;
-    body.replaceChildren();
-    return true;
+    if (busy || transitioning || confirmation) return false;
+    transitioning = true;
+    renderNavigation();
+    try {
+        if (mode === 'edit' && !await leaveEditor()) return false;
+        sequence++;
+        overlay.hidden = true;
+        suspended.forEach(el => {
+            if (el && el.isConnected) el.hidden = false;
+        });
+        suspended = [];
+        registerModalClose('device-config');
+        items = [];
+        draft = null;
+        device = null;
+        navigation = null;
+        body.replaceChildren();
+        return true;
+    } finally {
+        transitioning = false;
+        renderNavigation();
+    }
 }
 
-export async function openDeviceConfig(target) {
-    if (!requireAdminUiAction() || appState.authExpired || busy) return false;
+export async function openDeviceConfig(target, deviceNavigation = null) {
+    if (!requireAdminUiAction() || appState.authExpired || busy || transitioning) return false;
     if (!Number.isSafeInteger(Number(target?.id)) || Number(target.id) <= 0 || Number(target.resource_revision) <= 0) return false;
     ensureDom();
     if (!overlay.hidden) return false;
 
-    device = { id: Number(target.id), name: target.name || '' };
-    deviceRevision = Number(target.resource_revision);
-    items = [];
-    revision = 0;
-    selected.clear();
-    loaded = false;
-    conflict = false;
-    mode = 'view';
-    draft = null;
-    body.hidden = false;
-
-    document.getElementById('device-config-name').textContent = device.name || `ID ${device.id}`;
-    message('');
+    navigation = deviceNavigation;
+    resetDevice(target);
 
     suspended = ['ledger-overlay', 'ledger-device-sheet-overlay']
         .map(id => document.getElementById(id))
@@ -1165,11 +1229,13 @@ export async function openDeviceConfig(target) {
 
 eventBus.on('auth:expired', () => {
     if (overlay && !overlay.hidden) {
+        sequence++;
+        busy = false;
         body.hidden = true;
         if (confirmation) {
-            busy = false;
             closeConfirmation();
         }
         message('ログインの有効期限が切れました。画面を再読み込みしてください。');
+        renderNavigation();
     }
 });

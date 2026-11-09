@@ -279,7 +279,7 @@ class BackupService
                 x,
                 y,
                 scale,
-                opacity,
+                opacity" . ($schemaVersion >= 23 ? ', rotation' : '') . ",
                 is_visible,
                 revision,
                 created_at,
@@ -1657,13 +1657,17 @@ class BackupService
     public function validateBackupFloorPlans(
         array $floorPlans,
         array $viewsById,
-        array $config = []
+        array $config = [],
+        int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
     ): array {
         $expectedKeys = [
             'view_id', 'stored_name', 'original_name', 'mime_type', 'file_size',
             'image_width', 'image_height', 'x', 'y', 'scale', 'opacity',
             'is_visible', 'revision', 'created_at', 'updated_at', 'sha256',
         ];
+        if ($schemaVersion >= 23) {
+            $expectedKeys[] = 'rotation';
+        }
         $limits = CapacityService::limits($config);
         $maxWidth = max(1, (int)($config['max_floor_plan_width'] ?? 10000));
         $maxHeight = max(1, (int)($config['max_floor_plan_height'] ?? 10000));
@@ -1738,6 +1742,11 @@ class BackupService
             $fpY     = $this->requireJsonNumber($row['y'], 'y');
             $fpScale = $this->requireJsonNumber($row['scale'], 'scale');
             $fpOpacity = $this->requireJsonNumber($row['opacity'], 'opacity');
+            $rotation = $schemaVersion >= 23 ? $row['rotation'] : 0;
+            if ((!is_int($rotation) && !is_float($rotation)) ||
+                !is_finite((float)$rotation) || $rotation < -180 || $rotation > 180) {
+                throw new ApiException('view_floor_plans.rotationは-180から180の有限な数値で指定してください', 400);
+            }
             $visibleValue = $row['is_visible'];
 
             if (!in_array($visibleValue, [0, 1, '0', '1', false, true], true)) {
@@ -1767,6 +1776,7 @@ class BackupService
                 'image_width' => $declaredWidth,
                 'image_height' => $declaredHeight,
                 'x' => $fpX,
+                ...($schemaVersion >= 23 ? ['rotation' => $rotation] : []),
                 'y' => $fpY,
                 'scale' => $fpScale,
                 'opacity' => $fpOpacity,
@@ -1811,7 +1821,7 @@ class BackupService
         int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
     ): array
     {
-        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22], true)) {
+        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], true)) {
             throw new ApiException('未対応の構成スキーマです', 400);
         }
         $this->requireExactBackupKeys($tables, array_merge(['views', 'devices', 'device_monitor_status',
@@ -1852,7 +1862,8 @@ class BackupService
         $validatedFloorPlans = $this->validateBackupFloorPlans(
             $floorPlans,
             $validatedViews,
-            $config
+            $config,
+            $schemaVersion
         );
         $validatedDeviceImages = $this->validateBackupDeviceImages(
             $deviceImages,
@@ -2023,6 +2034,10 @@ class BackupService
         if ($sourceSchemaVersion < 21) {
             foreach ($tables['address_spaces'] as &$space) { $space['ping_reachability'] = 'unset'; }
             unset($space);
+        }
+        if ($sourceSchemaVersion < 23) {
+            foreach ($tables['view_floor_plans'] as &$floorPlan) { $floorPlan['rotation'] = 0; }
+            unset($floorPlan);
         }
         return $this->validateCompleteBackupRestoreData($tables, $config, APP_DATABASE_SCHEMA_VERSION);
     }
@@ -2766,11 +2781,11 @@ class BackupService
             INSERT INTO view_floor_plans (
                 view_id, stored_name, original_name, mime_type, file_size,
                 image_width, image_height, x, y, scale, opacity, is_visible,
-                revision, created_at, updated_at, sha256
+                revision, created_at, updated_at, sha256, rotation
             ) VALUES (
                 :view_id, :stored_name, :original_name, :mime_type, :file_size,
                 :image_width, :image_height, :x, :y, :scale, :opacity, :is_visible,
-                :revision, :created_at, :updated_at, :sha256
+                :revision, :created_at, :updated_at, :sha256, :rotation
             )
         ");
 
@@ -2790,6 +2805,7 @@ class BackupService
                 ':y' => $fpRow['y'],
                 ':scale' => $fpRow['scale'],
                 ':opacity' => $fpRow['opacity'],
+                ':rotation' => $fpRow['rotation'],
                 ':is_visible' => $fpRow['is_visible'],
                 ':revision' => $fpRow['revision'],
                 ':created_at' => $fpRow['created_at'],

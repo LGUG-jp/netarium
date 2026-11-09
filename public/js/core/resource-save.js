@@ -1,3 +1,4 @@
+// 境界の型契約のみ検査する。ファイル全体の @ts-check を見送った理由は docs/development.md の #393 を参照。
 import {
     appState, normalizeDevice, normalizeLink, normalizePlacement, normalizeView,
     toSaveDevice, toSaveLink, toSavePlacement, toSaveView, recalculateNextIds
@@ -8,15 +9,87 @@ import { toSaveRackSettings, toSaveRackMount, toSaveRackShelf as copyShelf, toSa
 import { floorRackPlacements, toSaveFloorRackPlacement } from './floor-rack-data.js';
 import { eventBus } from './event-bus.js';
 
+/**
+ * 保存変換の戻り値を再利用し、未注釈の種別フィールドだけ明示する。
+ * ID は新規の仮 ID も含む number。整数・正数・revision の有効性は実行時に検証する。
+ * @typedef {Omit<ReturnType<typeof toSaveDevice>, 'type'> & {type: string}} DeviceDto
+ * @typedef {Omit<ReturnType<typeof toSaveView>, 'view_type'> & {view_type: 'topology' | 'floor' | 'rack'}} ViewDto
+ * @typedef {ReturnType<typeof toSavePlacement>} PlacementDto
+ * @typedef {ReturnType<typeof toSaveLink>} LinkDto
+ * @typedef {ReturnType<typeof toSaveCanvasNote>} CanvasNoteDto
+ * @typedef {ReturnType<typeof toSaveRackSettings>} RackSettingsDto
+ * @typedef {Omit<ReturnType<typeof toSaveRackMount>, 'face' | 'width_slot' | 'depth'> & {face: string, width_slot: string, depth: string}} RackMountDto
+ * @typedef {Omit<ReturnType<typeof copyShelf>, 'face' | 'depth'> & {face: string, depth: string}} RackShelfDto
+ * @typedef {ReturnType<typeof copyShelfDevice>} RackShelfDeviceDto
+ * @typedef {ReturnType<typeof toSaveFloorRackPlacement>} FloorRackPlacementDto
+ * @typedef {Omit<Partial<DeviceDto>, 'id'> & {id: number | string, resource_revision?: number | string | null}} DeviceRow
+ * @typedef {Omit<Partial<ViewDto>, 'id'> & {id: number | string, resource_revision?: number | string | null}} ViewRow
+ */
+
+/**
+ * 読込時の snake_case と共有状態の camelCase を受け付ける。baseline 初期化では空データも有効。
+ * @typedef {object} ResourceData
+ * @property {DeviceRow[]} [devices]
+ * @property {ViewRow[]} [views]
+ * @property {PlacementDto[]} [placements]
+ * @property {LinkDto[]} [links]
+ * @property {CanvasNoteDto[]} [canvasNotes]
+ * @property {CanvasNoteDto[]} [canvas_notes]
+ * @property {RackSettingsDto[]} [rackSettings]
+ * @property {RackSettingsDto[] | RackSettingsDto | null} [rack_settings]
+ * @property {RackMountDto[]} [rackMounts]
+ * @property {RackMountDto[]} [rack_mounts]
+ * @property {RackShelfDto[]} [rackShelves]
+ * @property {RackShelfDto[]} [rack_shelves]
+ * @property {RackShelfDeviceDto[]} [rackShelfDevices]
+ * @property {RackShelfDeviceDto[]} [rack_shelf_devices]
+ * @property {FloorRackPlacementDto[]} [floorRackPlacements]
+ * @property {FloorRackPlacementDto[]} [floor_rack_placements]
+ * @property {{devices?: Map<number, unknown>, views?: Map<number, unknown>}} [resourceConflicts]
+ */
+
+/**
+ * @typedef {ResourceData & {devices: DeviceRow[], views: ViewRow[]}} ResourceSaveState
+ * @typedef {object} ViewResourceDto
+ * @property {ViewDto} view
+ * @property {PlacementDto[]} placements
+ * @property {LinkDto[]} links
+ * @property {CanvasNoteDto[]} canvas_notes
+ * @property {FloorRackPlacementDto[]} floor_rack_placements
+ * @property {RackSettingsDto | null} [rack_settings]
+ * @property {RackMountDto[]} [rack_mounts]
+ * @property {RackShelfDto[]} [rack_shelves]
+ * @property {RackShelfDeviceDto[]} [rack_shelf_devices]
+ * @typedef {{id: number, revision: number, device: DeviceDto}} DeviceBaseline
+ * @typedef {{id: number, revision: number} & ViewResourceDto} ViewBaseline
+ * @typedef {{devices: Map<number, DeviceBaseline>, views: Map<number, ViewBaseline>}} ResourceBaseline
+ */
+
+/**
+ * create は版番号なし、update/delete は baseline の版番号を必須とする。
+ * @template T
+ * @typedef {({operation: 'create', id: number} & T) | ({operation: 'update', id: number, expected_revision: number} & T) | {operation: 'delete', id: number, expected_revision: number}} ResourceOperation
+ */
+/** @typedef {ResourceOperation<{device: DeviceDto}>} DeviceOperation */
+/** @typedef {ResourceOperation<ViewResourceDto>} ViewOperation */
+/** @typedef {{devices: DeviceOperation[], views: ViewOperation[]}} ResourceSaveDto */
+/** @typedef {Readonly<Record<string, number>>} ResourceIdMap */
+
+/** @param {ResourceData} data */
 const rackSettings = data => data.rackSettings || (Array.isArray(data.rack_settings) ? data.rack_settings : data.rack_settings ? [data.rack_settings] : []);
+/** @param {ResourceData} data */
 const rackMounts = data => data.rackMounts || data.rack_mounts || [];
+/** @param {ResourceData} data */
 const rackShelves = data => data.rackShelves || data.rack_shelves || [];
+/** @param {ResourceData} data */
 const shelfDevices = data => data.rackShelfDevices || data.rack_shelf_devices || [];
+/** @param {ResourceData} data @param {number | string} viewId */
 const shelfMembers = (data, viewId) => {
     const ids = new Set(rackShelves(data).filter(row => Number(row.view_id) === Number(viewId)).map(row => Number(row.id)));
     return shelfDevices(data).filter(row => ids.has(Number(row.shelf_id)));
 };
 const rackDevices = resource => [...(resource?.rack_mounts || []), ...(resource?.rack_shelf_devices || [])];
+/** @param {ResourceData} data @param {ViewRow} view @param {Set<number>} deleted */
 const rackResource = (data, view, deleted = new Set()) => view.view_type === 'rack' ? {
     rack_settings: rackSettings(data).filter(row => Number(row.view_id) === Number(view.id)).map(toSaveRackSettings)[0] || null,
     rack_mounts: rackMounts(data).filter(row => Number(row.view_id) === Number(view.id) && !deleted.has(Number(row.device_id)))
@@ -34,14 +107,24 @@ const resourceFields = row => ({
     placements: row.placements, links: row.links, canvas_notes: row.canvas_notes || []
 });
 
+/** @template {{id: number | string}} T @param {T[]} rows @returns {T[]} */
 const sorted = rows => rows.sort((a, b) => Number(a.id) - Number(b.id));
 // 重複確認は送信時だけの承認。保存成否の照合・差分・競合判定には含めない。
+/** @param {unknown} value */
 const persistentJson = value => JSON.stringify(value, (key, item) => key === 'ip_conflicts_confirmed' ? undefined : item);
+/** @param {unknown} a @param {unknown} b */
 const equal = (a, b) => persistentJson(a) === persistentJson(b);
+/** @template {{id: number | string}} T @param {T[]} rows @returns {Map<number, T>} */
 const byId = rows => new Map(rows.map(row => [Number(row.id), row]));
 const stateKey = kind => ({ canvas_notes: 'canvasNotes', rack_shelves: 'rackShelves' })[kind] || kind;
 const viewChildKinds = ['placements', 'links', 'canvas_notes'];
 
+/**
+ * @param {ResourceData} data
+ * @param {ViewRow} view
+ * @param {Set<number>} deletedDevices
+ * @returns {ViewResourceDto}
+ */
 export function viewResource(data, view, deletedDevices = new Set()) {
     const id = Number(view.id);
     return {
@@ -61,6 +144,7 @@ export function viewResource(data, view, deletedDevices = new Set()) {
     };
 }
 
+/** @param {ResourceData} data @returns {ResourceBaseline} */
 export function createResourceBaseline(data) {
     return {
         devices: byId((data.devices || []).map(row => ({
@@ -73,10 +157,12 @@ export function createResourceBaseline(data) {
 }
 
 let savedBaseline = createResourceBaseline({});
+/** @param {ResourceData} data */
 export function resetResourceBaseline(data) {
     savedBaseline = createResourceBaseline(data);
 }
 
+/** @param {{id: number, revision: number}} row @returns {number} */
 function expectedRevision(row) {
     if (!Number.isInteger(row.revision) || row.revision < 1) {
         throw new Error(`リソースID ${row.id} の保存版番号がありません。最新データを再読込してください`);
@@ -84,8 +170,15 @@ function expectedRevision(row) {
     return row.revision;
 }
 
+/**
+ * @param {ResourceSaveState} data
+ * @param {ResourceBaseline} baseline
+ * @returns {ResourceSaveDto}
+ */
 export function buildResourceSave(data = appState, baseline = savedBaseline) {
+    /** @type {DeviceOperation[]} */
     const devices = [];
+    /** @type {ViewOperation[]} */
     const views = [];
     const currentDevices = byId(data.devices);
     const currentViews = byId(data.views);
@@ -135,6 +228,11 @@ export function buildResourceSave(data = appState, baseline = savedBaseline) {
 }
 
 // 競合対象と、それを参照/削除する変更は保留する。独立した変更は保存できる。
+/**
+ * @param {ResourceSaveState} data
+ * @param {ResourceBaseline} baseline
+ * @returns {ResourceSaveDto}
+ */
 export function buildSaveableResourceSave(data = appState, baseline = savedBaseline) {
     const payload = buildResourceSave(data, baseline);
     const blockedDevices = new Set(data.resourceConflicts?.devices?.keys() || []);
@@ -373,6 +471,24 @@ export function confirmedResourceResult(pending, data) {
     };
 }
 
+/**
+ * @overload
+ * @param {ResourceIdMap | null | undefined} map
+ * @param {number | string} id
+ * @returns {number}
+ */
+/**
+ * @overload
+ * @param {ResourceIdMap | null | undefined} map
+ * @param {number | string | null | undefined} id
+ * @returns {number | null | undefined}
+ */
+/**
+ * null/undefined の選択状態は採番しない。対応表にない ID は数値化して保持する。
+ * @param {ResourceIdMap | null | undefined} map
+ * @param {number | string | null | undefined} id
+ * @returns {number | null | undefined}
+ */
 export function mappedResourceId(map, id) {
     return id == null ? id : Number(map?.[id] ?? id);
 }

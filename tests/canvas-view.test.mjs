@@ -518,6 +518,36 @@ test('図面だけの初回Fitは原点と図面境界を収め、保存済み�
     } finally { off(); }
 });
 
+test('図面の自動fitと全体表示は回転後の全四隅と原点をCanvas内へ収める', () => {
+    appState.canvas.getBoundingClientRect = () => ({ width: 1200, height: 800 });
+    appState.views[0].view_type = 'floor';
+    const plan = { view_id: 1, image_width: 3000, image_height: 2000, scale: 1,
+        x: -400, y: -300, is_visible: true };
+    appState.floorPlans = [plan];
+    const off = eventBus.on('floor-plan:fit', fitViewToFloorPlan);
+    try {
+        for (const rotation of [-180, -90, -2, -0.1, 0.1, 12.3, 45, 90, 180]) {
+            plan.rotation = rotation;
+            appState.floorPlanAutoFittedViews.clear();
+            appState.viewStates.clear();
+            restoreCurrentViewState();
+            const first = { ...appState.viewState };
+            Object.assign(appState.viewState, { scale: 3, panX: -5000, panY: -4000 });
+            fitViewToDevices();
+            assert.deepEqual(appState.viewState, first);
+            const { scale, panX, panY } = appState.viewState;
+            const angle = rotation * Math.PI / 180;
+            for (const dx of [-1500, 1500]) for (const dy of [-1000, 1000]) {
+                const x = 1100 + Math.cos(angle) * dx - Math.sin(angle) * dy;
+                const y = 700 + Math.sin(angle) * dx + Math.cos(angle) * dy;
+                assert.ok(x * scale + panX >= 0 && x * scale + panX <= 1200);
+                assert.ok(y * scale + panY >= 0 && y * scale + panY <= 800);
+            }
+            assert.ok(panX >= 0 && panX <= 1200 && panY >= 0 && panY <= 800);
+        }
+    } finally { off(); }
+});
+
 test('fitViewToDevices: 図面調整モード中は非表示のフロア図面でもfit対象になる', () => {
     appState.canvas.getBoundingClientRect = () => ({ width: 1200, height: 800 });
     appState.views[0].view_type = 'floor';

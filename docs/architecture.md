@@ -28,7 +28,7 @@ bootstrap.php
   ├─ src/Autoloader.php
   ├─ src/Services/Auth/      認証・セッションの共通関数
   ├─ src/Core/Database.php   接続・設定・初期化
-  ├─ src/Core/DatabaseSchema.php スキーマ 22・移行・初期ビュー
+  ├─ src/Core/DatabaseSchema.php スキーマ 23・移行・初期ビュー
   └─ src/Core、Actions、Services、Repositories
 
 templates/                   Web非公開テンプレート
@@ -64,7 +64,7 @@ data/                        実行時データ（Web非公開）
 - `src/Services/Auth/PasswordSprayDetector.php`: 接続元別の横断失敗集計・警告、期間／保存件数の清掃
 - `src/Services/Auth/HttpAccess.php`: HTTP要求の認証・権限検査、応答。CSRF検査はSessionに置く
 - `src/Core/Database.php`: `connect`でPDO生成と共通初期化、`configure`で接続設定、`initialize`で設定・スキーマ移行・初期ビュー生成、`open`でAPI用保存先検証後の接続取得
-- `src/Core/DatabaseSchema.php`: `APP_DATABASE_SCHEMA_VERSION = 22`、利用者の論理削除（`users.deleted_at`）・アドレス空間の到達性設定・機器 Config 履歴・変更履歴・IP セグメント・追加 IP・ラック属性・直付け搭載・棚板・棚板上の所属・フロア配置参照を含む移行関数と初期ビュー生成。ドメインの CRUD は移さない
+- `src/Core/DatabaseSchema.php`: `APP_DATABASE_SCHEMA_VERSION = 23`、図面の小数角度による回転（`view_floor_plans.rotation`、REAL 型）・利用者の論理削除（`users.deleted_at`）・アドレス空間の到達性設定・機器 Config 履歴・変更履歴・IP セグメント・追加 IP・ラック属性・直付け搭載・棚板・棚板上の所属・フロア配置参照を含む移行関数と初期ビュー生成。ドメインの CRUD は移さない
 - `src/Core/`: Request、Response、Database、DatabaseSchema、ApiException、Config、AuditLog、ApiDispatcher
 - `src/Actions/`: ActionInterfaceを実装したエンドポイント
 - `src/Services/`: Auth、Topology、Monitoring、Csv、Backup、FloorPlan、DeviceImage、Storage、Quality
@@ -258,6 +258,16 @@ DBスキーマ9の`link_systems`は全ビュー共通の`id`・`name`・`color_k
 
 一覧クリック側では全経路を追加計算しません。可視化対象のIDを`render()`から`renderLinks()`へ渡し、描画時に1回解決した経路Mapをpreview反映後に可視化にも使います。既存の経路キャッシュや無効化条件は追加せず、描画と可視化の経路を一致させます。
 
+機器台帳の JavaScript は、次の責務に分けています。
+
+- `modals/ledger-modal.js`：一覧、フィルター、選択状態、個票の開閉と前後移動、保存・完全削除、Config・変更履歴・表示ビュー管理への遷移を制御します。
+- `modals/ledger-device-sheet.js`：個票の描画、入力フォームと 2 タブ、フォーカス復元、入力検証と下書きの適用、未適用変更の確認、画像操作を担当します。
+- `modals/ledger-bulk-edit.js`：一括編集の入力、確認、適用を担当します。
+
+個票モジュールには、現在の機器 ID の取得、前後の対象検索、下書き更新、操作ボタンの同期、配置先への遷移をコールバックで渡します。
+現在の機器 ID と選択集合は台帳側で管理し、ID 再割当て後も同じ取得経路を使います。
+既存の公開関数と `window` の操作関数は `ledger-modal.js` を入口に維持し、個票モジュールから台帳モジュールへの import は行いません。
+
 機器タブの台帳導線は`ledger:open-for-view`でクリック時の`viewId`を渡します。ダッシュボードと共用する`openLedgerWithFilters()`は、各項目の単一値と値配列を受け付け、未指定条件を初期化します。通常の`openLedger()`は表示ビューだけを解除し、他の条件を維持します。
 
 台帳の表示ビュー、施設、フロア、状態、種別、IP登録、配置状態、保守期限は複数選択です。各`select[multiple]`の`option.selected`を選択状態の正本とし、空値の「すべて」optionは置きません。`getLedgerFilterValues()`は`viewIds`を数値配列、`facility`・`floor`・`status`・`type`・`ipPresence`・`placement`・`maintenanceExpiry`を文字列配列、`keyword`を文字列で返します。空配列はその項目で絞り込まないことを表します。項目内はOR、項目間と検索はANDで評価します。表示ビューは選択した`view_id`の配置から機器IDの和集合を求めます。ビュー名は候補・条件チップの表示にだけ使い、同名でもIDで区別します。
@@ -277,11 +287,12 @@ DBスキーマ8の`canvas_notes`は`id`・`view_id`・`text`・`x`・`y`・`widt
 
 通常ビューの左のメモモードと選択メモは機器・配線・配置モード、図面調整・経路調整と排他にします。装飾・削除・完了は既存の共通コンテキストツールバーを利用します。背景・文字の色は各8色の四角を並べたプルダウンで選び、候補外の既存色も現在色の四角に表示して保持します。本文下書き・ドラッグ・数値装飾previewを確定モデルから分離し、本文確定、pointerup、色の選択、数値装飾change、削除で共通キューへ投入します。context終了では本文を確定し、未確定のドラッグと装飾previewを破棄して色一覧も閉じます。DOMをIDごとに再利用し、保存応答・採番でも入力欄を作り直しません。viewerは表示・テキスト選択のみで、APIでも管理者権限を要求します。
 
-Web バックアップは `netarium-config` 形式 1／DB スキーマ 22 で、JSON の `manifest.json` と `data/netarium.json` だけを出力します。
+Web バックアップは `netarium-config` 形式 1／DB スキーマ 23 で、JSON の `manifest.json` と `data/netarium.json` だけを出力します。
 変更履歴、Config 履歴・採番状態、アドレス空間（到達性設定を含む）、IP セグメント、追加 IP、メモ、接続系統・割当、ラック搭載・棚板・所属機器・フロアラック参照を含む 21 テーブル（`app_meta` は 4 キー）と画像参照メタデータを対象とし、画像実体・利用者・パスワード・認証状態を含めません。
-復元は同一 MAJOR 内の正規の安定版 SemVer（source <= target）と対応元スキーマ 11〜22 に限定し、元契約の厳密検証、現行構成への変換、復元先契約の再検証を行います。
+復元は同一 MAJOR 内の正規の安定版 SemVer（source <= target）と対応元スキーマ 11〜23 に限定し、元契約の厳密検証、現行構成への変換、復元先契約の再検証を行います。
 旧スキーマ 11〜17 からの復元では空のマスタ配列（`address_spaces: []`、`ip_segments: []`）と未分類所属を、旧スキーマ 11〜18 からの復元では空の変更履歴（`change_history: []`）を、旧スキーマ 11〜19 からの復元では空の Config 履歴（`device_configs: []`、`device_config_states: []`）を、旧スキーマ 11〜20 からの復元ではアドレス空間の到達性設定（`ping_reachability = 'unset'`）を補完します。Web ZIP は利用者情報（`users`）を含まないため構成テーブル数は 21 件のまま維持されます。停止型完全バックアップ復元では旧スキーマ 11〜21 からの移行時に `users.deleted_at = NULL` として保持します。Web 復元時には復元した履歴にも 90 日保持ルールを適用し、復元操作自体は変更履歴を生成しません。また、復元先で疎通確認が不許可となる旧監視状態は `PingReachabilityMonitor` により未確認（`unknown`、スキップ理由付き）へ正規化します。
-現行スキーマ 22 の ZIP 往復では、90 日以内の変更履歴、Config 履歴の直近 1 世代、アドレス空間と IP セグメントの安定した ID、親子参照、所属、到達性設定、および同一空間内外の既存重複データを保持します。
+スキーマ 23（v1.5.0）では図面の `rotation` を REAL 型の有限な度数（-180〜180）で保持し、旧スキーマ 11〜22 には 0 を補完します。
+現行スキーマ 23 の ZIP 往復では、図面回転、90 日以内の変更履歴、Config 履歴の直近 1 世代、アドレス空間と IP セグメントの安定した ID、親子参照、所属、到達性設定、および同一空間内外の既存重複データを保持します。
 逆方向復元、未知形式・未対応スキーマ、不正な版表記・保存契約、旧画像同梱形式 2〜7 は拒否します。
 固定契約は [運用ガイド（復元）](operations.md#復元) を正本とします。
 
@@ -307,10 +318,11 @@ Web ZIP単独では全損時の画像・利用者を復旧できません。画�
 
 `data_revision`（API応答の`revision`）は全体の変更世代です。通常保存の競合判定には使わず、CSV取込、復元、明示的な全体スナップショットAPI`save`の整合確認に使用します。`save`は通常画面の保存経路ではなく、全体操作と合成データ投入用に残します。Ping結果は`monitor_revision`として別管理します。
 
-現行スキーマ 22 の全体保存 `save` では、`canvas_notes`、`rack_settings`、`rack_mounts`、`rack_shelves`、`rack_shelf_devices`、`floor_rack_placements` を配列として送信します。
+現行スキーマ 23 の全体保存 `save` では、`canvas_notes`、`rack_settings`、`rack_mounts`、`rack_shelves`、`rack_shelf_devices`、`floor_rack_placements` を配列として送信します。
 `canvas_notes` の省略・null・不正型は 400 で拒否します。
 既存ラックがある場合はラック属性・搭載配列、既存棚板がある場合は棚板・所属機器配列、既存フロアラック参照がある場合はその配置配列の欠落も 400 で拒否し、データとビュー世代を保持します。
 明示した空配列は削除の入力となりますが、搭載・所属機器が残る場合などは既存の整合性検証に従って拒否します。
+図面の回転角度は専用の表示設定 API で更新し、全体保存では他の図面設定とともに既存値を保持します。
 `devices[].additional_ips` は空配列で削除、省略時は既存値を保持します。明示的な `null` や不正型は 400 です。
 本文入力には UTF-16 単位の `textarea.maxLength` を使用せず、共通保存検証と API で Unicode コードポイント 1000 文字の上限を適用します。上限超過時は送信せず入力を保持し、本文を修正して再保存できます。
 通常ビューの保存や通常機器更新でラック搭載情報が失われない契約を維持します。

@@ -1,6 +1,18 @@
+// @ts-check
+
+/**
+ * @typedef {{ x: number, y: number }} RoutePoint
+ * @typedef {{ route_mode?: 'auto' | 'manual', manual_route?: readonly RoutePoint[] }} LinkRouteInput
+ * @typedef {{ route_mode: 'auto' | 'manual', manual_route: RoutePoint[] }} LinkRouteData
+ */
+
 import { LINK_MANUAL_ROUTE_MAX_POINTS } from './constants.js';
 
-/** 保存する中間点だけを検査し、入力から独立した経路データを返す。 */
+/**
+ * 保存する中間点だけを検査し、入力から独立した経路データを返す。
+ * @param {LinkRouteInput} link
+ * @returns {LinkRouteData}
+ */
 export function normalizeLinkRouteData(link) {
     const mode = Object.hasOwn(link, 'route_mode') ? link.route_mode : 'auto';
     if (mode !== 'auto' && mode !== 'manual') {

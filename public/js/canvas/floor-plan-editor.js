@@ -4,6 +4,7 @@ import { isCurrentUserAdmin } from '../ui/access-control.js';
 import { eventBus } from '../core/event-bus.js';
 import { screenToWorld } from './pan-zoom.js';
 import { suppressCanvasClickOnce } from './interaction-state.js';
+import { getFloorPlanCorners } from './floor-plan-geometry.js';
 
 const LIMIT = 100000;
 const CORNERS = ['nw', 'ne', 'se', 'sw'];
@@ -26,35 +27,36 @@ function dimensions(plan) {
 function cornerGeometry(plan, corner) {
     if (!CORNERS.includes(corner)) throw new RangeError('図面の四隅を指定してください');
     const { width, height } = dimensions(plan);
-    const west = corner.endsWith('w'), north = corner.startsWith('n');
-    return { width, height, west, north,
-        anchorX: Number(plan.x) + (west ? width * plan.scale : 0),
-        anchorY: Number(plan.y) + (north ? height * plan.scale : 0) };
+    const opposite = { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' }[corner];
+    const anchor = getFloorPlanCorners(plan)[opposite];
+    const angle = Number(plan.rotation ?? 0) * Math.PI / 180;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const dx = (corner.endsWith('w') ? -1 : 1) * width;
+    const dy = (corner.startsWith('n') ? -1 : 1) * height;
+    const vectorX = cos * dx - sin * dy, vectorY = sin * dx + cos * dy;
+    return { width, height, anchorX: anchor.x, anchorY: anchor.y, vectorX, vectorY,
+        offsetX: (width - vectorX) / 2, offsetY: (height - vectorY) / 2 };
 }
 
 // 対角を固定したまま、倍率と左上座標の両方の制約を満たす区間へ射影する。
 export function scaleFloorPlanFromCorner(plan, corner, requestedScale) {
     const g = cornerGeometry(plan, corner);
     let min = 0.05, max = 2;
-    if (g.west) {
-        min = Math.max(min, (g.anchorX - LIMIT) / g.width);
-        max = Math.min(max, (g.anchorX + LIMIT) / g.width);
-    }
-    if (g.north) {
-        min = Math.max(min, (g.anchorY - LIMIT) / g.height);
-        max = Math.min(max, (g.anchorY + LIMIT) / g.height);
+    for (const [anchor, offset] of [[g.anchorX, g.offsetX], [g.anchorY, g.offsetY]]) {
+        if (Math.abs(offset) < 1e-10) continue;
+        const first = (anchor - LIMIT) / offset, second = (anchor + LIMIT) / offset;
+        min = Math.max(min, Math.min(first, second));
+        max = Math.min(max, Math.max(first, second));
     }
     const scale = clamp(requestedScale, min, max);
-    return { x: g.west ? g.anchorX - g.width * scale : g.anchorX,
-        y: g.north ? g.anchorY - g.height * scale : g.anchorY, scale };
+    return { x: g.anchorX - g.offsetX * scale, y: g.anchorY - g.offsetY * scale, scale };
 }
 export function resizeFloorPlanFromCorner(plan, corner, point) {
     const g = cornerGeometry(plan, corner);
-    const dx = (point.x - g.anchorX) * (g.west ? -1 : 1);
-    const dy = (point.y - g.anchorY) * (g.north ? -1 : 1);
-    // 同じ縦横比の対角線に最短距離で投影。元画像寸法には上限を設けない。
-    const ratio = g.height / g.width;
-    const scale = (dx / g.width + (dy / g.width) * ratio) / (1 + ratio * ratio);
+    const dx = point.x - g.anchorX, dy = point.y - g.anchorY;
+    // 回転後の対角線へ射影し、対角のworld座標と縦横比を維持する。
+    const scale = (dx * g.vectorX + dy * g.vectorY) /
+        (g.vectorX * g.vectorX + g.vectorY * g.vectorY);
     return scaleFloorPlanFromCorner(plan, corner, scale);
 }
 export function moveFloorPlan(plan, dx, dy) {
@@ -73,13 +75,15 @@ function preview(values) {
     editor.onPreview?.(editor.plan);
     updateFloorPlanEditor(editor.plan);
 }
-export function updateFloorPlanEditor(floorPlan = editor?.plan) {
+export function updateFloorPlanEditor(floorPlan = editor?.displayPlan || editor?.plan) {
     if (!editor || !floorPlan || Number(floorPlan.view_id) !== Number(editor.plan.view_id)) return;
+    editor.displayPlan = floorPlan;
     const { width, height } = dimensions(floorPlan);
     const zoom = appState.viewState.scale;
-    Object.assign(editor.frame.style, { left: `${floorPlan.x}px`, top: `${floorPlan.y}px`,
+    const origin = getFloorPlanCorners(floorPlan).nw;
+    Object.assign(editor.frame.style, { left: `${origin.x}px`, top: `${origin.y}px`,
         width: `${width * floorPlan.scale * zoom}px`, height: `${height * floorPlan.scale * zoom}px`,
-        transform: `scale(${1 / zoom})` });
+        transform: `rotate(${Number(floorPlan.rotation ?? 0)}deg) scale(${1 / zoom})` });
     editor.frame.hidden = !appState.floorPlanAdjustMode;
     for (const handle of editor.handles) {
         const corner = handle.dataset.floorPlanCorner;
@@ -126,10 +130,8 @@ function pointerMove(event) {
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
     const base = { ...editor.plan, ...gesture.before };
     const dx = point.x - gesture.origin.x, dy = point.y - gesture.origin.y;
-    const cornerPoint = gesture.corner ? {
-        x: base.x + (gesture.corner.endsWith('w') ? 0 : base.image_width * base.scale) + dx,
-        y: base.y + (gesture.corner.startsWith('n') ? 0 : base.image_height * base.scale) + dy
-    } : null;
+    const start = gesture.corner ? getFloorPlanCorners(base)[gesture.corner] : null;
+    const cornerPoint = start ? { x: start.x + dx, y: start.y + dy } : null;
     preview(gesture.corner ? resizeFloorPlanFromCorner(base, gesture.corner, cornerPoint)
         : moveFloorPlan(base, dx, dy));
 }

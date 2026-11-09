@@ -91,6 +91,29 @@ test('実テンプレートからviewerが左右同時表示の設定を変更�
     assert.equal(dom.get('print-type-ap').checked, true, '新規印刷は初期値から始める');
 });
 
+for (const rotation of [90, -0.1, 0.1, 12.3]) {
+    test(`回転角${rotation}度の図面は中心回転した印刷要素と全体boundsを使い、通常stateを変えない`, async t => {
+        const dom = setup(t);
+        appState.floorPlans[0].rotation = rotation;
+        const before = stateSnapshot();
+        await dom.get('palette-print-btn').dispatch('click');
+        const sheet = dom.get('print-sheet-container').children[0];
+        const image = sheet.querySelector('.print-floor-image');
+        assert.equal(image.parentElement.getAttribute('transform'), `rotate(${rotation} 500 400)`);
+        const radians = rotation * Math.PI / 180;
+        const width = 1000 * Math.abs(Math.cos(radians)) + 800 * Math.abs(Math.sin(radians));
+        const height = 1000 * Math.abs(Math.sin(radians)) + 800 * Math.abs(Math.cos(radians));
+        const box = sheet.querySelector('svg').getAttribute('viewBox').split(' ').map(Number);
+        const expected = [500 - width / 2, 400 - height / 2, width, height];
+        for (let index = 0; index < box.length; index++) {
+            assert.ok(Math.abs(box[index] - expected[index]) < 1e-7);
+        }
+        await dom.get('print-execute').dispatch('click');
+        assert.equal(dom.printCalls(), 1);
+        assert.deepEqual(stateSnapshot(), before);
+    });
+}
+
 test('一括選択解除・配線とラベルの依存・図面対象外・viewport切取・タイトルとメモOFF', async t => {
     const dom = setup(t);
     appState.views[0].view_type = 'topology';

@@ -18,9 +18,9 @@ final class BackupCompatibilityPolicy
     public const CONFIG_FORMAT_VERSION = 1;
     public const FULL_FORMAT_VERSION = 1;
 
-    // 両復元処理に元契約の検証と 11→12→13→14→15→16→17→18→19→20→21→22 の移行が実装済み。
+    // 両復元処理に元契約の検証と 11→12→13→14→15→16→17→18→19→20→21→22→23 の移行が実装済み。
     // 将来のスキーマは、検証・移行を実装するまでこの一覧へ追加しない。
-    private const SUPPORTED_SCHEMAS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
+    private const SUPPORTED_SCHEMAS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
 
     public static function isSupportedFormat(
         string $expectedFormat,

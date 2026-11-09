@@ -55,5 +55,8 @@ Desktop.ini
 /coverage/
 /reports/
 
+# Development-only JavaScript type checker
+/node_modules/
+
 # Local working documents and scratch files
 /work/

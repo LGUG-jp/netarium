@@ -1,5 +1,5 @@
-import { createDeviceIpEditor } from '../ui/device-ip-editor.js';
-import { createIpDuplicateNotice } from '../ui/ip-duplicate-notice.js';
+import { createLedgerBulkEdit } from './ledger-bulk-edit.js';
+import { createLedgerDeviceSheet } from './ledger-device-sheet.js';
 import { segmentCandidates } from '../core/ip-management.js';
 /**
  * Netarium - modals/ledger-modal.js
@@ -22,35 +22,8 @@ import { bindLocationSuggestion } from '../ui/location-suggestions.js';
 import { getPlacedDeviceIds, getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import { MAINTENANCE_EXPIRY_LABELS, classifyMaintenanceExpiry, getMaintenanceExpiryDate } from '../core/maintenance-expiry.js';
 import { syncLedgerFilterPicker, closeLedgerFilterPickers } from '../ui/ledger-filter-picker.js';
-import { clearShareLinkFallback, copyShareLink } from '../ui/share-link.js';
+import { clearShareLinkFallback } from '../ui/share-link.js';
 import { createDeviceTypePicker, closeDeviceTypePicker } from '../ui/device-type-picker.js';
-import {
-    BULK_DEVICE_FIELDS, startDeviceBulkEdit, summarizeBulkValues,
-    prepareDeviceBulkEdit, applyDeviceBulkEdit
-} from '../core/device-bulk-edit.js';
-import { getDeviceImageBlockReason, uploadDeviceImage } from '../core/device-image-api.js';
-import { handleAuthExpired } from '../core/api-client.js';
-eventBus.on('resources:saved', () => {
-    const body = document.getElementById('ledger-sheet-body');
-    if (!body) return;
-    const reason = !isCurrentUserAdmin() ? '閲覧専用のため画像を登録できません' : getDeviceImageBlockReason(activeLedgerDeviceId);
-    for (const button of body.querySelectorAll('.ledger-sheet-image-slot-add')) {
-        button.disabled = Boolean(reason);
-        button.title = reason || '画像ファイルを選択して登録';
-        const notice = button.parentElement.querySelector('.ledger-sheet-image-block-reason');
-        notice.textContent = reason;
-        notice.hidden = !reason;
-    }
-    for (const button of body.querySelectorAll('.ledger-sheet-image-move')) {
-        button.disabled = Boolean(reason);
-    }
-});
-eventBus.on('device-images:changed', deviceId => {
-    if (Number(deviceId) !== activeLedgerDeviceId) return;
-    const device = getDeviceById(deviceId);
-    if (device) renderLedgerDeviceSheet(device);
-});
-import { chooseUnsavedChanges } from '../core/unsaved-changes-dialog.js';
 import {
     isCurrentUserAdmin,
     requireAdminUiAction
@@ -84,9 +57,6 @@ import {
     deleteDeviceCompletely
 } from '../ui/property-panel.js';
 import {
-    openDeviceImageZoom, bindDeviceImageCaptionInput, updateImageCaption, reorderDeviceImages
-} from '../ui/device-images.js';
-import {
     showToast, showStatusMessage
 } from '../ui/toast.js';
 import {
@@ -114,7 +84,6 @@ import {
     registerModalClose,
     registerModalOpen
 } from '../core/modal-focus.js';
-import { openPingHelpDialog } from './ping-help-modal.js';
 
 export const LEDGER_COLUMNS = [
     { key: 'select', label: '', stickyClass: 'ledger-sticky-check' },
@@ -158,8 +127,22 @@ export const ledgerSelectedDeviceIds = new Set();
 export let activeLedgerDeviceId = null;
 
 let renderingLedgerTable = false;
+let deletingSheetDevice = false;
 let ledgerViewFilterIds = [];
 let temporaryLedgerPreset = null;
+
+const {
+    renderLedgerDeviceSheet, focusLedgerSheetField, triggerSheetImageUpload,
+    commitSheetDraft, confirmSheetNavigation
+} = createLedgerDeviceSheet({
+    getActiveDeviceId: () => activeLedgerDeviceId,
+    getAdjacentLedgerDeviceId,
+    updateDraft,
+    syncLedgerDraftButtons,
+    showLedgerDestination
+});
+export { renderLedgerDeviceSheet, focusLedgerSheetField, triggerSheetImageUpload };
+
 const LEDGER_FILTERS = [
     { key: 'viewIds', id: 'ledger-view-filter', label: '表示ビュー' },
     { key: 'facility', id: 'ledger-facility-filter', label: '施設' },
@@ -343,47 +326,6 @@ function commitLedgerDrafts() {
     }
 }
 
-async function confirmSheetNavigation({ saveBeforeLeaving = false } = {}) {
-    const id = activeLedgerDeviceId;
-    if (id === null || !hasDeviceDraftChanges('sheet', id)) return true;
-    const choice = await chooseUnsavedChanges('個票に未適用の変更があります。どうしますか？');
-    if (choice === 'save') {
-        if (!commitSheetDraft()) return false;
-        if (saveBeforeLeaving) {
-            const saved = await flushSaveQueue({ silent: true, resumeMaintenance: false });
-            if (!saved || hasResourceConflict('devices', id) || hasResourceChanges('devices', id)) {
-                showToast('機器の保存が完了していません。個票で保存状態を確認してください', 'warning');
-                return false;
-            }
-        }
-        return true;
-    }
-    if (choice !== 'discard') return false;
-    discardDeviceDraft('sheet', id);
-    return true;
-}
-
-function commitSheetDraft() {
-    try {
-        if (activeLedgerDeviceId !== null && hasResourceConflict('devices', activeLedgerDeviceId)) {
-            throw new Error('この機器は競合しています。「競合を再読込」で確認してください');
-        }
-        if (activeLedgerDeviceId !== null) {
-            const { errors } = validateDeviceValues(getDeviceDraft('sheet', activeLedgerDeviceId));
-            showSheetFieldErrors(errors, true);
-            if (Object.keys(errors).length) return false;
-        }
-        if (activeLedgerDeviceId !== null && commitDeviceDraft('sheet', activeLedgerDeviceId)) {
-            markDirty();
-            scheduleSave({ immediate: true, silent: true });
-            render();
-        }
-        return true;
-    } catch (err) {
-        showToast(`個票の入力を確認してください: ${err.message}`, 'warning');
-        return false;
-    }
-}
 
 function isConfirmedLedgerDevice(id) {
     if (id === null || id === undefined) return false;
@@ -394,6 +336,13 @@ function isConfirmedLedgerDevice(id) {
 
 function syncLedgerDraftButtons() {
     updateSaveButtonState();
+    const deleteBtn = document.getElementById('ledger-sheet-delete-btn');
+    if (deleteBtn) {
+        deleteBtn.hidden = !isCurrentUserAdmin();
+        deleteBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || appState.isPinging ||
+            deletingSheetDevice || activeLedgerDeviceId === null || isSaveInFlight() ||
+            appState.appStatus.state === 'unconfirmed' || hasResourceConflict('devices', activeLedgerDeviceId);
+    }
     const historyBtn = document.getElementById('ledger-sheet-history-btn');
     if (historyBtn) {
         const confirmed = isConfirmedLedgerDevice(activeLedgerDeviceId);
@@ -427,11 +376,6 @@ function syncLedgerDraftButtons() {
 
 eventBus.on('device-drafts:changed', syncLedgerDraftButtons);
 eventBus.on('save-state:changed', syncLedgerDraftButtons);
-eventBus.on('ip-management:changed', () => {
-    if (typeof document === 'undefined' || activeLedgerDeviceId == null) return;
-    const device = getDeviceById(activeLedgerDeviceId);
-    if (device) renderLedgerDeviceSheet(device);
-});
 
 export function getLedgerSelectedDeviceIds() {
     return Array.from(ledgerSelectedDeviceIds);
@@ -1831,171 +1775,15 @@ export function updateLedgerSelectionUI() {
 
 let placeTargetDeviceIds = [];
 
-let bulkEditSession = null;
-let bulkEditUpdates = null;
-let bulkEditInitialValues = null;
-
-export async function openLedgerBulkEdit() {
-    if (!requireAdminUiAction() || appState.authExpired || appState.isPinging || bulkEditSession) return;
-    try {
-        const session = startDeviceBulkEdit([...ledgerSelectedDeviceIds]);
-        if (!await closeLedgerDetailPane()) return;
-        bulkEditSession = session;
-        bulkEditUpdates = null;
-        const fields = document.getElementById('ledger-bulk-edit-fields');
-        fields.replaceChildren();
-        for (const field of BULK_DEVICE_FIELDS) {
-            const row = document.createElement('div');
-            row.className = 'ledger-bulk-edit-field';
-            const label = document.createElement('label');
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.id = `ledger-bulk-change-${field.key}`;
-            label.append(checkbox, document.createTextNode(` ${field.label}を変更する`));
-            const current = document.createElement('p');
-            current.textContent = `現在値: ${summarizeBulkValues(session, field.key)}`;
-            const input = document.createElement(field.options ? 'select' : 'input');
-            if (field.options) {
-                for (const choice of field.options) {
-                    const option = document.createElement('option');
-                    option.value = choice.value;
-                    option.textContent = choice.label;
-                    input.appendChild(option);
-                }
-            } else {
-                input.type = field.type || 'text';
-                if (field.key === 'management_port') {
-                    input.min = '1';
-                    input.max = '65535';
-                    input.step = '1';
-                    input.placeholder = '1〜65535（空欄で未設定）';
-                }
-            }
-            input.id = `ledger-bulk-value-${field.key}`;
-            input.setAttribute('aria-label', `${field.label}の変更後の値`);
-            input.disabled = true;
-            if (field.date) input.placeholder = 'YYYY-MM または YYYY-MM-DD';
-            checkbox.addEventListener('change', () => {
-                input.disabled = !checkbox.checked;
-                const count = BULK_DEVICE_FIELDS.filter(item => document.getElementById(`ledger-bulk-change-${item.key}`).checked).length;
-                document.getElementById('ledger-bulk-edit-count').textContent = `変更対象: ${count}項目`;
-                document.getElementById('ledger-bulk-edit-next').disabled = count === 0;
-            });
-            row.append(label, current, input);
-            fields.appendChild(row);
-        }
-        document.getElementById('ledger-bulk-edit-title').textContent = `${session.ids.length}台の機器を一括編集`;
-        document.getElementById('ledger-bulk-edit-count').textContent = '変更対象: 0項目';
-        document.getElementById('ledger-bulk-edit-next').disabled = true;
-        backLedgerBulkEdit();
-        bulkEditInitialValues = new Map(BULK_DEVICE_FIELDS.map(field =>
-            [field.key, document.getElementById(`ledger-bulk-value-${field.key}`).value]));
-        const overlay = document.getElementById('ledger-bulk-edit-overlay');
-        overlay.hidden = false;
-        registerModalOpen('ledger-bulk-edit', overlay, '#ledger-bulk-change-facility', { onClose: closeLedgerBulkEdit });
-    } catch (error) {
-        showToast(error.message, 'warning');
-    }
-}
-
-export function closeLedgerBulkEdit() {
-    const changed = bulkEditSession && BULK_DEVICE_FIELDS.some(field =>
-        document.getElementById(`ledger-bulk-change-${field.key}`).checked ||
-        document.getElementById(`ledger-bulk-value-${field.key}`).value !== bulkEditInitialValues?.get(field.key));
-    if (changed && !window.confirm('未適用の一括編集を破棄して閉じますか？')) return false;
-    finishLedgerBulkEdit();
-    return true;
-}
-
-function finishLedgerBulkEdit() {
-    const overlay = document.getElementById('ledger-bulk-edit-overlay');
-    if (overlay) overlay.hidden = true;
-    bulkEditInitialValues = null;
-    bulkEditSession = null;
-    bulkEditUpdates = null;
-    registerModalClose('ledger-bulk-edit');
-}
-
-export function backLedgerBulkEdit() {
-    document.getElementById('ledger-bulk-edit-form').hidden = false;
-    document.getElementById('ledger-bulk-edit-confirm').hidden = true;
-    document.getElementById('ledger-bulk-edit-error').textContent = '';
-    bulkEditUpdates = null;
-}
-
-function showLedgerBulkEditError(error) {
-    const message = document.getElementById('ledger-bulk-edit-error');
-    message.textContent = error.message;
-    message.focus({ preventScroll: true });
-    document.getElementById('ledger-bulk-edit-body').scrollTop = 0;
-}
-
-export function previewLedgerBulkEdit() {
-    if (!bulkEditSession || !requireAdminUiAction() || appState.authExpired || appState.isPinging) return;
-    try {
-        const updates = {};
-        for (const field of BULK_DEVICE_FIELDS) {
-            if (document.getElementById(`ledger-bulk-change-${field.key}`).checked) {
-                updates[field.key] = document.getElementById(`ledger-bulk-value-${field.key}`).value;
-            }
-        }
-        const plan = prepareDeviceBulkEdit(bulkEditSession, updates);
-        const preview = document.getElementById('ledger-bulk-edit-preview');
-        preview.replaceChildren();
-        for (const field of BULK_DEVICE_FIELDS) {
-            if (!Object.hasOwn(plan.updates, field.key)) continue;
-            const row = document.createElement('div');
-            row.className = 'ledger-bulk-edit-change';
-            const label = document.createElement('strong');
-            label.className = 'ledger-bulk-edit-change-label';
-            label.textContent = field.label;
-            const before = document.createElement('span');
-            before.className = 'ledger-bulk-edit-before';
-            const current = summarizeBulkValues(bulkEditSession, field.key);
-            before.textContent = `変更前: ${field.options?.find(option => option.value === current)?.label || current}`;
-            const arrow = document.createElement('span');
-            arrow.className = 'ledger-bulk-edit-arrow';
-            arrow.textContent = '→';
-            arrow.setAttribute('aria-hidden', 'true');
-            const after = document.createElement('strong');
-            const value = plan.updates[field.key];
-            const clearing = value === '' || value === null;
-            after.className = clearing ? 'ledger-bulk-edit-after ledger-bulk-edit-clearing' : 'ledger-bulk-edit-after';
-            after.textContent = `変更後: ${clearing ? '空欄にする' : field.options?.find(option => option.value === value)?.label || value}`;
-            row.append(label, before, arrow, after);
-            preview.appendChild(row);
-        }
-        document.getElementById('ledger-bulk-edit-warning').textContent = plan.placedCount
-            ? `選択中のうち${plan.placedCount}台はビューに配置済みです。施設・フロアを変更しても配置先や座標は変更されません。` : '';
-        document.getElementById('ledger-bulk-edit-apply').textContent = `${bulkEditSession.ids.length}台に適用`;
-        document.getElementById('ledger-bulk-edit-error').textContent = '';
-        document.getElementById('ledger-bulk-edit-form').hidden = true;
-        document.getElementById('ledger-bulk-edit-confirm').hidden = false;
-        bulkEditUpdates = plan.updates;
-        document.getElementById('ledger-bulk-edit-apply').focus();
-    } catch (error) {
-        showLedgerBulkEditError(error);
-    }
-}
-
-export function confirmLedgerBulkEdit() {
-    if (!bulkEditSession || !bulkEditUpdates || !requireAdminUiAction() || appState.authExpired || appState.isPinging) return;
-    try {
-        const count = bulkEditSession.ids.length;
-        const changed = applyDeviceBulkEdit(bulkEditSession, bulkEditUpdates);
-        finishLedgerBulkEdit();
-        ledgerSelectedDeviceIds.clear();
-        renderLedgerTable();
-        render();
-        if (changed) {
-            markDirty();
-            scheduleSave({ immediate: true, silent: true });
-        }
-        showStatusMessage(`${count}台への一括適用を完了しました。選択を解除しました`);
-    } catch (error) {
-        showLedgerBulkEditError(error);
-    }
-}
+const {
+    openLedgerBulkEdit, closeLedgerBulkEdit, backLedgerBulkEdit,
+    previewLedgerBulkEdit, confirmLedgerBulkEdit, remapBulkEditSessionIds
+} = createLedgerBulkEdit({
+    selectedDeviceIds: ledgerSelectedDeviceIds,
+    closeDetailPane: () => closeLedgerDetailPane(),
+    renderTable: () => renderLedgerTable()
+});
+export { openLedgerBulkEdit, closeLedgerBulkEdit, backLedgerBulkEdit, previewLedgerBulkEdit, confirmLedgerBulkEdit };
 
 eventBus.on('resources:ids-remapped', maps => {
     ledgerViewFilterIds = ledgerViewFilterIds.map(id => Number(maps.views?.[id] ?? id));
@@ -2006,10 +1794,7 @@ eventBus.on('resources:ids-remapped', maps => {
     selected.forEach(id => ledgerSelectedDeviceIds.add(id));
     activeLedgerDeviceId = mapped(activeLedgerDeviceId);
     placeTargetDeviceIds = placeTargetDeviceIds.map(mapped);
-    if (bulkEditSession) {
-        bulkEditSession.ids = bulkEditSession.ids.map(mapped);
-        bulkEditSession.bases.forEach(device => { device.id = mapped(device.id); });
-    }
+    remapBulkEditSessionIds(mapped);
     document.querySelectorAll('#ledger-table-body [data-device-id]').forEach(element => {
         element.dataset.deviceId = String(mapped(Number(element.dataset.deviceId)));
     });
@@ -2020,105 +1805,7 @@ eventBus.on('resources:reloaded', () => updateLedgerViewFilterOptions());
 eventBus.on('resource:reloaded', () => {
     updateLedgerViewFilterOptions();
 });
-let pendingSheetReplaceImageId = null;
-
-function replaceDeviceImagesInState(deviceId, newDeviceImages) {
-    if (!Array.isArray(appState.deviceImages)) {
-        appState.deviceImages = [];
-    }
-    const otherImages = appState.deviceImages.filter(img => Number(img.device_id) !== Number(deviceId));
-    appState.deviceImages = [...otherImages, ...(newDeviceImages || [])];
-}
-
-export function triggerSheetImageUpload(replaceImageId = null) {
-    if (!isCurrentUserAdmin()) return;
-    if (appState.authExpired) return;
-    const reason = getDeviceImageBlockReason(activeLedgerDeviceId);
-    if (reason) {
-        showToast(reason, 'warning');
-        return;
-    }
-    pendingSheetReplaceImageId = replaceImageId;
-    const fileInput = document.getElementById('ledger-sheet-image-file-input');
-    if (!fileInput) return;
-    fileInput.value = '';
-    fileInput.click();
-}
-
-async function uploadSheetImageFile(file, replaceImageId = null) {
-    if (!file || !activeLedgerDeviceId) return;
-    if (appState.authExpired) return;
-    const deviceId = Number(activeLedgerDeviceId);
-
-    try {
-        await uploadDeviceImage(deviceId, file, replaceImageId);
-        const activeDev = getDeviceById(deviceId);
-        if (activeDev) {
-            renderLedgerDeviceSheet(activeDev);
-        }
-    } catch (err) {
-        if (err.status !== 401 && !appState.authExpired) showToast(err.message, 'error');
-    }
-}
-
-
-async function deleteSheetDeviceImage(deviceId, imageId) {
-    if (!window.confirm('この画像を削除しますか？（この操作は即時確定されます）')) {
-        return;
-    }
-
-    try {
-        const csrfToken = window.APP_CONFIG?.csrfToken || '';
-        const response = await fetch('api.php?action=delete_device_image', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-            },
-            body: JSON.stringify({
-                device_id: deviceId,
-                image_id: imageId,
-                revision: appState.dataRevision
-            })
-        });
-
-        if (response.status === 401) { handleAuthExpired(); return; }
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-            throw new Error(data.error || '画像の削除に失敗しました');
-        }
-
-        appState.dataRevision = Number(data.revision);
-        replaceDeviceImagesInState(deviceId, data.images);
-        const activeDev = getDeviceById(deviceId);
-        if (activeDev) {
-            renderLedgerDeviceSheet(activeDev);
-        }
-    } catch (err) {
-        if (err.status !== 401) showToast(err.message, 'error');
-    }
-}
-
-if (typeof document !== 'undefined') {
-    document.addEventListener('click', event => {
-        const button = event.target?.closest?.('#ledger-sheet-copy-link-btn');
-        if (button) void copyShareLink({ deviceId: activeLedgerDeviceId }, button);
-    });
-    document.addEventListener('DOMContentLoaded', () => {
-        const sheetFileInput = document.getElementById('ledger-sheet-image-file-input');
-        if (sheetFileInput) {
-            sheetFileInput.addEventListener('change', () => {
-                const file = sheetFileInput.files?.[0];
-                if (file) {
-                    uploadSheetImageFile(file, pendingSheetReplaceImageId);
-                }
-                pendingSheetReplaceImageId = null;
-            });
-        }
-    });
-}
-export async function openLedgerDetail(deviceId) {
+export async function openLedgerDetail(deviceId, { reveal = true } = {}) {
     if (Number(deviceId) !== activeLedgerDeviceId && !await confirmSheetNavigation()) return false;
     const activeRow = document.activeElement?.closest?.('#ledger-table-body tr[data-device-id]');
     if (activeRow && !commitLedgerRow(Number(activeRow.dataset.deviceId))) return false;
@@ -2134,7 +1821,7 @@ export async function openLedgerDetail(deviceId) {
     });
 
     const overlay = document.getElementById('ledger-device-sheet-overlay');
-    if (overlay) {
+    if (overlay && reveal) {
         if (overlay.hidden) {
             overlay.hidden = false;
             registerModalOpen('ledger-device-sheet', overlay, '.modal-close-btn', { onClose: closeLedgerDetailPane });
@@ -2148,6 +1835,7 @@ export async function openLedgerDetail(deviceId) {
 
 function getAdjacentLedgerDeviceId(direction) {
     const ids = Array.from(document.querySelectorAll('#ledger-table-body tr[data-device-id]'))
+        .filter(row => !row.hidden)
         .map(row => Number(row.dataset.deviceId))
         .filter(id => getDeviceById(id));
     const index = ids.indexOf(activeLedgerDeviceId);
@@ -2186,558 +1874,44 @@ export async function closeLedgerDetailPane() {
     return true;
 }
 
-export function focusLedgerSheetField(field) {
-    const input = Array.from(document.getElementById('ledger-device-sheet-overlay')?.querySelectorAll('[data-field]') || [])
-        .find(element => element.dataset.field === field);
-    if (!input) return;
-    const panel = input.closest('[role="tabpanel"]');
-    if (panel) document.getElementById(panel.getAttribute('aria-labelledby'))?.click();
-    input.focus();
-    input.scrollIntoView({ block: 'center', inline: 'nearest' });
-}
-function showSheetFieldErrors(errors, focus = false) {
-    let first = null;
-    (document.getElementById('ledger-sheet-body')?.querySelectorAll('[data-field]') || []).forEach(input => {
-        const field = input.dataset.field;
-        if (field === 'additional_ips') {
-            const addressInput = input.validateIps({ reveal: focus });
-            if (errors[field] && !first) first = addressInput;
-            return;
-        }
-        const error = document.getElementById(`ledger-sheet-${field}-error`);
-        setInputError(input, error, errors[field]);
-        if (errors[field] && !first) first = input;
-    });
-    if (focus && first) {
-        const panel = first.closest('[role="tabpanel"]');
-        if (panel) document.getElementById(panel.getAttribute('aria-labelledby'))?.click();
-        first.focus();
-    }
-}
+export async function deleteActiveLedgerDevice() {
+    if (!requireAdminUiAction() || appState.authExpired || deletingSheetDevice ||
+        isSaveInFlight() || appState.appStatus.state === 'unconfirmed') return false;
+    const deviceId = activeLedgerDeviceId;
+    if (deviceId === null || hasResourceConflict('devices', deviceId)) return false;
 
-
-function bindSheetDraftInput(input, field) {
-    const update = () => {
-        if (!isCurrentUserAdmin() || appState.isPinging || activeLedgerDeviceId === null) return;
-        input.title = input.value;
-        updateDraft('sheet', activeLedgerDeviceId, field, field === 'management_port'
-            ? (input.value === '' ? null : (/^\d+$/.test(input.value) ? Number(input.value) : input.value)) : input.value);
-        const draft = getDeviceDraft('sheet', activeLedgerDeviceId);
-        showSheetFieldErrors(validateDeviceValues(draft).errors);
-        const title = document.getElementById('ledger-sheet-title');
-        if (field === 'name' && title) {
-            title.textContent = input.value ? `機器台帳 個票: ${input.value}` : `機器台帳 個票 (ID: ${activeLedgerDeviceId})`;
-        }
-    };
-    input.addEventListener('input', update);
-    if (input.tagName === 'SELECT') input.addEventListener('change', update);
-}
-
-export function renderLedgerDeviceSheet(device) {
-    if (activeLedgerDeviceId !== Number(device.id)) return;
-    const overlay = document.getElementById('ledger-device-sheet-overlay');
-    if (!overlay) return;
-    device = getDeviceDraft('sheet', device.id) || device;
-    for (const [id, direction] of [['ledger-sheet-prev-btn', -1], ['ledger-sheet-next-btn', 1]]) {
-        const button = document.getElementById(id);
-        if (button) button.disabled = getAdjacentLedgerDeviceId(direction) === null;
-    }
-
-    const titleEl = document.getElementById('ledger-sheet-title');
-    if (titleEl) {
-        titleEl.textContent = device.name ? `機器台帳 個票: ${device.name}` : `機器台帳 個票 (ID: ${device.id})`;
-        titleEl.title = device.name || '';
-    }
-
-
-    const destinations = getDeviceDestinations(device.id, appState.placements, getRackDeviceMounts(appState), appState.views);
-
-
-    const viewManageBtn = document.getElementById('ledger-sheet-view-manage-btn');
-    if (viewManageBtn) {
-        viewManageBtn.hidden = !isCurrentUserAdmin();
-    }
+    deletingSheetDevice = true;
     syncLedgerDraftButtons();
-
-    const body = document.getElementById('ledger-sheet-body');
-    if (!body) return;
-    const focused = body.contains(document.activeElement) ? document.activeElement : null;
-    const focusedField = focused?.dataset?.field;
-    const focusedImageId = focused?.dataset?.imageId;
-    const focusedIpIndex = focused?.dataset?.ipIndex;
-    const focusedIpField = focused?.dataset?.ipField;
-    const ipsExpanded = body.dataset.deviceId === String(device.id) &&
-        body.querySelector('.device-ip-editor')?.dataset.expanded === 'true';
-    const selectionStart = typeof focused?.selectionStart === 'number' ? focused.selectionStart : null;
-    const selectionEnd = typeof focused?.selectionEnd === 'number' ? focused.selectionEnd : null;
-    closeDeviceTypePicker();
-    body.replaceChildren();
-    const tabs = document.getElementById('ledger-sheet-tabs');
-    const previousTab = body.dataset.deviceId === String(device.id) ? body.dataset.activeTab : 'primary';
-    body.dataset.deviceId = String(device.id);
-    tabs?.replaceChildren();
-    const panels = [];
-    const tabButtons = [];
-    function activateTab(index) {
-        body.dataset.activeTab = index === 0 ? 'primary' : 'secondary';
-        panels.forEach((panel, i) => { panel.hidden = i !== index; });
-        tabButtons.forEach((button, i) => {
-            button.setAttribute('aria-selected', String(i === index));
-            button.tabIndex = i === index ? 0 : -1;
-        });
-    }
-    ['機器・設置・資産', '管理・保守・状態'].forEach((label, index) => {
-        const panel = document.createElement('div');
-        panel.id = `ledger-sheet-panel-${index}`;
-        panel.className = 'ledger-sheet-panel';
-        panel.setAttribute('role', 'tabpanel');
-        panel.setAttribute('aria-labelledby', `ledger-sheet-tab-${index}`);
-        panels.push(panel);
-        body.appendChild(panel);
-        const button = document.createElement('button');
-        button.id = `ledger-sheet-tab-${index}`;
-        button.type = 'button';
-        button.textContent = label;
-        button.setAttribute('role', 'tab');
-        button.setAttribute('aria-controls', panel.id);
-        button.addEventListener('click', () => activateTab(index));
-        button.addEventListener('keydown', event => {
-            let next;
-            if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') next = 1 - index;
-            else if (event.key === 'Home') next = 0;
-            else if (event.key === 'End') next = 1;
-            else return;
-            event.preventDefault();
-            activateTab(next);
-            tabButtons[next].focus();
-        });
-        tabButtons.push(button);
-        tabs?.appendChild(button);
-    });
-    activateTab(previousTab === 'secondary' ? 1 : 0);
-
-    const isAdmin = isCurrentUserAdmin();
-
-    function createSheetRow(label, inputEl) {
-        const tr = document.createElement('div');
-        tr.className = 'ledger-sheet-field';
-        const th = document.createElement('label');
-        th.textContent = label;
-        const td = document.createElement('div');
-        if (typeof inputEl !== 'string') {
-            const control = ['INPUT', 'SELECT', 'TEXTAREA'].includes(inputEl.tagName) ? inputEl : null;
-            if (control) {
-                if (!control.id) control.id = `ledger-sheet-field-${control.dataset.field}`;
-                th.setAttribute('for', control.id);
+    try {
+        while (hasDeviceDraftChanges('sheet', deviceId)) {
+            if (!await confirmSheetNavigation({ saveBeforeLeaving: true })) return false;
+        }
+        // 確認・保存中に別の個票へ移った場合や、保存中に追加下書きが発生した場合は削除へ進まない。
+        if (activeLedgerDeviceId !== deviceId || !requireAdminUiAction() || appState.authExpired ||
+            isSaveInFlight() || appState.appStatus.state === 'unconfirmed' ||
+            hasDeviceDraftChanges('sheet', deviceId)) return false;
+        const device = getDeviceById(deviceId);
+        if (!device) return false;
+        const deleted = await deleteDeviceCompletely([deviceId], { deviceName: device.name || `ID ${deviceId}` });
+        if (!deleted) {
+            if (activeLedgerDeviceId === deviceId) {
+                renderLedgerDeviceSheet(device);
             }
+            return false;
         }
-        if (typeof inputEl === 'string') {
-            td.textContent = inputEl;
-        } else {
-            td.appendChild(inputEl);
-            if (inputEl.dataset?.field && inputEl.dataset.field !== 'additional_ips') {
-                const error = document.createElement('div');
-                error.id = `ledger-sheet-${inputEl.dataset.field}-error`;
-                error.className = 'form-error';
-                error.hidden = true;
-                td.appendChild(error);
-            }
-        }
-        tr.appendChild(th);
-        tr.appendChild(td);
-        return tr;
-    }
-
-    function createSheetInput(field, maxLength = 100) {
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.dataset.field = field;
-        const val = String(device[field] || '');
-        input.value = val;
-        input.dataset.maxLength = String(maxLength);
-        input.readOnly = !isAdmin;
-        if (!isAdmin) {
-            input.title = val ? `${val} (閲覧専用)` : '閲覧専用です';
-        } else {
-            input.title = val;
-        }
-
-        bindSheetDraftInput(input, field);
-        bindLocationSuggestion(input, field);
-
-        return input;
-    }
-
-    function createSheetSection(titleText, contentEl, rightElement = null) {
-        const details = document.createElement('section');
-        details.className = 'ledger-sheet-section';
-        const summary = document.createElement('div');
-        summary.className = 'ledger-sheet-section-summary';
-        const title = document.createElement('h4');
-        title.textContent = titleText;
-        summary.appendChild(title);
-
-        if (rightElement) {
-            const rightWrap = document.createElement('div');
-            rightWrap.className = 'ledger-sheet-summary-right';
-            rightWrap.appendChild(rightElement);
-            summary.appendChild(rightWrap);
-        }
-
-        const contentWrap = document.createElement('div');
-        contentWrap.className = 'ledger-sheet-content';
-        contentWrap.appendChild(contentEl);
-
-        details.appendChild(summary);
-        details.appendChild(contentWrap);
-        return details;
-    }
-
-    // ① 基本情報セクション
-    const basicTable = document.createElement('div');
-    basicTable.className = 'ledger-sheet-table';
-    basicTable.appendChild(createSheetRow('機器名称', createSheetInput('name', 100)));
-
-    const typePicker = createDeviceTypePicker({
-        deviceId: device.id, value: device.type, disabled: !isAdmin,
-        onChange: input => {
-            updateDraft('sheet', activeLedgerDeviceId, 'type', input.value);
-        }
-    });
-    bindSheetDraftInput(typePicker.control, 'type');
-    basicTable.appendChild(createSheetRow('機器種別', typePicker.element));
-
-    const ipInput = createSheetInput('ip', 45);
-    const ipRow = createSheetRow('管理IPv4アドレス', ipInput);
-    ipInput.parentElement.appendChild(createIpDuplicateNotice({
-        getRecord: () => getDeviceDraft('sheet', activeLedgerDeviceId),
-        field: 'ip_segment_id', ipInput,
-        canEdit: () => activeLedgerDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
-            !hasResourceConflict('devices', activeLedgerDeviceId),
-        onChange: () => eventBus.emit('device-drafts:changed')
-    }));
-    basicTable.appendChild(ipRow);
-    basicTable.appendChild(createSheetRow('追加IPv4アドレス', createDeviceIpEditor({
-        compact: true, expanded: ipsExpanded,
-        getDevice: () => getDeviceDraft('sheet', activeLedgerDeviceId),
-        canEdit: () => activeLedgerDeviceId !== null && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
-            !hasResourceConflict('devices', activeLedgerDeviceId),
-        onChange: () => eventBus.emit('device-drafts:changed')
-    })));
-    const deviceIdLabel = document.createElement('span');
-    deviceIdLabel.className = 'form-support';
-    deviceIdLabel.textContent = `機器ID: ${device.id}`;
-    panels[0].appendChild(createSheetSection('基本情報・IPアドレス', basicTable, deviceIdLabel));
-
-    // ② 設置・配置情報セクション
-    const placeTable = document.createElement('div');
-    placeTable.className = 'ledger-sheet-table';
-    placeTable.appendChild(createSheetRow('施設名', createSheetInput('facility', 100)));
-    placeTable.appendChild(createSheetRow('フロア', createSheetInput('floor', 50)));
-    placeTable.appendChild(createSheetRow('設置場所詳細', createSheetInput('location', 150)));
-
-    const viewsWrap = document.createElement('div');
-    viewsWrap.className = 'ledger-sheet-view-pills';
-    if (destinations.length === 0) {
-        viewsWrap.innerHTML = '<span class="form-support">未配置（どのビューにも配置されていません）</span>';
-    } else {
-        destinations.forEach(item => {
-            const pill = document.createElement('button');
-            pill.className = 'ledger-sheet-view-pill';
-            pill.textContent = item.view.name;
-            pill.type = 'button';
-            pill.title = [item.view.facility, item.view.floor, 'クリックしてこのビューで表示'].filter(Boolean).join(' / ');
-            pill.setAttribute('aria-label', `${item.view.name}でこの機器を表示`);
-            pill.addEventListener('click', () => showLedgerDestination(Number(device.id), Number(item.view.id)));
-            if (item.kind === 'rack') {
-                pill.type = 'button';
-                const mount = item.mount;
-                pill.textContent += `（ラック / ${mount.shelf_name ? `${mount.shelf_name} / ` : ''}${mount.start_u}〜${Number(mount.start_u) + Number(mount.height_u) - 1}U）`;
-                pill.title = [item.view.facility, item.view.floor,
-                    (appState.rackSettings || []).find(row => Number(row.view_id) === Number(item.view.id))?.location,
-                    '搭載しても台帳の施設・フロア・設置場所は変更しません'].filter(Boolean).join(' / ');
-            }
-            viewsWrap.appendChild(pill);
-        });
-    }
-    placeTable.appendChild(createSheetRow('配置済みビュー', viewsWrap));
-    panels[0].appendChild(createSheetSection('設置・配置情報', placeTable));
-
-    // ③ 資産情報セクション
-    const assetTable = document.createElement('div');
-    assetTable.className = 'ledger-sheet-table ledger-sheet-asset-fields';
-    assetTable.appendChild(createSheetRow('メーカー', createSheetInput('manufacturer', 100)));
-    assetTable.appendChild(createSheetRow('型番', createSheetInput('model', 100)));
-    assetTable.appendChild(createSheetRow('管理番号', createSheetInput('asset_number', 100)));
-    assetTable.appendChild(createSheetRow('シリアル番号', createSheetInput('serial_number', 100)));
-    assetTable.appendChild(createSheetRow('MACアドレス', createSheetInput('mac_address', 50)));
-    assetTable.appendChild(createSheetRow('導入年月', createSheetInput('install_date', 10)));
-    panels[0].appendChild(createSheetSection('機器・資産情報', assetTable));
-
-    // ④ 管理・保守情報セクション
-    const maintTable = document.createElement('div');
-    maintTable.className = 'ledger-sheet-table';
-    maintTable.appendChild(createSheetRow('担当部署', createSheetInput('department', 100)));
-    maintTable.appendChild(createSheetRow('保守ベンダー', createSheetInput('maintenance_vendor', 100)));
-    maintTable.appendChild(createSheetRow('保守期限', createSheetInput('maintenance_expiry', 10)));
-
-    const schemeSelect = document.createElement('select');
-    schemeSelect.dataset.field = 'management_scheme';
-    schemeSelect.disabled = !isAdmin;
-    [
-        { value: '', label: '未設定' },
-        { value: 'https', label: 'HTTPS' },
-        { value: 'http', label: 'HTTP' },
-        { value: 'ssh', label: 'SSH' },
-    ].forEach(opt => {
-        const option = document.createElement('option');
-        option.value = opt.value;
-        option.textContent = opt.label;
-        if (String(device.management_scheme || '') === opt.value) option.selected = true;
-        schemeSelect.appendChild(option);
-    });
-    bindSheetDraftInput(schemeSelect, 'management_scheme');
-    maintTable.appendChild(createSheetRow('管理接続方式', schemeSelect));
-
-    const portInput = document.createElement('input');
-    portInput.type = 'number';
-    portInput.min = '1';
-    portInput.max = '65535';
-    portInput.dataset.field = 'management_port';
-    portInput.value = device.management_port != null ? String(device.management_port) : '';
-    portInput.readOnly = !isAdmin;
-    bindSheetDraftInput(portInput, 'management_port');
-    maintTable.appendChild(createSheetRow('接続ポート', portInput));
-    const maintenanceSection = createSheetSection('管理・保守情報', maintTable);
-    maintenanceSection.classList.add('ledger-sheet-maintenance');
-    panels[1].appendChild(maintenanceSection);
-
-    // ⑤ 監視・Ping疎通セクション
-    const monTable = document.createElement('div');
-    monTable.className = 'ledger-sheet-table';
-    const statusPill = document.createElement('span');
-    const normStatus = normalizeStatus(device.status);
-    statusPill.className = `ledger-status-pill ledger-status-${normStatus}`;
-    statusPill.textContent = getDeviceStatusLabel(normStatus);
-    monTable.appendChild(createSheetRow('疎通状態', statusPill));
-    monTable.appendChild(createSheetRow('最終確認日時', device.last_checked_at || '-'));
-    monTable.appendChild(createSheetRow('応答時間', device.last_response_ms == null ? '-' : `${device.last_response_ms} ms`));
-
-    const errorSpan = document.createElement('span');
-    errorSpan.textContent = device.last_error || '-';
-    if (device.last_error) {
-        errorSpan.style.color = 'var(--danger)';
-    }
-    monTable.appendChild(createSheetRow('直近エラー', errorSpan));
-    const pingHelpButton = document.createElement('button');
-    pingHelpButton.id = 'ledger-sheet-ping-help-btn';
-    pingHelpButton.type = 'button';
-    pingHelpButton.className = 'btn btn-tertiary btn-sm';
-    pingHelpButton.textContent = 'Ping結果について';
-    pingHelpButton.setAttribute('aria-haspopup', 'dialog');
-    pingHelpButton.setAttribute('aria-controls', 'ping-help-dialog');
-    pingHelpButton.addEventListener('click', openPingHelpDialog);
-    panels[1].appendChild(createSheetSection('監視・疎通状態', monTable, pingHelpButton));
-
-    // ⑥ 備考セクション
-    const memoTable = document.createElement('div');
-    memoTable.className = 'ledger-sheet-table';
-    const memoTextarea = document.createElement('textarea');
-    memoTextarea.dataset.field = 'memo';
-    const memoVal = String(device.memo || '');
-    memoTextarea.value = memoVal;
-    memoTextarea.dataset.maxLength = '1000';
-    memoTextarea.readOnly = !isAdmin;
-    memoTextarea.rows = 4;
-    if (!isAdmin) {
-        memoTextarea.title = memoVal ? `${memoVal} (閲覧専用)` : '閲覧専用です';
-    } else {
-        memoTextarea.title = memoVal;
-    }
-    bindSheetDraftInput(memoTextarea, 'memo');
-    memoTable.appendChild(createSheetRow('備考内容', memoTextarea));
-    panels[1].appendChild(createSheetSection('備考', memoTable));
-
-    // ⑦ 登録画像セクション
-    const images = (appState.deviceImages || [])
-        .filter(img => Number(img.device_id) === Number(device.id))
-        .sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
-
-    const imageBlockReason = !isAdmin ? '閲覧専用のため画像を登録できません' : getDeviceImageBlockReason(device.id);
-
-    const imagesWrap = document.createElement('div');
-    const imageSupport = document.createElement('p');
-    imageSupport.className = 'form-support ledger-sheet-image-support';
-    const imageCapacity = window.APP_CONFIG?.capacity;
-    const maxImageMiB = Math.floor((Number(imageCapacity?.deviceImageMaxBytes) || 10 * 1024 * 1024) / (1024 * 1024));
-    const maxImageWidth = Number(imageCapacity?.deviceImageMaxWidth) || 4000;
-    const maxImageHeight = Number(imageCapacity?.deviceImageMaxHeight) || 4000;
-    const textSpan = document.createElement('span');
-    textSpan.className = 'ledger-sheet-image-limits';
-    textSpan.textContent = `PNGまたはJPEG／最大${maxImageMiB}MiB／最大${maxImageWidth}×${maxImageHeight}px`;
-    const helpLine = document.createElement('span');
-    helpLine.className = 'ledger-sheet-image-help';
-    const helpIntro = document.createElement('span');
-    helpIntro.textContent = '画像の登録・操作方法は';
-    const helpLink = document.createElement('a');
-    helpLink.href = 'help-devices.html#devices';
-    helpLink.target = '_blank';
-    helpLink.rel = 'noopener';
-    helpLink.textContent = 'ヘルプ';
-    const textAfter = document.createElement('span');
-    textAfter.textContent = 'を参照してください。';
-    imageSupport.appendChild(textSpan);
-    helpLine.appendChild(helpIntro);
-    helpLine.appendChild(helpLink);
-    helpLine.appendChild(textAfter);
-    imageSupport.appendChild(helpLine);
-    const grid = document.createElement('div');
-    grid.className = 'ledger-sheet-images-grid';
-
-        images.forEach((img, idx) => {
-            const card = document.createElement('div');
-            card.className = 'ledger-sheet-image-card';
-
-            const thumbWrap = document.createElement('div');
-            thumbWrap.className = 'ledger-sheet-image-thumb-wrap';
-            thumbWrap.title = 'クリックして拡大';
-
-            const thumbImg = document.createElement('img');
-            thumbImg.src = `${img.image_url}&size=thumb`;
-            thumbImg.alt = img.caption || `機器画像 ${idx + 1}`;
-            thumbImg.className = 'ledger-sheet-image-thumb';
-            thumbImg.loading = 'lazy';
-
-            const zoomBtn = document.createElement('button');
-            zoomBtn.type = 'button';
-            zoomBtn.className = 'ledger-sheet-image-zoom-trigger';
-            zoomBtn.textContent = '🔍 拡大';
-            zoomBtn.title = '拡大表示';
-            zoomBtn.setAttribute('aria-label', `${img.caption || `画像${idx + 1}`}を拡大表示`);
-
-            thumbWrap.addEventListener('click', () => {
-                openDeviceImageZoom(img);
-            });
-            zoomBtn.addEventListener('click', e => {
-                e.stopPropagation();
-                openDeviceImageZoom(img);
-            });
-
-            thumbWrap.appendChild(thumbImg);
-            thumbWrap.appendChild(zoomBtn);
-            card.appendChild(thumbWrap);
-
-            const captionInput = document.createElement('input');
-            captionInput.type = 'text';
-            captionInput.className = 'ledger-sheet-image-caption-input';
-            captionInput.value = img.caption || '';
-            captionInput.dataset.maxLength = '100';
-            captionInput.dataset.imageId = String(img.id);
-            captionInput.placeholder = '説明（100文字以内）';
-            captionInput.disabled = !isAdmin;
-            captionInput.setAttribute('aria-label', `画像${idx + 1}の説明`);
-            const captionErrorEl = bindDeviceImageCaptionInput(captionInput, {
-                deviceId: device.id, imageId: img.id, errorId: `sheet-image-${img.id}-caption-error`,
-                onSave: value => updateImageCaption(Number(device.id), Number(img.id), value)
-            });
-            card.appendChild(captionInput);
-            card.appendChild(captionErrorEl);
-
-            if (isAdmin) {
-                const actionsWrap = document.createElement('div');
-                actionsWrap.className = 'ledger-sheet-image-actions';
-                for (const [offset, label] of [[-1, '前へ'], [1, '次へ']]) {
-                    if (!images[idx + offset]) continue;
-                    const move = document.createElement('button');
-                    move.type = 'button';
-                    move.className = 'btn btn-secondary btn-sm ledger-sheet-image-move ledger-sheet-image-icon-action';
-                    move.textContent = offset < 0 ? '←' : '→';
-                    move.setAttribute('aria-label', `画像${idx + 1}を${label}移動`);
-                    move.title = `画像${idx + 1}を${label}移動`;
-                    move.disabled = Boolean(imageBlockReason);
-                    move.addEventListener('click', () => {
-                        const reordered = [...images];
-                        [reordered[idx], reordered[idx + offset]] = [reordered[idx + offset], reordered[idx]];
-                        reorderDeviceImages(Number(device.id), reordered);
-                    });
-                    actionsWrap.appendChild(move);
-                }
-
-                const replaceBtn = document.createElement('button');
-                replaceBtn.type = 'button';
-                replaceBtn.className = 'btn btn-secondary btn-sm ledger-sheet-image-replace';
-                replaceBtn.textContent = '差替え';
-                replaceBtn.title = '別の画像に差替えます';
-                replaceBtn.disabled = Boolean(imageBlockReason);
-                replaceBtn.addEventListener('click', () => {
-                    triggerSheetImageUpload(Number(img.id));
-                });
-                actionsWrap.appendChild(replaceBtn);
-
-                const deleteBtn = document.createElement('button');
-                deleteBtn.type = 'button';
-                deleteBtn.className = 'btn btn-secondary btn-sm btn-danger ledger-sheet-image-delete ledger-sheet-image-icon-action';
-                deleteBtn.setAttribute('aria-label', `画像${idx + 1}を削除`);
-                deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
-                deleteBtn.title = 'この画像を削除します';
-                deleteBtn.addEventListener('click', () => {
-                    deleteSheetDeviceImage(Number(device.id), Number(img.id));
-                });
-                actionsWrap.appendChild(deleteBtn);
-
-                card.appendChild(actionsWrap);
-            }
-
-            grid.appendChild(card);
-        });
-    for (let index = images.length; index < 3; index++) {
-        const slot = document.createElement('div');
-        slot.className = 'ledger-sheet-image-card ledger-sheet-image-empty';
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'ledger-sheet-image-slot-add';
-        add.textContent = '＋ 画像を追加';
-        add.setAttribute('aria-label', `画像枠${index + 1}に画像を追加`);
-        add.disabled = Boolean(imageBlockReason);
-        add.title = imageBlockReason || '画像ファイルを選択して登録';
-        add.addEventListener('click', () => triggerSheetImageUpload());
-        slot.appendChild(add);
-        const reason = document.createElement('span');
-        reason.className = 'form-support ledger-sheet-image-block-reason';
-        reason.textContent = imageBlockReason;
-        reason.hidden = !imageBlockReason;
-        slot.appendChild(reason);
-        grid.appendChild(slot);
-    }
-    imagesWrap.appendChild(grid);
-
-    imagesWrap.appendChild(imageSupport);
-    panels[0].appendChild(createSheetSection('登録画像', imagesWrap));
-    if (hasDeviceDraftChanges('sheet', device.id)) showSheetFieldErrors(validateDeviceValues(device).errors);
-    if (focusedIpIndex !== undefined) {
-        const input = body.querySelector(`[data-ip-index="${focusedIpIndex}"][data-ip-field="${focusedIpField}"]`);
-        if (input) {
-            input.focus();
-            if (selectionStart !== null) input.setSelectionRange(selectionStart, selectionEnd);
-        }
-    } else if (focusedField) {
-        const input = body.querySelector(`[data-field="${focusedField}"]`);
-        if (input) {
-            input.focus();
-            if (selectionStart !== null && typeof input.setSelectionRange === 'function') {
-                try { input.setSelectionRange(selectionStart, selectionEnd); } catch (_) {}
-            }
-        }
-    } else if (focusedImageId) {
-        const input = body.querySelector(`[data-image-id="${focusedImageId}"]`);
-        if (input) {
-            input.focus();
-            if (selectionStart !== null && typeof input.setSelectionRange === 'function') {
-                try { input.setSelectionRange(selectionStart, selectionEnd); } catch (_) {}
-            }
-        }
+        discardDeviceDraft('sheet', deviceId);
+        discardDeviceDraft('ledger', deviceId);
+        ledgerSelectedDeviceIds.delete(deviceId);
+        if (activeLedgerDeviceId === deviceId) await closeLedgerDetailPane();
+        updateLedgerFilters();
+        renderLedgerTable();
+        return true;
+    } finally {
+        deletingSheetDevice = false;
+        syncLedgerDraftButtons();
     }
 }
+
 
 async function showLedgerDestination(deviceId, viewId) {
     if (!await confirmSheetNavigation({ saveBeforeLeaving: true }) || !commitLedgerDrafts()) return;
@@ -2796,7 +1970,27 @@ export async function openActiveDeviceHistory() {
 }
 
 export async function openActiveDeviceConfig() {
-    return openActiveDeviceRecordPanel(openDeviceConfig, 'Config');
+    return openActiveDeviceRecordPanel(device => openDeviceConfig(device, {
+        getAdjacentDeviceId: getAdjacentLedgerDeviceId,
+        navigate: navigateConfigLedgerDevice
+    }), 'Config');
+}
+
+async function navigateConfigLedgerDevice(direction, targetId) {
+    const sourceId = activeLedgerDeviceId;
+    const unavailable = id => !isConfirmedLedgerDevice(id) || hasResourceConflict('devices', id) ||
+        hasResourceChanges('devices', id);
+    if (!requireAdminUiAction() || appState.authExpired || deletingSheetDevice ||
+        getAdjacentLedgerDeviceId(direction) !== targetId || unavailable(sourceId) || unavailable(targetId)) return null;
+    if (!await confirmSheetNavigation({ saveBeforeLeaving: true })) return null;
+    await waitForActiveResourceSave();
+    if (appState.authExpired || activeLedgerDeviceId !== sourceId ||
+        getAdjacentLedgerDeviceId(direction) !== targetId || unavailable(sourceId) || unavailable(targetId) ||
+        hasDeviceDraftChanges('sheet', sourceId)) return null;
+    if (!await openLedgerDetail(targetId, { reveal: false })) return null;
+    const body = document.getElementById('ledger-sheet-body');
+    if (body) body.scrollTop = 0;
+    return getDeviceById(targetId);
 }
 
 export function openLedgerPlaceViewModal() {

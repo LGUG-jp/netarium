@@ -9,6 +9,7 @@ import { mappedResourceId, syncResourceRevision } from '../core/resource-save.js
 import { flushSaveQueue, hasPendingChanges, hasResourceConflict, runResourceMutation, scheduleFloorPlanSave } from '../core/save-queue.js';
 import { attachFloorPlanEditor, finishFloorPlanGesture, updateFloorPlanEditor } from '../canvas/floor-plan-editor.js';
 import { calculateOriginFit } from '../canvas/origin-fit.js';
+import { getFloorPlanBounds } from '../canvas/floor-plan-geometry.js';
 import {
     hideCanvasContextToolbar,
     showCanvasContextToolbar
@@ -72,6 +73,7 @@ import {
 let floorPlanManagerReturnViewId = null;
 let adjustingViewId = null;
 let opacityPreview = null;
+let rotationPreview = null;
 
 eventBus.on('resources:ids-remapped', maps => {
     floorPlanManagerReturnViewId = mappedResourceId(maps.views, floorPlanManagerReturnViewId);
@@ -163,7 +165,10 @@ export function renderFloorPlan() {
 
 export function applyFloorPlanElementStyles(image, plan) {
     if (!image || !plan) return;
-    image.style.transform = `translate(${plan.x}px, ${plan.y}px) scale(${plan.scale})`;
+    image.style.width = `${plan.image_width}px`;
+    image.style.height = `${plan.image_height}px`;
+    image.style.transformOrigin = 'center center';
+    image.style.transform = `translate(${plan.x}px, ${plan.y}px) translate(${plan.image_width * (plan.scale - 1) / 2}px, ${plan.image_height * (plan.scale - 1) / 2}px) rotate(${plan.rotation ?? 0}deg) scale(${plan.scale})`;
     image.hidden = !plan.is_visible && !appState.floorPlanAdjustMode;
     image.style.display = image.hidden ? 'none' : 'block';
     image.style.opacity = String(plan.opacity);
@@ -173,16 +178,17 @@ export function updateCurrentFloorPlanElement() {
     const plan = getCurrentFloorPlan();
     const image = appState.floorPlanLayer?.querySelector('.floor-plan-image');
     if (!plan || !image) return;
-    applyFloorPlanElementStyles(image, plan);
-    updateFloorPlanEditor(plan);
+    const displayed = { ...plan };
+    if (rotationPreview?.plan === plan) displayed.rotation = rotationPreview.value;
+    if (opacityPreview?.plan === plan) displayed.opacity = opacityPreview.value;
+    applyFloorPlanElementStyles(image, displayed);
+    updateFloorPlanEditor(displayed);
 }
 
 export function fitViewToFloorPlan(plan) {
     if (!appState.canvas || !plan) return;
     Object.assign(appState.viewState, calculateOriginFit(appState.canvas.getBoundingClientRect(),
-        { minX: plan.x, minY: plan.y,
-            maxX: plan.x + Math.max(1, plan.image_width * plan.scale),
-            maxY: plan.y + Math.max(1, plan.image_height * plan.scale) }, appState.viewState));
+        getFloorPlanBounds(plan), appState.viewState));
     applyViewTransform();
 }
 
@@ -285,7 +291,8 @@ export function renderFloorPlanManager() {
 export function updateFloorPlanSettingsButtons() {
     const disabled = !getCurrentFloorPlan() || !canAdjustFloorPlan();
     for (const id of ['floor-plan-drag-mode-btn', 'floor-plan-visible', 'floor-plan-opacity',
-        'floor-plan-reset-btn']) {
+        'floor-plan-reset-btn', 'floor-plan-rotation', 'floor-plan-rotate-left',
+        'floor-plan-rotate-right', 'floor-plan-opacity-value']) {
         const control = document.getElementById(id);
         if (control) control.disabled = disabled;
     }
@@ -313,6 +320,7 @@ export function toggleFloorPlanAdjustMode() {
     renderFloorPlan();
     syncFloorPlanAdjustModeUi();
     syncFloorPlanOpacity();
+    syncFloorPlanRotation();
     appState.floorPlanLayer?.querySelector('.floor-plan-image')?.focus();
 }
 
@@ -327,7 +335,14 @@ export function finishFloorPlanAdjustMode(reason = 'finish') {
     if (!appState.floorPlanAdjustMode) return;
     // 終了時はpointer操作を取消し、キー/sliderの確定分はキューに残す。
     finishFloorPlanGesture({ commit: reason === 'finish' });
-    commitFloorPlanOpacity();
+    if (reason === 'finish' || reason === 'escape') {
+        commitFloorPlanOpacity();
+        commitFloorPlanRotation();
+    }
+    opacityPreview = null;
+    rotationPreview = null;
+    syncFloorPlanOpacity();
+    syncFloorPlanRotation();
     appState.floorPlanAdjustMode = false;
     adjustingViewId = null;
     floorPlanManagerReturnViewId = null;
@@ -337,34 +352,123 @@ export function finishFloorPlanAdjustMode(reason = 'finish') {
     if (reason === 'finish' || reason === 'escape') document.getElementById('floor-plan-manage-btn')?.focus();
 }
 
+function setOpacityError(invalid) {
+    document.getElementById('floor-plan-opacity-value')?.setAttribute('aria-invalid', String(invalid));
+    const error = document.getElementById('floor-plan-opacity-error');
+    if (error) error.hidden = !invalid;
+}
+
 function syncFloorPlanOpacity() {
-    const plan = getCurrentFloorPlan();
-    if (!plan) return;
-    const percent = Math.round(plan.opacity * 100);
+    const percent = Math.round((getCurrentFloorPlan()?.opacity ?? 1) * 100);
     setInputValue('floor-plan-opacity', percent);
-    setTextContent('floor-plan-opacity-value', `${percent}%`);
+    setInputValue('floor-plan-opacity-value', percent);
+    setOpacityError(false);
 }
 
 export function previewFloorPlanOpacity() {
     const plan = getCurrentFloorPlan();
-    if (!plan || !canAdjustFloorPlan()) return;
-    opacityPreview ||= { plan, opacity: plan.opacity };
-    plan.opacity = clampNumber(Number(document.getElementById('floor-plan-opacity')?.value) / 100, 0.1, 1);
-    syncFloorPlanOpacity();
+    if (!plan || !appState.floorPlanAdjustMode || !canAdjustFloorPlan()) return;
+    const percent = Number(document.getElementById('floor-plan-opacity')?.value);
+    if (!Number.isInteger(percent) || percent < 10 || percent > 100) return;
+    // sliderへの切替は数値欄の未確定入力を置き換える。
+    opacityPreview = { plan, value: percent / 100, source: 'floor-plan-opacity' };
+    setInputValue('floor-plan-opacity-value', percent);
+    setOpacityError(false);
     updateCurrentFloorPlanElement();
 }
 
-export function commitFloorPlanOpacity() {
-    if (!opacityPreview) return;
-    const { plan, opacity } = opacityPreview;
+export function previewFloorPlanOpacityInput() {
+    const plan = getCurrentFloorPlan();
+    if (!plan || !appState.floorPlanAdjustMode || !canAdjustFloorPlan()) return;
+    const input = document.getElementById('floor-plan-opacity-value');
+    const text = input?.value.trim() ?? '';
+    const percent = Number(text);
+    const valid = !input?.validity?.badInput && /^\+?\d+$/.test(text) &&
+        Number.isInteger(percent) && percent >= 10 && percent <= 100;
+    setOpacityError(!valid);
+    opacityPreview = valid ? { plan, value: percent / 100, source: 'floor-plan-opacity-value' } : null;
+    setInputValue('floor-plan-opacity', valid ? percent : Math.round(plan.opacity * 100));
+    updateCurrentFloorPlanElement();
+}
+
+export function commitFloorPlanOpacity(event) {
+    const preview = opacityPreview;
+    if (!preview || (event?.target?.id && event.target.id !== preview.source)) return;
     opacityPreview = null;
-    if (!isCurrentUserAdmin() || appState.authExpired ||
-        !appState.floorPlans.includes(plan) || hasResourceConflict('views', plan.view_id)) {
-        plan.opacity = opacity;
-        updateCurrentFloorPlanElement();
-        return;
+    const { plan, value } = preview;
+    if (appState.floorPlanAdjustMode && canAdjustFloorPlan() && getCurrentFloorPlan() === plan) {
+        if (plan.opacity !== value) {
+            plan.opacity = value;
+            scheduleFloorPlanSave(plan);
+        }
+        syncFloorPlanOpacity();
     }
-    if (plan.opacity !== opacity) scheduleFloorPlanSave(plan);
+    updateCurrentFloorPlanElement();
+}
+
+export function onFloorPlanOpacityKeyDown(event) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    event.stopPropagation();
+    commitFloorPlanOpacity(event);
+}
+
+function setRotationError(invalid) {
+    const input = document.getElementById('floor-plan-rotation');
+    input?.setAttribute('aria-invalid', String(invalid));
+    const error = document.getElementById('floor-plan-rotation-error');
+    if (error) error.hidden = !invalid;
+}
+
+function syncFloorPlanRotation() {
+    const angle = getCurrentFloorPlan()?.rotation ?? 0;
+    setInputValue('floor-plan-rotation', angle.toFixed(1));
+    setRotationError(false);
+}
+
+export function previewFloorPlanRotation() {
+    const plan = getCurrentFloorPlan();
+    if (!plan || !appState.floorPlanAdjustMode || !canAdjustFloorPlan()) return;
+    const input = document.getElementById('floor-plan-rotation');
+    const value = input?.value.trim() ?? '';
+    const angle = Number(value);
+    const valid = !input?.validity?.badInput && /^[+-]?(?:\d+(?:\.\d?)?|\.\d)$/.test(value) &&
+        Number.isFinite(angle) && angle >= -180 && angle <= 180;
+    setRotationError(!valid);
+    // 入力中の値は保存対象のplanと分離し、別操作の保存にも混入させない。
+    rotationPreview = valid ? { plan, value: angle } : null;
+    updateCurrentFloorPlanElement();
+}
+
+export function commitFloorPlanRotation() {
+    const preview = rotationPreview;
+    rotationPreview = null;
+    if (!preview) return;
+    const { plan, value } = preview;
+    if (appState.floorPlanAdjustMode && canAdjustFloorPlan() && getCurrentFloorPlan() === plan) {
+        if ((plan.rotation ?? 0) !== value) {
+            plan.rotation = value;
+            scheduleFloorPlanSave(plan);
+        }
+        syncFloorPlanRotation();
+    }
+    updateCurrentFloorPlanElement();
+}
+
+export function stepFloorPlanRotation(delta) {
+    const plan = getCurrentFloorPlan();
+    if (!plan || !appState.floorPlanAdjustMode || !canAdjustFloorPlan()) return;
+    const current = rotationPreview?.plan === plan ? rotationPreview.value : (plan.rotation ?? 0);
+    const value = clampNumber(Math.round(current * 10) + Math.round(delta * 10), -1800, 1800) / 10;
+    rotationPreview = { plan, value };
+    commitFloorPlanRotation();
+}
+
+export function onFloorPlanRotationKeyDown(event) {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    event.stopPropagation();
+    commitFloorPlanRotation();
 }
 
 export function toggleFloorPlanVisibility() {
@@ -377,7 +481,7 @@ export function toggleFloorPlanVisibility() {
 
 export function resetCurrentFloorPlanSettings() {
     if (!getCurrentFloorPlan() || !canAdjustFloorPlan() || !requireAdminUiAction()) return;
-    if (!confirm('図面の位置を原点（0, 0）、サイズを100%へ戻しますか？\n不透明度と表示/非表示は変更しません。')) return;
+    if (!confirm('図面の位置を原点（0, 0）、サイズを100%へ戻しますか？\n不透明度・角度・表示/非表示は変更しません。')) return;
     finishFloorPlanGesture();
     const plan = getCurrentFloorPlan();
     plan.x = 0;

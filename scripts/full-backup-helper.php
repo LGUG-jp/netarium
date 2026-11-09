@@ -20,7 +20,7 @@ function fullSafeName(string $name): void
 function fullValidateSchema(PDO $db, int $schemaVersion): void
 {
     global $appRoot;
-    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22], true)) { throw new RuntimeException('Unsupported source schema'); }
+    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], true)) { throw new RuntimeException('Unsupported source schema'); }
     $reference = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     for ($version = 1; $version <= $schemaVersion; $version++) {
         ('migrateDatabaseToVersion' . $version)($reference);
@@ -98,6 +98,11 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
             $db->query('SELECT id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN),
             $maxConfigBytes
         );
+    }
+    if ($schemaVersion >= 23 && $db->query("SELECT 1 FROM view_floor_plans
+        WHERE rotation IS NULL OR typeof(rotation) NOT IN ('integer', 'real')
+            OR rotation NOT BETWEEN -180 AND 180 LIMIT 1")->fetchColumn() !== false) {
+        throw new RuntimeException('Invalid floor plan rotation');
     }
     foreach (['address_spaces' => 18, 'ip_segments' => 18, 'change_history' => 19, 'device_configs' => 20] as $table => $introducedIn) {
         if ($schemaVersion < $introducedIn) { continue; }

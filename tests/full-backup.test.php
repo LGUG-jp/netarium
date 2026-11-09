@@ -392,6 +392,10 @@ try {
     copyTree($stage, $currentStage);
     $currentDb = new PDO('sqlite:' . $currentStage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     migrateDatabase($currentDb);
+    check($currentDb->query('SELECT DISTINCT rotation FROM view_floor_plans')->fetchAll(PDO::FETCH_COLUMN) === [0.0],
+        'Legacy floor plans did not receive zero rotation');
+    $currentDb->exec('UPDATE view_floor_plans SET rotation=CASE view_id WHEN 1 THEN -0.1 ELSE 12.3 END');
+    $currentRotations = $currentDb->query('SELECT view_id,rotation FROM view_floor_plans ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC);
     $currentDb->exec("UPDATE devices SET type='pc' WHERE id=1");
     $currentDb->exec("INSERT INTO views (id,name,view_type) VALUES (90,'full-rack','rack')");
     $currentDb->exec("INSERT INTO rack_settings VALUES (90,42,'room')");
@@ -437,6 +441,22 @@ try {
     $currentDb = null;
     $currentArchive = $root . '/good-current.zip';
     $candidateManifest = rpc($currentWorker, ['command' => 'pack', 'root' => $currentStage, 'destination' => $currentArchive]);
+    foreach ([-180, -37, 0, 90, 180, 0.1, -0.1, 12.3, 12.3456789] as $index => $rotation) {
+        $angleStage = $root . '/angle-stage-' . $index;
+        copyTree($currentStage, $angleStage);
+        $angleDb = new PDO('sqlite:' . $angleStage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $angleDb->exec("UPDATE view_floor_plans SET rotation={$rotation}");
+        $angleDb = null;
+        $angleArchive = $root . '/angle-' . $index . '.zip';
+        rpc($currentWorker, ['command' => 'pack', 'root' => $angleStage, 'destination' => $angleArchive]);
+        $angleDestination = $root . '/angle-restored-' . $index; mkdir($angleDestination);
+        rpc($currentWorker, ['command' => 'extract', 'archive' => $angleArchive,
+            'root' => $angleDestination, 'max_bytes' => 10000000, 'max_files' => 100]);
+        $angleDb = new PDO('sqlite:' . $angleDestination . '/db/data.sqlite');
+        check($angleDb->query('SELECT DISTINCT rotation FROM view_floor_plans')->fetchAll(PDO::FETCH_COLUMN) === [(float)$rotation],
+            'Fractional or integer rotation lost on full ZIP round trip');
+        $angleDb = null;
+    }
     check($candidateManifest['application_version'] === $candidateVersion && $candidateManifest['schema_version'] === APP_DATABASE_SCHEMA_VERSION,
         'Candidate helper must use the current schema');
     check((string)file_get_contents($root . '/stderr-current') === '',
@@ -752,6 +772,52 @@ try {
     check($schema20Db->query('SELECT ping_reachability FROM address_spaces')->fetchColumn() === 'unset', 'Schema20 reachability must default to unset');
     check($schema20Db->query('SELECT memo FROM address_spaces')->fetchColumn() === '保存', 'Schema20 migration changed existing space data');
     $schema20Db = null;
+    foreach ([21, 22] as $legacySchema) {
+        $legacyApp = $root . '/app-schema' . $legacySchema;
+        copyTree($candidateApp, $legacyApp);
+        pinLegacyFixtureSchema($legacyApp, $legacySchema);
+        $legacyProcess = proc_open([PHP_BINARY, $legacyApp . '/scripts/full-backup-helper.php', $legacyApp],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $root . '/stderr-schema' . $legacySchema, 'a']], $legacyPipes, null, $environment);
+        check(is_resource($legacyProcess), 'Cannot launch legacy rotation helper');
+        $legacyWorker = [$legacyProcess, $legacyPipes]; $workers[] = $legacyWorker;
+        $legacyStage = $root . '/schema' . $legacySchema . '-stage';
+        copyTree($schema20Stage, $legacyStage);
+        $legacyDatabase = new PDO('sqlite:' . $legacyStage . '/db/data.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        for ($v = 21; $v <= $legacySchema; $v++) { ('migrateDatabaseToVersion' . $v)($legacyDatabase); }
+        $legacyDatabase = null;
+        $legacyArchive = $root . '/schema' . $legacySchema . '.zip';
+        rpc($legacyWorker, ['command' => 'pack', 'root' => $legacyStage, 'destination' => $legacyArchive]);
+        $legacyDestination = $root . '/restored-schema' . $legacySchema; mkdir($legacyDestination);
+        rpc($currentWorker, ['command' => 'extract', 'archive' => $legacyArchive,
+            'root' => $legacyDestination, 'max_bytes' => 10000000, 'max_files' => 100]);
+        $legacyDatabase = new PDO('sqlite:' . $legacyDestination . '/db/data.sqlite');
+        check($legacyDatabase->query('SELECT DISTINCT rotation FROM view_floor_plans')->fetchAll(PDO::FETCH_COLUMN) === [0.0],
+            'Legacy schema rotation did not migrate to zero');
+        $legacyDatabase = null;
+        $reverseDestination = $root . '/reject23-on-' . $legacySchema; mkdir($reverseDestination);
+        rpc($legacyWorker, ['command' => 'extract', 'archive' => $currentArchive,
+            'root' => $reverseDestination, 'max_bytes' => 10000000, 'max_files' => 100], false);
+        $mixedDbFile = $root . '/legacy-rotation-' . $legacySchema . '.sqlite';
+        copy($legacyStage . '/db/data.sqlite', $mixedDbFile);
+        $mixedDb = new PDO('sqlite:' . $mixedDbFile);
+        $mixedDb->exec('ALTER TABLE view_floor_plans ADD COLUMN rotation INTEGER NOT NULL DEFAULT 0');
+        $mixedDb = null;
+        $mixedArchive = $root . '/legacy-rotation-' . $legacySchema . '.zip';
+        copy($legacyArchive, $mixedArchive);
+        $zip = new ZipArchive(); check($zip->open($mixedArchive) === true, 'Cannot mutate legacy rotation ZIP');
+        $mixedManifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+        $mixedManifest['total_bytes'] += filesize($mixedDbFile) - $mixedManifest['files']['db/data.sqlite']['bytes'];
+        $mixedManifest['files']['db/data.sqlite'] = ['bytes' => filesize($mixedDbFile), 'sha256' => hash_file('sha256', $mixedDbFile)];
+        $zip->addFile($mixedDbFile, 'db/data.sqlite');
+        $zip->addFromString('manifest.json', json_encode($mixedManifest, JSON_THROW_ON_ERROR)); $zip->close();
+        $mixedDestination = $root . '/reject-legacy-rotation-' . $legacySchema; mkdir($mixedDestination);
+        rpc($currentWorker, ['command' => 'extract', 'archive' => $mixedArchive,
+            'root' => $mixedDestination, 'max_bytes' => 10000000, 'max_files' => 100], false);
+        $mixedDb = new PDO('sqlite:' . $mixedDestination . '/db/data.sqlite');
+        check((int)$mixedDb->query('PRAGMA user_version')->fetchColumn() === $legacySchema,
+            'Mixed rotation source migrated before source-contract rejection');
+        $mixedDb = null;
+    }
 
     // Full restore must retain the declaration but discard stale OK/latency
     // only for the intentionally excluded management IP.
@@ -923,7 +989,7 @@ try {
     check(hash_file('sha256', $legacy120Archive) === $legacyArchiveHash
         && hash_file('sha256', $dbFile) === $liveDbHash && hash_file('sha256', $dbFile . '-wal') === $liveWalHash,
         'Rejected data-changing migration modified source archive or live DB');
-    foreach (['unknown-column', 'collision', 'depth-collision', 'invalid-depth', 'both-half', 'outside', 'xy-placement', 'xy-link', 'floor-plan', 'ip-invalid', 'ip-duplicate', 'ip-management', 'ip-foreign',
+    foreach (['rotation-range', 'rotation-infinity', 'rotation-negative-infinity', 'rotation-text', 'rotation-null', 'rotation-unknown', 'unknown-column', 'collision', 'depth-collision', 'invalid-depth', 'both-half', 'outside', 'xy-placement', 'xy-link', 'floor-plan', 'ip-invalid', 'ip-duplicate', 'ip-management', 'ip-foreign',
         'cidr-invalid', 'cidr-host-bits', 'space-foreign', 'segment-foreign', 'segment-range', 'segment-overlap', 'segment-vlan', 'history-bad-json', 'history-expired-bad-json',
         'space-sequence-exhausted', 'segment-sequence-exhausted', 'history-sequence-exhausted', 'history-sequence-negative', 'history-sequence-text',
         'config-state', 'config-foreign', 'config-watermark', 'config-order', 'config-count', 'config-size', 'config-empty', 'config-utf8', 'config-nul', 'config-control', 'config-crlf', 'config-bom', 'config-memo', 'config-date',
@@ -932,6 +998,23 @@ try {
         copy($currentStage . '/db/data.sqlite', $badDbFile);
         $badDb = new PDO('sqlite:' . $badDbFile, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         if ($fault === 'unknown-column') { $badDb->exec('ALTER TABLE rack_mounts ADD COLUMN extra TEXT'); }
+        if (str_starts_with($fault, 'rotation-')) {
+            $badDb->exec('PRAGMA ignore_check_constraints=ON');
+            if ($fault === 'rotation-range') { $badDb->exec('UPDATE view_floor_plans SET rotation=181'); }
+            if ($fault === 'rotation-infinity') { $badDb->exec('UPDATE view_floor_plans SET rotation=1e999'); }
+            if ($fault === 'rotation-negative-infinity') { $badDb->exec('UPDATE view_floor_plans SET rotation=-1e999'); }
+            if ($fault === 'rotation-text') { $badDb->exec("UPDATE view_floor_plans SET rotation='invalid'"); }
+            if ($fault === 'rotation-null') {
+                $badDb->exec('PRAGMA writable_schema=ON');
+                $badDb->exec("UPDATE sqlite_master SET sql=replace(sql, 'rotation REAL NOT NULL', 'rotation REAL') WHERE name='view_floor_plans'");
+                $badDb->exec('PRAGMA writable_schema=OFF');
+                $badDb = null;
+                $badDb = new PDO('sqlite:' . $badDbFile, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+                $badDb->exec('PRAGMA ignore_check_constraints=ON');
+                $badDb->exec('UPDATE view_floor_plans SET rotation=NULL');
+            }
+            if ($fault === 'rotation-unknown') { $badDb->exec('ALTER TABLE view_floor_plans ADD COLUMN unknown INTEGER'); }
+        }
         if ($fault === 'collision') {
             $badDb->exec("INSERT INTO devices (id,name) VALUES (99,'collision')");
             $badDb->exec("INSERT INTO rack_mounts VALUES (99,90,'both',2,1,'full','half')");
@@ -1048,6 +1131,8 @@ try {
         check((int)$restoredDb->query('PRAGMA user_version')->fetchColumn() === APP_DATABASE_SCHEMA_VERSION, 'Old archive was not migrated to the current schema');
         check($extracted['schema_version'] === ($sourceVersion === $candidateVersion ? APP_DATABASE_SCHEMA_VERSION : 11), 'Source schema metadata changed');
         if ($sourceVersion === $candidateVersion) {
+            check($restoredDb->query('SELECT view_id,rotation FROM view_floor_plans ORDER BY view_id')->fetchAll(PDO::FETCH_ASSOC) === $currentRotations,
+                'Floor plan rotation lost on full round trip');
             check($restoredDb->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC) === $currentMounts, 'Rack physical fields lost');
             check($restoredDb->query('SELECT * FROM canvas_notes WHERE view_id=90 ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentNotes, 'Rack note fields lost');
             check($restoredDb->query('SELECT type FROM devices WHERE id=1')->fetchColumn() === 'pc', 'PC type lost on full round trip');
@@ -1062,6 +1147,8 @@ try {
             check($restoredDb->query('SELECT * FROM device_configs ORDER BY id')->fetchAll(PDO::FETCH_ASSOC) === $currentConfigs, 'Config identities, generation gaps or contents lost');
             check($restoredDb->query('SELECT * FROM device_config_states ORDER BY device_id')->fetchAll(PDO::FETCH_ASSOC) === $currentConfigStates, 'Config revision/high watermark or empty-history state lost');
         } else {
+            check($restoredDb->query('SELECT DISTINCT rotation FROM view_floor_plans')->fetchAll(PDO::FETCH_COLUMN) === [0.0],
+                'Legacy floor plan rotation was not zero');
             check($restoredDb->query('SELECT * FROM device_ip_addresses')->fetchAll(PDO::FETCH_ASSOC) === [], 'Old source invented additional IPs');
             check($restoredDb->query('SELECT * FROM change_history')->fetchAll(PDO::FETCH_ASSOC) === [], 'Old source invented change history');
             check($restoredDb->query('SELECT * FROM device_configs')->fetchAll() === []

@@ -76,6 +76,26 @@ test('floorの図面ONは通常の非表示状態に依存せず図面全体をp
     assert.equal(buildPrintModel(input, options).floorPlan, null);
 });
 
+test('回転後の図面全体を印刷boundsへ含め、中心・倍率・角度をsnapshotに保持する', () => {
+    const input = fixture();
+    input.view.view_type = 'floor';
+    const options = createPrintSettings();
+    for (const rotation of [-180, -90, -2, -0.1, 0.1, 12.3, 45, 90, 180]) {
+        input.floorPlan.rotation = rotation;
+        const model = buildPrintModel(input, options);
+        const radians = rotation * Math.PI / 180;
+        const width = 1500 * Math.abs(Math.cos(radians)) + 1000 * Math.abs(Math.sin(radians));
+        const height = 1500 * Math.abs(Math.sin(radians)) + 1000 * Math.abs(Math.cos(radians));
+        assert.ok(Math.abs(model.bounds.width - width) < 1e-7);
+        assert.ok(Math.abs(model.bounds.height - height) < 1e-7);
+        assert.ok(Math.abs(model.bounds.x + width / 2 - 800) < 1e-7);
+        assert.ok(Math.abs(model.bounds.y + height / 2 - 560) < 1e-7);
+        assert.equal(model.floorPlan.rotation, rotation);
+        input.floorPlan.rotation = 0;
+        assert.equal(model.floorPlan.rotation, rotation);
+    }
+});
+
 test('viewportはcanvasのpan/zoomを逆変換し、両viewで同じ切取範囲と向きを使う', () => {
     const bounds = viewportToPrintBounds({ width: 800, height: 600, left: 100, top: 50 },
         { scale: 0.5, panX: -100, panY: 200 });

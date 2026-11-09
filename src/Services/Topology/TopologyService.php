@@ -326,6 +326,7 @@ class TopologyService
                     y REAL NOT NULL,
                     scale REAL NOT NULL,
                     opacity REAL NOT NULL,
+                    rotation REAL NOT NULL,
                     is_visible INTEGER NOT NULL,
                     revision INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
@@ -340,7 +341,7 @@ class TopologyService
                 INSERT INTO saved_view_floor_plans
                 SELECT
                     view_id, stored_name, original_name, mime_type, file_size,
-                    image_width, image_height, x, y, scale, opacity,
+                    image_width, image_height, x, y, scale, opacity, rotation,
                     is_visible, revision, created_at, updated_at, sha256
                 FROM view_floor_plans
             ");
@@ -384,12 +385,12 @@ class TopologyService
             $this->db->exec("
                 INSERT INTO view_floor_plans (
                     view_id, stored_name, original_name, mime_type, file_size,
-                    image_width, image_height, x, y, scale, opacity,
+                    image_width, image_height, x, y, scale, opacity, rotation,
                     is_visible, revision, created_at, updated_at, sha256
                 )
                 SELECT
                     saved.view_id, saved.stored_name, saved.original_name, saved.mime_type, saved.file_size,
-                    saved.image_width, saved.image_height, saved.x, saved.y, saved.scale, saved.opacity,
+                    saved.image_width, saved.image_height, saved.x, saved.y, saved.scale, saved.opacity, saved.rotation,
                     saved.is_visible, saved.revision, saved.created_at, saved.updated_at, saved.sha256
                 FROM saved_view_floor_plans AS saved
                 INNER JOIN views AS current_view

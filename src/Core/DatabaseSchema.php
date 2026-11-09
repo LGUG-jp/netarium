@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const APP_DATABASE_SCHEMA_VERSION = 22;
+const APP_DATABASE_SCHEMA_VERSION = 23;
 
 
 function migrateDatabase(PDO $db): void
@@ -105,6 +105,9 @@ function migrateDatabase(PDO $db): void
                 break;
             case 22:
                 migrateDatabaseToVersion22($db);
+                break;
+            case 23:
+                migrateDatabaseToVersion23($db);
                 break;
 
             default:
@@ -1401,6 +1404,42 @@ function migrateDatabaseToVersion22(PDO $db): void
             // 論理削除。削除済み利用者は is_active=0 かつ deleted_at 設定済み。既存利用者はNULL。
             $db->exec('ALTER TABLE users ADD COLUMN deleted_at TEXT');
             $db->exec('PRAGMA user_version = 22');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion23(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 23) {
+            $db->exec("ALTER TABLE view_floor_plans ADD COLUMN rotation REAL NOT NULL DEFAULT 0
+                CHECK (typeof(rotation) IN ('integer', 'real') AND rotation BETWEEN -180 AND 180)");
+            $db->exec('DROP TRIGGER resource_owner_view_floor_plans_update');
+            $db->exec("CREATE TRIGGER resource_owner_view_floor_plans_update AFTER UPDATE ON view_floor_plans
+                WHEN OLD.stored_name IS NOT NEW.stored_name
+                    OR OLD.original_name IS NOT NEW.original_name
+                    OR OLD.mime_type IS NOT NEW.mime_type
+                    OR OLD.file_size IS NOT NEW.file_size
+                    OR OLD.image_width IS NOT NEW.image_width
+                    OR OLD.image_height IS NOT NEW.image_height
+                    OR OLD.x IS NOT NEW.x
+                    OR OLD.y IS NOT NEW.y
+                    OR OLD.scale IS NOT NEW.scale
+                    OR OLD.opacity IS NOT NEW.opacity
+                    OR OLD.rotation IS NOT NEW.rotation
+                    OR OLD.is_visible IS NOT NEW.is_visible
+                    OR OLD.revision IS NOT NEW.revision BEGIN
+                UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                WHERE id IN (OLD.view_id, NEW.view_id);
+            END");
+            $db->exec('PRAGMA user_version = 23');
         }
         $db->commit();
     } catch (Throwable $e) {

@@ -49,7 +49,8 @@ const floorPlanSaves = new Map();
 export function scheduleFloorPlanSave(plan) {
     if (!isCurrentUserAdmin() || appState.authExpired) return;
     const snapshot = { view_id: Number(plan.view_id), x: Number(plan.x), y: Number(plan.y),
-        scale: Number(plan.scale), opacity: Number(plan.opacity), is_visible: plan.is_visible ? 1 : 0 };
+        scale: Number(plan.scale), rotation: Number(plan.rotation ?? 0),
+        opacity: Number(plan.opacity), is_visible: plan.is_visible ? 1 : 0 };
     floorPlanSaves.set(snapshot.view_id, snapshot);
     markPending();
     scheduleSave({ immediate: true });
@@ -152,8 +153,8 @@ function inspectFloorPlanSave(pending, data) {
     // 図面だけの一致で、他画面の配置/リンク/メモを最新世代付きで上書きしない。
     if (!view || JSON.stringify(viewResource(data, view)) !== pending.viewSnapshot) return 'conflict';
     if (Number(view.resource_revision) === Number(pending.expectedRevision)) return 'retry';
-    if (plan && ['x', 'y', 'scale', 'opacity', 'is_visible'].every(key =>
-        Math.abs(Number(plan[key]) - snapshot[key]) < 0.0001)) {
+    if (plan && ['x', 'y', 'scale', 'rotation', 'opacity', 'is_visible'].every(key =>
+        Math.abs(Number(plan[key] ?? (key === 'rotation' ? 0 : NaN)) - snapshot[key]) < 0.0001)) {
         return Number(plan.revision) === pending.imageRevision + 1 ? 'saved' : 'conflict';
     }
     return 'conflict';

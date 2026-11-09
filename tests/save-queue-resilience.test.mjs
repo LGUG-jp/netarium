@@ -243,6 +243,28 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         assert.equal(queue.hasPendingChanges(), false);
     });
 
+    await t.test('回転保存の応答喪失は角度の一致も照合し、不一致を保存済みにしない', async () => {
+        for (const rotation of [-2, -0.1, 0.1, 12.3]) for (const remoteRotation of [rotation, 0]) {
+            const plan = floorFixture();
+            plan.rotation = rotation;
+            handler = async () => { throw new Error('保存応答喪失'); };
+            queue.scheduleFloorPlanSave(plan);
+            await queue.waitForActiveResourceSave();
+            const remote = remoteData();
+            remote.views[0].resource_revision = 2;
+            remote.floor_plans = [{ ...plan, rotation: remoteRotation, revision: 2 }];
+            handler = async action => {
+                assert.equal(action, 'load');
+                return json(remote);
+            };
+            assert.equal(await queue.confirmPendingSave(), remoteRotation === rotation ? 'saved' : 'conflict');
+            assert.equal(plan.rotation, rotation);
+            assert.equal(queue.hasResourceConflict('views', 1), remoteRotation !== rotation);
+            assert.equal(appState.views[0].resource_revision, remoteRotation === rotation ? 2 : 1);
+            assert.equal(calls.length, 2, '保存状態の確認で変更を再送しない');
+        }
+    });
+
     const ambiguousResponses = [
         ['通常404', () => json({ ok: false, error: 'Not found' }, 404)],
         ['汎用503', () => json({ ok: false, error: 'Unavailable' }, 503)],

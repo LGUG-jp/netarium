@@ -126,7 +126,9 @@ export function renderPrintSheet(model) {
         image.src = plan.imageUrl;
         image.alt = 'フロア図面';
         image.style.opacity = String(plan.opacity);
-        svg.appendChild(foreignObject(plan, image));
+        const frame = foreignObject(plan, image);
+        frame.setAttribute('transform', `rotate(${plan.rotation ?? 0} ${plan.x + plan.width / 2} ${plan.y + plan.height / 2})`);
+        svg.appendChild(frame);
     }
     for (const wire of model.wires) {
         const path = svgElement('path', { d: wire.pathData, fill: 'none', stroke: wire.color,

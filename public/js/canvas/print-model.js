@@ -4,6 +4,7 @@ import { resolveTopologyLinkRoutes } from './link-route-resolver.js';
 import { createLinkDisplayMap } from './link-crossings.js';
 import { rackDisplaySlot, rackFaces, rackOccupiedFaces } from '../core/rack-layout.js';
 import { RACK_NOTE_REGIONS, getRackNoteRegion } from '../core/canvas-note-data.js';
+import { getFloorPlanBounds } from './floor-plan-geometry.js';
 
 const systemColors = new Map(LINK_SYSTEM_COLORS.map(entry => [entry.key, entry.color]));
 
@@ -238,7 +239,8 @@ export function buildPrintModel({ view, devices, placements, links, linkSystems 
         Number(floorPlan.view_id) === Number(view.id) ? {
             imageUrl: floorPlan.image_url, x: Number(floorPlan.x), y: Number(floorPlan.y),
             width: Number(floorPlan.image_width) * Number(floorPlan.scale),
-            height: Number(floorPlan.image_height) * Number(floorPlan.scale), opacity: Number(floorPlan.opacity)
+            height: Number(floorPlan.image_height) * Number(floorPlan.scale), opacity: Number(floorPlan.opacity),
+            rotation: Number(floorPlan.rotation ?? 0)
         } : null;
     const rects = [...nodes, ...printNotes];
     for (const wire of wires) {
@@ -251,8 +253,10 @@ export function buildPrintModel({ view, devices, placements, links, linkSystems 
                 y: y - 14, width, height: 20 });
         }
     }
-    const rawBounds = options.range === 'viewport' ? { ...viewport } : plan ?
-        { x: plan.x, y: plan.y, width: plan.width, height: plan.height } : unionBounds(rects);
+    const planBounds = plan ? getFloorPlanBounds(floorPlan) : null;
+    const rawBounds = options.range === 'viewport' ? { ...viewport } : planBounds ?
+        { x: planBounds.minX, y: planBounds.minY,
+            width: planBounds.maxX - planBounds.minX, height: planBounds.maxY - planBounds.minY } : unionBounds(rects);
     const bounds = {
         x: Number.isFinite(rawBounds?.x) ? rawBounds.x : 0,
         y: Number.isFinite(rawBounds?.y) ? rawBounds.y : 0,

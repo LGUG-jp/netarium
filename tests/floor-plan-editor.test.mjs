@@ -106,7 +106,6 @@ test('図面直接編集: geometry、pointer、keyboard、取消、権限', asyn
                 image.dispatch('pointerup', screen(35, 22));
                 nearly(current.x, 35); nearly(current.y, 22); assert.equal(commits.length, 1);
                 image.dispatch('pointerup', screen(35, 22)); assert.equal(commits.length, 1);
-                assert.equal(frame.style.transform, `scale(${1 / zoom})`);
                 for (const corner of ['nw', 'ne', 'se', 'sw']) {
                     setup(zoom);
                     const handle = frame.children.find(node => node.dataset.floorPlanCorner === corner);
@@ -121,6 +120,53 @@ test('図面直接編集: geometry、pointer、keyboard、取消、権限', asyn
                     nearly(current.scale, 1); assert.equal(commits.length, 1);
                     const after = diagonal(current, corner); nearly(after.x, before.x); nearly(after.y, before.y);
                 }
+            }
+        });
+        await t.test('中心回転した四隅のリサイズは対角を固定し、拡縮・pan中も移動と枠を一致させる', () => {
+            const opposite = { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' };
+            const physicalCorner = (p, corner) => {
+                const radians = (p.rotation ?? 0) * Math.PI / 180;
+                const dx = (corner.endsWith('w') ? -1 : 1) * p.image_width * p.scale / 2;
+                const dy = (corner.startsWith('n') ? -1 : 1) * p.image_height * p.scale / 2;
+                return { x: p.x + p.image_width * p.scale / 2 + Math.cos(radians) * dx - Math.sin(radians) * dy,
+                    y: p.y + p.image_height * p.scale / 2 + Math.sin(radians) * dx + Math.cos(radians) * dy };
+            };
+            for (const rotation of [-180, -90, -2, -0.1, 0.1, 12.3, 37, 90, 180]) {
+                for (const corner of ['nw', 'ne', 'se', 'sw']) {
+                    setup(0.5, { ...plan(), rotation });
+                    const anchor = physicalCorner(current, opposite[corner]), start = physicalCorner(current, corner);
+                    const handle = frame.children.find(node => node.dataset.floorPlanCorner === corner);
+                    handle.dispatch('pointerdown', screen(start.x + 3, start.y + 5));
+                    appState.viewState.scale = 2;
+                    appState.viewState.panX = 180;
+                    eventBus.emit('canvas:view-transformed');
+                    const end = { clientX: 30 + 180 + (anchor.x + 2 * (start.x - anchor.x) + 3) * 2,
+                        clientY: 40 - 20 + (anchor.y + 2 * (start.y - anchor.y) + 5) * 2 };
+                    handle.dispatch('pointermove', end); handle.dispatch('pointerup', end);
+                    nearly(current.scale, 1);
+                    const after = physicalCorner(current, opposite[corner]);
+                    nearly(after.x, anchor.x); nearly(after.y, anchor.y);
+                    assert.equal(current.rotation, rotation); assert.equal(commits.length, 1);
+                    const nw = physicalCorner(current, 'nw');
+                    nearly(parseFloat(frame.style.left), nw.x); nearly(parseFloat(frame.style.top), nw.y);
+                    // 枠のCSS変換を適用したハンドル座標が、画像の物理的な角と一致する。
+                    const radians = rotation * Math.PI / 180;
+                    const w = parseFloat(frame.style.width) / appState.viewState.scale;
+                    const h = parseFloat(frame.style.height) / appState.viewState.scale;
+                    const hx = corner.endsWith('w') ? 0 : w, hy = corner.startsWith('n') ? 0 : h;
+                    const actual = physicalCorner(current, corner);
+                    nearly(nw.x + Math.cos(radians) * hx - Math.sin(radians) * hy, actual.x);
+                    nearly(nw.y + Math.sin(radians) * hx + Math.cos(radians) * hy, actual.y);
+                    handle.dispatch('keydown', { key: 'ArrowUp' });
+                    handle.dispatch('blur');
+                    const keyed = physicalCorner(current, opposite[corner]);
+                    nearly(keyed.x, anchor.x); nearly(keyed.y, anchor.y);
+                }
+                setup(1, { ...plan(), rotation });
+                image.dispatch('pointerdown', screen(200, 150));
+                image.dispatch('pointerup', screen(215, 143));
+                nearly(current.x, 35); nearly(current.y, 23);
+                assert.equal(current.rotation, rotation); assert.equal(commits.length, 1);
             }
         });
         await t.test('取消・capture喪失・render・no-op・別pointer', () => {
@@ -190,7 +236,7 @@ test('図面直接編集: geometry、pointer、keyboard、取消、権限', asyn
             setup(); image.focus();
             appState.viewState.scale = 2; appState.viewState.panX = 100;
             eventBus.emit('canvas:view-transformed');
-            assert.equal(frame.style.width, '400px'); assert.equal(frame.style.transform, 'scale(0.5)');
+            assert.equal(frame.style.width, '400px');
             assert.equal(current.scale, 0.5); assert.equal(commits.length, 0); assert.equal(previews.length, 0);
             const old = image, replacement = new Node('img');
             old.connected = false; appState.floorPlanLayer.appendChild(replacement);
