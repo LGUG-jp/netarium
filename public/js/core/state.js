@@ -964,6 +964,8 @@ export function normalizeFloorPlan(
                 2
             ),
 
+        rotation: Number(floorPlan.rotation ?? 0),
+
         opacity:
             clampNumber(
                 floorPlan.opacity == null

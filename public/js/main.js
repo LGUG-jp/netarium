@@ -107,6 +107,7 @@ import {
     closeLedgerDetailPane,
     closeLedgerPlaceViewModal,
     confirmPlaceDevicesToView,
+    deleteActiveLedgerDevice,
     deleteSelectedLedgerDevicesCompletely,
     getLedgerSelectedDeviceIds,
     manageActiveDevicePlacements,
@@ -158,6 +159,12 @@ import {
 import {
     chooseFloorPlanFile,
     commitFloorPlanOpacity,
+    commitFloorPlanRotation,
+    onFloorPlanRotationKeyDown,
+    previewFloorPlanRotation,
+    onFloorPlanOpacityKeyDown,
+    previewFloorPlanOpacityInput,
+    stepFloorPlanRotation,
     finishFloorPlanAdjustMode,
     previewFloorPlanOpacity,
     closeFloorPlanManager,
@@ -277,6 +284,17 @@ export function registerStaticListeners() {
     }
     document.getElementById('floor-plan-reset-btn')?.addEventListener('click', () => resetCurrentFloorPlanSettings());
     document.getElementById('floor-plan-finish-btn')?.addEventListener('click', () => finishFloorPlanAdjustMode());
+    const opacityValue = document.getElementById('floor-plan-opacity-value');
+    opacityValue?.addEventListener('input', previewFloorPlanOpacityInput);
+    opacityValue?.addEventListener('keydown', onFloorPlanOpacityKeyDown);
+    opacityValue?.addEventListener('blur', commitFloorPlanOpacity);
+    for (const [id, delta] of [['floor-plan-rotate-left', -0.1], ['floor-plan-rotate-right', 0.1]]) {
+        document.getElementById(id)?.addEventListener('click', () => stepFloorPlanRotation(delta));
+    }
+    const rotation = document.getElementById('floor-plan-rotation');
+    rotation?.addEventListener('input', previewFloorPlanRotation);
+    rotation?.addEventListener('keydown', onFloorPlanRotationKeyDown);
+    rotation?.addEventListener('blur', commitFloorPlanRotation);
     document.getElementById('lp-close-btn')?.addEventListener('click', () => closeLinkPanel());
     document.getElementById('lp-swap-btn')?.addEventListener('click', () => swapLinkPanelEndpoints());
     document.getElementById('lp-apply-btn')?.addEventListener('click', () => applyLinkPanel());
@@ -392,6 +410,7 @@ export function registerStaticListeners() {
     document.getElementById('ledger-sheet-view-manage-btn')?.addEventListener('click', () => manageActiveDevicePlacements());
     document.getElementById('ledger-sheet-history-btn')?.addEventListener('click', () => openActiveDeviceHistory());
     document.getElementById('ledger-sheet-config-btn')?.addEventListener('click', () => openActiveDeviceConfig());
+    document.getElementById('ledger-sheet-delete-btn')?.addEventListener('click', () => deleteActiveLedgerDevice());
     document.getElementById('ledger-sheet-save-btn')?.addEventListener('click', () => saveLedgerSheet());
     document.getElementById('close-ledger-place-view-modal-btn')?.addEventListener('click', () => closeLedgerPlaceViewModal());
     document.getElementById('close-ledger-place-view-modal-btn-2')?.addEventListener('click', () => closeLedgerPlaceViewModal());

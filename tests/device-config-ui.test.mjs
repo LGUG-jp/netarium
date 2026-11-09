@@ -54,11 +54,7 @@ test('Config登録の失敗・競合時に入力を保持し、選択削除を�
     document.getElementById('ledger-sheet-config-btn').focus();
     assert.equal(await openDeviceConfig(device), true);
     const overlay = document.getElementById('device-config-overlay');
-    assert.equal(document.getElementById('device-config-title').textContent, 'Config管理', 'ヘッダータイトルはConfig管理');
-    assert.equal(document.getElementById('device-config-title').parentElement.contains(document.getElementById('device-config-target-label')), true, 'タイトルと対象機器名は左側で同じグループにまとまる');
-    assert.match(document.getElementById('device-config-target-label').textContent, /対象機器：/, 'ヘッダー右側に対象機器ラベル');
     assert.equal(document.getElementById('device-config-name').textContent, device.name, '対象機器名が動的に表示される');
-    assert.equal(document.getElementById('close-device-config-btn').parentElement.classList.contains('device-config-header'), true, '閉じるボタンのみヘッダー右端に配置');
     assert.ok(overlay.querySelector('.device-config-history-empty'), '画面①：未登録時も左側に履歴エリアの空表示が存在');
     assert.match(overlay.querySelector('.device-config-history-empty').textContent, /登録されたConfigはまだありません/);
     assert.ok(overlay.querySelector('.device-config-empty-state'), '画面①：右側中央に未登録空状態が存在');

@@ -301,6 +301,97 @@ class BackupTest extends TestCase
         });
     }
 
+    public function testFloorPlanRotationMigrationAndSourceContracts(): void
+    {
+        foreach (range(11, 22) as $sourceSchema) {
+            $db = new \PDO('sqlite::memory:', null, null, [
+                \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            ]);
+            for ($version = 1; $version <= $sourceSchema; $version++) {
+                ('migrateDatabaseToVersion' . $version)($db);
+            }
+            $db->exec("INSERT INTO views(id,name,view_type) VALUES(1,'Rotation','floor')");
+            $db->exec("INSERT INTO view_floor_plans
+                (view_id,stored_name,original_name,mime_type,file_size,image_width,image_height,created_at,updated_at)
+                VALUES(1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png','floor.png','image/png',1,1,1,'2026-01-01','2026-01-01')");
+            $service = new \Netarium\Services\Backup\BackupService($db);
+            $sourceTables = $service->fetchBackupTables($sourceSchema);
+            $this->assertFalse(array_key_exists('rotation', $sourceTables['view_floor_plans'][0]));
+            $converted = $service->convertBackupRestoreData($sourceTables, $sourceSchema);
+            $this->assertSame(0, $converted['view_floor_plans'][0]['rotation']);
+            $sourceTables['view_floor_plans'][0]['rotation'] = 45;
+            $this->assertRestoreStatus(400, static fn() => $service->convertBackupRestoreData($sourceTables, $sourceSchema));
+            migrateDatabase($db);
+            $this->assertSame(0.0, $db->query('SELECT rotation FROM view_floor_plans')->fetchColumn());
+            $beforeRevision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
+            $db->exec('UPDATE view_floor_plans SET rotation=45 WHERE view_id=1');
+            $this->assertTrue((int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn() > $beforeRevision);
+            foreach (['181', '-180.1', '1e999', '-1e999', "'invalid'", "X'00'", 'NULL'] as $invalidSql) {
+                try {
+                    $db->exec("UPDATE view_floor_plans SET rotation={$invalidSql} WHERE view_id=1");
+                    $this->fail('Invalid SQLite rotation must be rejected: ' . $invalidSql);
+                } catch (\PDOException $error) {
+                    $this->assertStringContains('constraint', strtolower($error->getMessage()));
+                }
+                $this->assertSame(45.0, $db->query('SELECT rotation FROM view_floor_plans')->fetchColumn());
+            }
+        }
+    }
+
+    public function testFloorPlanRotationWebZipRoundTripAndInvalidValues(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            foreach ([-180, -37, 0, 90, 180, 0.1, -0.1, 12.3, 12.3456789] as $rotation) {
+                $db->exec("UPDATE view_floor_plans SET rotation={$rotation}");
+                file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+                $db->exec('UPDATE view_floor_plans SET rotation=1');
+                $this->commitIdBackup($this->previewIdBackup($path));
+                $this->assertSame((float)$rotation, $db->query('SELECT rotation FROM view_floor_plans')->fetchColumn());
+            }
+            $before = $this->idBoundaryState($db);
+            foreach ([-181, 181, -180.1, 180.1, '90', '1.5', true, false, null, [], ''] as $index => $invalid) {
+                $bad = $path . '.rotation-' . $index;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($invalid): void {
+                    $doc['tables']['view_floor_plans'][0]['rotation'] = $invalid;
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            foreach (['1e309', '-1e309'] as $index => $nonfinite) {
+                $bad = $path . '.nonfinite-' . $index;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc): void {
+                    $doc['tables']['view_floor_plans'][0]['rotation'] = '__NONFINITE__';
+                }, static fn(string $json): string => str_replace('"__NONFINITE__"', $nonfinite, $json));
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            foreach (['missing', 'unknown', 'legacy-mixed', 'future'] as $fault) {
+                $bad = $path . '.' . $fault;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    if ($fault === 'missing') { unset($doc['tables']['view_floor_plans'][0]['rotation']); }
+                    if ($fault === 'unknown') { $doc['tables']['view_floor_plans'][0]['unknown'] = 0; }
+                    if ($fault === 'legacy-mixed') { $manifest['schema_version'] = 22; }
+                    if ($fault === 'future') { $manifest['schema_version'] = 24; }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $legacy = $path . '.schema22';
+            copy($path, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 22;
+                foreach ($doc['tables']['view_floor_plans'] as &$plan) { unset($plan['rotation']); }
+                unset($plan);
+            });
+            $this->commitIdBackup($this->previewIdBackup($legacy));
+            $this->assertSame(0.0, $db->query('SELECT rotation FROM view_floor_plans')->fetchColumn());
+        });
+    }
+
     private function viewRevision(int $viewId): int
     {
         $data = $this->client->get('/api.php?action=load')->assertOk()->getJson();
@@ -359,6 +450,9 @@ class BackupTest extends TestCase
 
     private static function removeChangeHistoryContract(array &$doc, array &$manifest): void
     {
+        foreach ($doc['tables']['view_floor_plans'] ?? [] as $index => $plan) {
+            unset($doc['tables']['view_floor_plans'][$index]['rotation']);
+        }
         foreach ($doc['tables']['address_spaces'] ?? [] as $index => $space) {
             unset($doc['tables']['address_spaces'][$index]['ping_reachability']);
         }
@@ -408,6 +502,8 @@ class BackupTest extends TestCase
                 $manifest['schema_version'] = 20;
                 foreach ($doc['tables']['address_spaces'] as &$space) { unset($space['ping_reachability']); }
                 unset($space);
+                foreach ($doc['tables']['view_floor_plans'] as &$plan) { unset($plan['rotation']); }
+                unset($plan);
             });
             $this->commitIdBackup($this->previewIdBackup($legacy));
             $this->assertSame(['unset','unset','unset'], $db->query('SELECT ping_reachability FROM address_spaces ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
@@ -860,7 +956,9 @@ class BackupTest extends TestCase
         foreach ($tables as $table) {
             $before[$table] = $db->query("SELECT * FROM \"$table\" ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC);
         }
-        $objects = $db->query("SELECT type,name,sql FROM sqlite_master WHERE type IN ('trigger','index') ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
+        $objects = $db->query("SELECT type,name,tbl_name,sql FROM sqlite_master
+            WHERE type IN ('trigger','index') AND name <> 'resource_owner_view_floor_plans_update'
+            ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
         migrateDatabase($db);
         $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $this->assertSame(1, (int)$db->query('PRAGMA foreign_keys')->fetchColumn());
@@ -876,8 +974,10 @@ class BackupTest extends TestCase
             $this->assertSame($rows, $db->query("SELECT * FROM \"$table\"$where ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC));
         }
         $oldNames = array_column($objects, 'name');
-        $newObjects = $db->query("SELECT type,name,sql FROM sqlite_master WHERE type IN ('trigger','index') ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
-        $this->assertSame($objects, array_values(array_filter($newObjects, static fn($row) => in_array($row['name'], $oldNames, true))));
+        $newObjects = $db->query("SELECT type,name,tbl_name,sql FROM sqlite_master
+            WHERE type IN ('trigger','index') ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
+        $this->assertSame($objects, array_values(array_filter($newObjects,
+            static fn($row) => in_array($row['name'], $oldNames, true))));
         $revision = (int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn();
         $db->exec("UPDATE devices SET type='pc' WHERE id=1");
         $this->assertTrue((int)$db->query('SELECT resource_revision FROM devices WHERE id=1')->fetchColumn() > $revision);
@@ -2713,6 +2813,8 @@ class BackupTest extends TestCase
                 foreach ($doc['tables']['address_spaces'] ?? [] as $index => $space) {
                     unset($doc['tables']['address_spaces'][$index]['ping_reachability']);
                 }
+                foreach ($doc['tables']['view_floor_plans'] as &$plan) { unset($plan['rotation']); }
+                unset($plan);
                 unset($doc['tables']['device_configs'], $doc['tables']['device_config_states'],
                     $manifest['summary']['device_configs'], $manifest['summary']['device_config_states']);
             });
@@ -2975,6 +3077,13 @@ class BackupTest extends TestCase
                         $this->assertTrue(array_key_exists('ip_segment_id', $row));
                         $this->assertSame(null, $row['ip_segment_id']);
                         unset($row['ip_segment_id']);
+                    }
+                    unset($row);
+                }
+                if ($table === 'view_floor_plans') {
+                    foreach ($restoredRows as &$row) {
+                        $this->assertSame(0, $row['rotation']);
+                        unset($row['rotation']);
                     }
                     unset($row);
                 }

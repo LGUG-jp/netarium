@@ -731,7 +731,8 @@
     position: absolute;
     z-index: 2;
     box-sizing: border-box;
-    border: 2px solid var(--primary);
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
     transform-origin: 0 0;
     pointer-events: none;
 }
@@ -779,7 +780,7 @@
 }
 
 #floor-plan-layer:has(.floor-plan-image.adjustable:focus-visible) .floor-plan-editor-frame {
-    border-style: dashed;
+    outline-style: dashed;
 }
 
 /* ラックはXY座標キャンバスと独立した、面ごとの2列固定グリッド。 */

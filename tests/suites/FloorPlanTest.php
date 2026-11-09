@@ -121,6 +121,67 @@ class FloorPlanTest extends TestCase
         }
     }
 
+    public function testRotationFiniteJsonNumbersAndGeneralSavePreservation(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $db = new \PDO('sqlite:' . $server->getDbPath(), null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+            $now = date(DATE_ATOM);
+            $db->prepare("INSERT INTO view_floor_plans
+                (view_id, stored_name, original_name, mime_type, file_size, image_width, image_height, created_at, updated_at)
+                VALUES (2, ?, 'rotation.png', 'image/png', 1, 1, 1, ?, ?)")
+                ->execute([str_repeat('a', 32) . '.png', $now, $now]);
+            foreach ([-180, -90, 0, 90, 180, 0.1, -0.1, 12.3, 12.3456789] as $rotation) {
+                $before = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $settings = ['view_id' => 2, 'expected_revision' => (int)array_column($before['views'], 'resource_revision', 'id')[2],
+                    'x' => 0, 'y' => 0, 'scale' => 1, 'opacity' => 0.5, 'is_visible' => 1, 'rotation' => $rotation];
+                $saved = $client->postJson('/api.php?action=update_floor_plan_settings', $settings)->assertOk()->getJson();
+                $this->assertSame($rotation, $saved['floor_plan_settings']['rotation']);
+                $this->assertSame($rotation, $client->get('/api.php?action=load')->assertOk()->getJson()['floor_plans'][0]['rotation']);
+                $this->assertTrue($saved['view_revision'] > $settings['expected_revision']);
+            }
+            $before = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $settings['expected_revision'] = (int)array_column($before['views'], 'resource_revision', 'id')[2];
+            foreach ([-181, 181, -180.1, 180.1, '90', '1.5', true, false, null, [], ''] as $invalid) {
+                $settings['rotation'] = $invalid;
+                $client->postJson('/api.php?action=update_floor_plan_settings', $settings)->assertStatus(400);
+                $after = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $this->assertSame($before['floor_plans'], $after['floor_plans']);
+                $this->assertSame($before['views'], $after['views']);
+                $this->assertSame($before['revision'], $after['revision']);
+            }
+            foreach (['1e309', '-1e309'] as $nonfinite) {
+                $settings['rotation'] = '__NONFINITE__';
+                $json = str_replace('"__NONFINITE__"', $nonfinite, json_encode($settings, JSON_THROW_ON_ERROR));
+                $client->request('POST', '/api.php?action=update_floor_plan_settings', $json, [
+                    'Content-Type' => 'application/json', 'X-CSRF-Token' => $client->getCsrfToken(),
+                ])->assertStatus(400);
+                $after = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $this->assertSame($before['floor_plans'], $after['floor_plans']);
+                $this->assertSame($before['views'], $after['views']);
+                $this->assertSame($before['revision'], $after['revision']);
+            }
+            $view = array_column($before['views'], null, 'id')[2];
+            $view['memo'] = 'rotation preserved';
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [[
+                'operation' => 'update', 'id' => 2, 'expected_revision' => (int)$view['resource_revision'],
+                'view' => $view,
+                'placements' => array_values(array_filter($before['placements'], static fn($row) => (int)$row['view_id'] === 2)),
+                'links' => array_values(array_filter($before['links'], static fn($row) => (int)$row['view_id'] === 2)),
+                'canvas_notes' => [],
+            ]]])->assertOk();
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $this->assertSame(12.3456789, $data['floor_plans'][0]['rotation']);
+            $client->postJson('/api.php?action=save', $data)->assertOk();
+            $this->assertSame(12.3456789, $client->get('/api.php?action=load')->assertOk()->getJson()['floor_plans'][0]['rotation']);
+        } finally {
+            $server->stop();
+        }
+    }
+
     public function testBusySettingsPreserveStoredPlanAndAllowRetry(): void
     {
         $server = new \Netarium\Tests\TestServer();
@@ -194,6 +255,8 @@ class FloorPlanTest extends TestCase
             $this->assertSame(9, $info[1]);
             $this->assertSame(strlen($original), (int)$upload['floor_plan']['file_size']);
             $defaults = ['x' => 0.0, 'y' => 0.0, 'scale' => 1.0, 'opacity' => 1.0, 'is_visible' => 1];
+            $this->assertSame(0, $upload['floor_plan']['rotation']);
+            $this->assertSame(0, $client->get('/api.php?action=load')->assertOk()->getJson()['floor_plans'][0]['rotation']);
             $initial = $client->get('/api.php?action=load')->assertOk()->getJson();
             $initialPlan = array_column($initial['floor_plans'], null, 'view_id')[2];
             foreach ($defaults as $key => $value) {
@@ -205,6 +268,15 @@ class FloorPlanTest extends TestCase
             $update = $client->postJson('/api.php?action=update_floor_plan_settings', array_merge([
                 'view_id' => 2, 'expected_revision' => (int)$upload['view_revision'],
             ], $settings))->assertOk()->getJson();
+            $rotationSave = $client->postJson('/api.php?action=update_floor_plan_settings', array_merge(
+                $settings, ['view_id' => 2, 'expected_revision' => (int)$update['view_revision'], 'rotation' => -137.1]
+            ))->assertOk()->getJson();
+            $this->assertSame(-137.1, $rotationSave['floor_plan_settings']['rotation']);
+            // Legacy settings callers omit rotation without resetting the stored angle.
+            $update = $client->postJson('/api.php?action=update_floor_plan_settings', array_merge(
+                $settings, ['view_id' => 2, 'expected_revision' => (int)$rotationSave['view_revision']]
+            ))->assertOk()->getJson();
+            $this->assertSame(-137.1, $update['floor_plan_settings']['rotation']);
             $configured = $client->get('/api.php?action=load')->assertOk()->getJson();
             $configuredPlan = array_column($configured['floor_plans'], null, 'view_id')[2];
             foreach ($settings as $key => $value) {
@@ -240,6 +312,8 @@ class FloorPlanTest extends TestCase
             $this->assertSame(strlen($replacementBytes), (int)$replacement['floor_plan']['file_size']);
             $before = $client->get('/api.php?action=load')->assertOk()->getJson();
             $reloadedPlan = array_column($before['floor_plans'], null, 'view_id')[2];
+            $this->assertSame(-137.1, $replacement['floor_plan']['rotation']);
+            $this->assertSame(-137.1, $reloadedPlan['rotation']);
             foreach ($settings as $key => $value) {
                 $this->assertSame($value, $key === 'is_visible' ? (int)$replacement['floor_plan'][$key] : (float)$replacement['floor_plan'][$key]);
                 $this->assertSame($value, $key === 'is_visible' ? (int)$reloadedPlan[$key] : (float)$reloadedPlan[$key]);

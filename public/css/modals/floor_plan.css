@@ -134,13 +134,65 @@
 }
 
 .floor-plan-toolbar-opacity input {
-    width: 112px;
+    width: 88px;
     accent-color: var(--primary);
 }
 
-.floor-plan-toolbar-opacity output {
-    min-width: 4ch;
-    text-align: right;
+.canvas-context-toolbar .floor-plan-toolbar-range {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+}
+
+.floor-plan-toolbar-range input {
+    margin: 0;
+}
+
+/* datalistを使わず、ブラウザによる目盛りへの吸着を避ける。 */
+.floor-plan-opacity-ticks {
+    position: absolute;
+    inset: auto 8px -3px;
+    height: 3px;
+    pointer-events: none;
+}
+
+.floor-plan-opacity-ticks i {
+    position: absolute;
+    height: 3px;
+    border-left: 1px solid var(--text-muted);
+}
+
+.floor-plan-opacity-ticks i:nth-child(1) { left: 16.6667%; }
+.floor-plan-opacity-ticks i:nth-child(2) { left: 44.4444%; }
+.floor-plan-opacity-ticks i:nth-child(3) { left: 72.2222%; }
+
+.floor-plan-toolbar-opacity-group input[type="number"],
+.floor-plan-toolbar-rotation input {
+    width: 76px;
+    min-height: 32px;
+    padding: 4px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font: inherit;
+}
+
+.floor-plan-toolbar-opacity-group input[type="number"] {
+    width: 58px;
+}
+
+.floor-plan-toolbar-opacity-group input[aria-invalid="true"],
+.floor-plan-toolbar-rotation input[aria-invalid="true"] {
+    border-color: var(--danger);
+}
+
+.floor-plan-toolbar-rotation input:focus-visible,
+.floor-plan-toolbar-opacity-group input[type="number"]:focus-visible,
+.floor-plan-toolbar-opacity input:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
 }
 
 .floor-plan-toolbar-help-content {

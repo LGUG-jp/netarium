@@ -334,6 +334,16 @@
                 </header>
 
                 <div class="ledger-sheet-actions-bar" role="toolbar" aria-label="個票操作">
+                    <button
+                        type="button"
+                        id="ledger-sheet-delete-btn"
+                        class="btn btn-danger btn-secondary btn-sm admin-only"
+                        title="この機器を全ビューの配置・関連接続とともに完全削除します"
+                        hidden
+                        disabled
+                    >
+                        機器を完全削除
+                    </button>
                     <button id="ledger-sheet-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="機器のリンクをコピー（保存後に利用できます）">
                         機器のリンクをコピー
                     </button>

@@ -1496,7 +1496,7 @@ export async function openPlacementManagerFromPanel() {
  * ==========================================
  */
 
-export async function deleteDeviceCompletely(deviceIds) {
+export async function deleteDeviceCompletely(deviceIds, { deviceName = null } = {}) {
     if (!requireAdminUiAction()) {
         return false;
     }
@@ -1515,7 +1515,9 @@ export async function deleteDeviceCompletely(deviceIds) {
     }
 
     const confirmed = confirm(
-        `選択された ${targetIds.length}台の機器を完全削除しますか?\n\n` +
+        (deviceName !== null && targetIds.length === 1
+            ? `機器「${deviceName}」を完全削除しますか?\n\n`
+            : `選択された ${targetIds.length}台の機器を完全削除しますか?\n\n`) +
         'すべてのビュー上の配置、および関連するすべての接続が永久に削除されます。'
     );
 

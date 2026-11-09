@@ -56,6 +56,13 @@
     box-sizing: border-box;
 }
 
+.device-config-navigation {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+}
+
 
 .device-config-target-name {
     color: var(--text-main);
@@ -888,10 +895,6 @@
     .device-config-header {
         padding: 10px 14px;
         gap: 8px;
-    }
-    .device-config-header-actions {
-        width: 100%;
-        justify-content: space-between;
     }
     .device-config-toolbar {
         flex-wrap: wrap;

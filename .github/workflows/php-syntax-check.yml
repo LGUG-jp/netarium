@@ -32,6 +32,12 @@ jobs:
           php-version: '8.5'
           tools: none
 
+      - name: Check limited JavaScript types (development repository only)
+        if: github.repository == 'LGUG-jp/netarium-dev'
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run typecheck
+
       - name: Run PHP syntax check
         run: |
           echo "Running syntax check on all PHP files..."

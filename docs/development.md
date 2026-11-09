@@ -122,6 +122,7 @@ CI で同じ検証を行う場合は、早期の原因切り分けや環境差�
 | PowerShell 構文・文字コード | 変更したスクリプトの構文・ASCII/BOM 条件を確認。未変更なら原則不要 | 同 `checks` ジョブが `scripts/*.ps1` の ASCII および BOM を検査。PowerShell の構文や動作までは保証しない |
 | 公開スナップショット・リリース安全性 | 公開資材や抽出ルール、公開処理の変更時に確認。無関係な機能変更では重複実行不要 | 同 `checks` ジョブが Docker を起動せずに公開スナップショットの抽出可能性を検証し、Private リポジトリでのみ外部資格情報なしで安全境界テスト 4 ファイルを実行 |
 | JavaScript | 通常は対象ファイルを明示したテストと関連する起動・結合確認 | アプリの JavaScript 全件や対象機能のテストを一律に実行する CI はないため、CI 成功だけで代替しない |
+| JavaScript 限定型チェック | 開発正本で `npm ci --ignore-scripts --no-audit --no-fund` 後に `npm run typecheck`。独立 2 モジュールの本体と、保存境界を含む型契約検証。`resource-save.js` 本体全体は未検査 | 同 `checks` ジョブが開発正本限定で依存導入と型チェックを実行。Public 側はスキップ |
 | PHP API 回帰 | 通常は対象経路、コア改修・リリース判定は必要な全件回帰 | 軽量 CI や Docker CI を PHP API 全件回帰の代わりにしない |
 | Docker 統合 | Docker・配備・実行環境依存の変更時に必要な経路を確認。通常の画面変更ではローカル再現不要 | [Docker CI](../.github/workflows/docker-poc.yml) が手動起動またはリリース公開ワークフロー（`release-publish.yml`）からの呼び出しで全段（full）を検証。PR では自動起動しない |
 
@@ -180,6 +181,7 @@ Docker コンテナを起動せず、単一の `checks` ジョブで以下の静
 2. 配備用 PowerShell スクリプト（`scripts/*.ps1`）の ASCII および BOM 検査
 3. Docker を起動しない公開スナップショットの抽出可能性検査（`scripts/export-public-snapshot.mjs`）
 4. 外部資格情報を持たない隔離環境でのリリース安全性検査（Private リポジトリ限定で `tests/export-public-snapshot.test.mjs`、`tests/release-sync.test.mjs`、`tests/release-control.test.mjs`、`tests/release-finalize.test.mjs` を実行）
+5. 開発正本限定の JavaScript 型チェック（対象 2 モジュールと型契約検証。依存導入は `npm ci --ignore-scripts --no-audit --no-fund`）
 
 全 PR および `main` push を対象として維持する理由は、Public `main` への確定 push を含むすべての基幹ブランチ更新において、安全境界の維持を同一の基準で保証するためです。
 concurrency の制御により、PR では後続の push が古い実行を自動キャンセルしますが、`main` への push では処理をキャンセルせずに最後まで実行します。

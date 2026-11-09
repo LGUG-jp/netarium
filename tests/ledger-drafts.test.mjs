@@ -217,6 +217,42 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         assert.equal(elements.get('ledger-device-sheet-overlay').hidden, false);
     });
 
+    await t.test('個票の前後移動は未適用入力の保存・破棄・編集継続を反映し、移動先のフォームを表示する', async () => {
+        ledger.renderLedgerTable();
+        const sheet = elements.get('ledger-sheet-body');
+        const originalName = appState.devices[0].name;
+        input(field(sheet, 'name'), 'cancel navigation');
+        let moving = window.navigateLedgerDevice(1);
+        await chooseAction('cancel');
+        await moving;
+        assert.equal(ledger.activeLedgerDeviceId, 1);
+        assert.equal(field(sheet, 'name').value, 'cancel navigation');
+        assert.equal(appState.devices[0].name, originalName);
+
+        moving = window.navigateLedgerDevice(1);
+        await chooseAction('discard');
+        await moving;
+        assert.equal(ledger.activeLedgerDeviceId, 2);
+        assert.equal(field(sheet, 'name').value, appState.devices[1].name);
+        assert.equal(appState.devices[0].name, originalName);
+        assert.equal(drafts.hasDeviceDraftChanges('sheet', 1), false);
+
+        await window.navigateLedgerDevice(-1);
+        assert.equal(ledger.activeLedgerDeviceId, 1);
+        assert.equal(field(sheet, 'name').value, originalName);
+        input(field(sheet, 'name'), 'saved before navigation');
+        moving = window.navigateLedgerDevice(1);
+        await chooseAction('save');
+        await moving;
+        assert.equal(ledger.activeLedgerDeviceId, 2);
+        assert.equal(field(sheet, 'name').value, appState.devices[1].name);
+        assert.equal(await queue.flushSaveQueue({ silent: true }), true);
+        assert.equal(appState.devices[0].name, 'saved before navigation');
+        assert.equal(calls.at(-1).devices[0].device.name, 'saved before navigation');
+        await window.navigateLedgerDevice(-1);
+        assert.equal(field(sheet, 'name').value, 'saved before navigation');
+    });
+
     await t.test('個票のタブ切替は両タブの下書きとDOMを保持し、非表示タブのエラーへ戻れる', async () => {
         const sheet = elements.get('ledger-sheet-body');
         const before = calls.length;

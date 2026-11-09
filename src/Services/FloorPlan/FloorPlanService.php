@@ -233,6 +233,7 @@ class FloorPlanService
                 'y' => (float)$savedFloorPlan['y'],
                 'scale' => (float)$savedFloorPlan['scale'],
                 'opacity' => (float)$savedFloorPlan['opacity'],
+                'rotation' => (float)$savedFloorPlan['rotation'],
                 'is_visible' => (int)$savedFloorPlan['is_visible'],
                 'revision' => $floorPlanRevision,
                 'created_at' => (string)$savedFloorPlan['created_at'],
@@ -357,6 +358,11 @@ class FloorPlanService
         $y = Request::normalizeFiniteNumber($input['y'], 0);
         $scale = Request::normalizeFiniteNumber($input['scale'], 1);
         $opacity = Request::normalizeFiniteNumber($input['opacity'], 1);
+        $rotation = $input['rotation'] ?? null;
+        if (array_key_exists('rotation', $input) &&
+            ((!is_int($rotation) && !is_float($rotation)) || !is_finite((float)$rotation) || $rotation < -180 || $rotation > 180)) {
+            throw new ApiException('図面の回転角度は-180から180の有限な数値で指定してください', 400);
+        }
 
         $visibleValue = $input['is_visible'] ?? null;
 
@@ -394,6 +400,7 @@ class FloorPlanService
                     y = :y,
                     scale = :scale,
                     opacity = :opacity,
+                    rotation = COALESCE(:rotation, rotation),
                     is_visible = :is_visible,
                     revision = revision + 1,
                     updated_at = :updated_at
@@ -405,6 +412,7 @@ class FloorPlanService
                 ':y' => $y,
                 ':scale' => $scale,
                 ':opacity' => $opacity,
+                ':rotation' => $rotation,
                 ':is_visible' => $isVisible,
                 ':updated_at' => $savedAt,
                 ':view_id' => $viewId,
@@ -415,13 +423,15 @@ class FloorPlanService
             }
 
             $revisionStmt = $this->db->prepare("
-                SELECT revision
+                SELECT revision, rotation
                 FROM view_floor_plans
                 WHERE view_id = :view_id
             ");
 
             $revisionStmt->execute([':view_id' => $viewId]);
-            $floorPlanRevision = (int)$revisionStmt->fetchColumn();
+            $savedSettings = $revisionStmt->fetch(PDO::FETCH_ASSOC);
+            $floorPlanRevision = (int)$savedSettings['revision'];
+            $rotation = (float)$savedSettings['rotation'];
 
             $this->appMetaRepo->set('last_saved_at', $savedAt);
 
@@ -460,6 +470,7 @@ class FloorPlanService
                 'y' => $y,
                 'scale' => $scale,
                 'opacity' => $opacity,
+                'rotation' => $rotation,
                 'is_visible' => $isVisible,
                 'revision' => $floorPlanRevision,
                 'updated_at' => $savedAt,

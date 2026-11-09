@@ -18,21 +18,38 @@
             hidden
         >
             <strong>図面調整</strong>
-            <label class="floor-plan-toolbar-opacity" for="floor-plan-opacity">不透明度
-                <input id="floor-plan-opacity" type="range" min="10" max="100" step="1" value="100"
-                    aria-describedby="floor-plan-opacity-value">
-                <output id="floor-plan-opacity-value" for="floor-plan-opacity">100%</output>
-            </label>
+            <div class="floor-plan-toolbar-opacity-group" role="group" aria-label="図面の不透明度">
+                <label class="floor-plan-toolbar-opacity" for="floor-plan-opacity">不透明度
+                    <span class="floor-plan-toolbar-range">
+                        <input id="floor-plan-opacity" type="range" min="10" max="100" step="1" value="100"
+                            aria-label="図面の不透明度（%）">
+                        <span class="floor-plan-opacity-ticks" aria-hidden="true"><i></i><i></i><i></i></span>
+                    </span>
+                </label>
+                <input id="floor-plan-opacity-value" type="number" min="10" max="100" step="1" value="100"
+                    aria-label="図面の不透明度（%）" aria-describedby="floor-plan-opacity-error"><span>%</span>
+                <span id="floor-plan-opacity-error" class="floor-plan-opacity-error" role="status" hidden>10〜100の整数を入力してください。未確定の不透明度は保存しません。</span>
+            </div>
+            <div class="floor-plan-toolbar-rotation" role="group" aria-label="図面の回転">
+                <label for="floor-plan-rotation">回転</label>
+                <button id="floor-plan-rotate-left" type="button" class="btn btn-secondary btn-sm" title="左へ0.1度回転" aria-label="左へ0.1度回転">↶</button>
+                <input id="floor-plan-rotation" type="number" min="-180" max="180" step="0.1" value="0.0"
+                    aria-label="図面の回転角度（度）" aria-describedby="floor-plan-rotation-error"><span>°</span>
+                <button id="floor-plan-rotate-right" type="button" class="btn btn-secondary btn-sm" title="右へ0.1度回転" aria-label="右へ0.1度回転">↷</button>
+                <span id="floor-plan-rotation-error" class="floor-plan-rotation-error" role="status" hidden>-180〜180の数値を小数第1位までで入力してください。未確定の角度は保存しません。</span>
+            </div>
             <span id="floor-plan-temporary-visible" class="form-support" role="status" hidden>非表示の図面を一時表示中</span>
             <div class="floor-plan-toolbar-actions" role="group" aria-label="図面調整の操作">
                 <button id="floor-plan-reset-btn" type="button" class="btn btn-secondary btn-sm"
-                    title="位置を原点、サイズを100%へ戻します。不透明度と表示状態は保持します">位置・サイズをリセット</button>
+                    title="位置を原点、サイズを100%へ戻します。不透明度・角度・表示状態は保持します">位置・サイズをリセット</button>
                 <details class="floor-plan-toolbar-help">
                     <summary class="btn btn-tertiary btn-sm">？使い方</summary>
                     <div class="floor-plan-toolbar-help-content" id="floor-plan-editor-help">
                         <p>図面本体をドラッグで移動、四隅で拡大縮小します。ホイールはCanvasのズームです。</p>
                         <p>図面にフォーカスして矢印キーで移動（Shiftで10倍）。四隅にフォーカスして上/右で拡大、下/左で縮小（1%、Shiftで10%）できます。</p>
                         <p>図面のサイズは5〜200%、不透明度は10%（薄い）〜100%（不透明）です。確定操作ごとに自動保存します。</p>
+                        <p>不透明度はスライダーまたは10〜100の整数で指定します。角度は中心を軸に-180〜180度、小数第1位まで指定できます。左右のボタンは0.1度ずつ回転します。0を入力すると角度だけを戻せます。</p>
+                        <p>不透明度と角度の数値入力はプレビューし、Enterまたは欄からフォーカスを外すと自動保存します。不正な値は保存しません。競合・認証失効や画面切替では未確定の入力を破棄します。不透明度のスライダーを動かすと数値欄の入力を置き換えます。</p>
                         <p>Escは操作中の移動・リサイズだけを取り消します。操作中でなければ調整を終了します。「完了」でも終了します。確定済みの変更は戻しません。</p>
                         <p>保存失敗はフッターで確認し、「保存」で再試行できます。未確認の保存は「保存状態を確認」、競合はビュー管理の再読込を使います。</p>
                     </div>
