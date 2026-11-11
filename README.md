@@ -6,6 +6,34 @@ Netarium（ネタリウム）は、ネットワークの構成図と機器情報
 
 プロダクトコンセプト、名称の由来、ロゴの意図については [Netarium について](docs/about.md) を参照してください。画面設計や操作語彙の規律は [デザインガイドライン](docs/design-guidelines.md) にまとめています。
 
+## スクリーンショット
+
+### メイン画面（ネットワーク構成図）
+
+機器の配置、接続線の描画、プロパティ確認を一体で行うメインキャンバス画面です。
+
+![メイン構成図画面（キャンバスと機器情報）](public/assets/help/main-screen.webp)
+
+### フロア配置図（図面連携）
+
+建物の平面図やレイアウト図を下絵として登録し、フロアごとの機器配置や接続を視覚的に管理できます。
+
+![フロア配置図画面（架空の庁舎図面と機器配置）](public/assets/help/floor-plan-adjust.webp)
+
+### ラックビュー（収容管理）
+
+42U ラックの前面・背面を常時表示し、機器の搭載位置や空きスロットを視覚的に管理する画面です。
+
+![ラックビュー画面（前面・背面表示とUスロット管理）](public/assets/help/rack-view.webp)
+
+### 機器個票（台帳管理）
+
+IP アドレス、設置場所、資産情報、機器写真などを集約して管理する機器台帳の個票画面です。
+
+![機器個票画面（機器・設置・資産情報の管理）](public/assets/help/device-sheet-basic.webp)
+
+各画面の詳しい操作方法や機能については、[管理者ガイド](docs/administrator-guide.md) や [クイックスタートガイド](docs/quickstart.md)、アプリ内の [利用ガイド](public/help.html) を参照してください。
+
 ## バージョン
 
 このソースのバージョンは 1.5.0 です。各リリースの詳細は [v1.5.0 リリースノート](docs/release-notes-v1.5.0.md) および [Releases](https://github.com/LGUG-jp/netarium/releases) を参照してください。変更履歴は [CHANGELOG.md](CHANGELOG.md) にまとめています。
