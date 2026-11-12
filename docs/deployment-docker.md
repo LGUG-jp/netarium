@@ -48,7 +48,7 @@ docker compose run --rm --no-deps web php scripts/check-install.php \
 ### 方式B: GHCR事前ビルド済みイメージ（推奨本番配備）
 
 ビルド環境を必要とせず、固定バージョンタグの公式イメージを利用します。`compose.image.yaml` を使用します。
-公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.5.0` です。候補版の検証や独自ビルドには方式 A のローカルビルドを利用します。
+公式イメージは GitHub Container Registry（GHCR）より `linux/amd64` 向けに配布されます。固定タグは `ghcr.io/lgug-jp/netarium:1.5.1` です。候補版の検証や独自ビルドには方式 A のローカルビルドを利用します。
 
 公式イメージが GitHub Packages 上で Public として公開された後は、認証なし（匿名 pull）で取得できます。GitHub Releases と GitHub Packages で公開状況を確認し、利用環境からイメージを取得できることを確認してください。
 
@@ -218,7 +218,7 @@ GHCR固定タグ（例: `ghcr.io/lgug-jp/netarium:1.3.0`）で運用している
 
 ## 8. 停止型完全バックアップ・復元・全損復旧
 
-完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の検証が必要です。復元先 `1.5.0`（現行スキーマ 23）では、同一 MAJOR 内の順方向（source <= target）の正規 SemVer、および移行経路が存在するスキーマ 11〜23（11..23）のバックアップを受け付けます。
+完全バックアップ（`netarium-full` 形式 1）は、SQLite DB全体・全ユーザー・認証状態・図面・機器写真を同一世代としてZIPアーカイブに梱包します。IIS環境（`scripts/backup-full.ps1`／`scripts/restore-full.ps1`）と共通形式ですが、復元にはアプリ版・スキーマ・保存データ契約の検証が必要です。復元先 `1.5.1`（現行スキーマ 23）では、同一 MAJOR 内の順方向（source <= target）の正規 SemVer、および移行経路が存在するスキーマ 11〜23（11..23）のバックアップを受け付けます。
 
 ### 完全バックアップの採取
 

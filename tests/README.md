@@ -20,7 +20,7 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 一時的な隔離ディレクトリおよび一時 SQLite DB を自動生成し、バックエンド API（Phase 0 基準）の振る舞いを検証します。
 
-`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、現行版 v1.5.0 への順方向復元と、現行スキーマ 23 の主要保存項目の往復、ポリシー拒否判定を検証します。
+`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、現行版 v1.5.1 への順方向復元と、現行スキーマ 23 の主要保存項目の往復、ポリシー拒否判定を検証します。
 環境変数 `NETARIUM_BACKUP_V120_ROOT` で展開ルートを指定するか、対応する `v1.2.0` タグを取得してください。
 Web 復元テストでは旧版（`v1.0.0`〜`v1.1.0`）のタグや環境変数は不要です。
 未指定時はローカルのタグから `git archive` で隔離コピーを作り、タグ不足では明示的に失敗します。ネットワーク取得や現行コードの版番号偽装はテスト内で行いません。
@@ -221,20 +221,20 @@ echo "PASS actual-tag Web ZIP smoke\n";
 ```
 
 取得 ref の peeled SHA は `対象変更` と照合します。
-Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、現行 v1.5.0（スキーマ 23）の preview／commit を実行します。
+Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、現行 v1.5.1（スキーマ 23）の preview／commit を実行します。
 元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認し、現行スキーマ 23 同士の主要保存項目の往復も検証します。
-完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を現行版 `version.php` に従う隔離 v1.5.0／スキーマ 23 で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
+完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を現行版 `version.php` に従う隔離 v1.5.1／スキーマ 23 で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
 PowerShell テストは現行の `backup-full.ps1`／`restore-full.ps1` による DB・画像・利用者復元、セッション失効、配置失敗時の切戻し、旧版との互換拒否を検証します（IIS 操作は既存モック）。この試験は公開 `v1.2.0` 実 ZIP 受入とは区別します。
 候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
 これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
 実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たした状態で結果を記録してください。
 
-### v1.5.0 のリリース検証
+### v1.5.1 のリリース検証
 
 版番号更新に対応する Web／完全 ZIP の関連回帰と既存 CI を PR で確認します。
 最終 PHP・JavaScript 全件回帰、Docker CI `full`、Private release dry-run は、版番号と文書の PR を人間がマージした後の固定 `main` SHA で実行します。
-実行順序、v1.4.0／スキーマ 22 → 23 の更新・実 ZIP 復元、IIS／Docker、権限とランタイムの判定条件は [変更履歴](../CHANGELOG.md)を参照してください。
-上記の v1.2.0 代表自動回帰は、未変更の v1.4.0 実プログラムを使った更新・復元の代わりにはなりません。
+実行順序、v1.5.0 → v1.5.1（スキーマ 23 維持）の互換・実 ZIP 復元、IIS／Docker、権限とランタイムの判定条件は [変更履歴](../CHANGELOG.md)を参照してください。
+上記の v1.2.0 代表自動回帰は、未変更の v1.5.0 実プログラムを使った復元・互換確認の代わりにはなりません。
 合成環境での実ブラウザ操作と実環境の受入は、人が対象 SHA・結果・未確認範囲を記録します。
 未実施項目、SKIP、旧コードを使わない fixture の成功を、正式版実資材の受入成功へ読み替えません。
 
@@ -268,7 +268,7 @@ Node.js 標準の `node:test` を使用。「純粋ロジック（`*-data`）」
 - `modal-stack.test.mjs`: モーダル多重起動時のスタック管理、フォーカストラップ
 - `modal-close-ux.test.mjs`: Esc・×・背景クリック時の破棄確認ダイアログ制御、フォーカス復帰
 - `modal-staging-close.test.mjs`: モーダル編集中に閉じる際の下書き（staging）保持・破棄境界
-- `connection-mode.test.mjs`: 接続作成モード（接続元固定、連続作成、キャンセル）
+- `connection-mode.test.mjs`: 接続作成モード（接続元固定、連続作成、空白ドラッグによるパン、キャンセル）
 - `placement-mode.test.mjs`: 機器配置モード（新規スタンプ配置、未配置キュー、ゴースト表示）
 - `management-modal.test.mjs`: 管理接続先モーダル、SSH ヘルプダイアログ
 - `workspace-navigation.test.mjs`: 左パレット・タブ切り替え、フォーカス移動、ラック搭載機器の重複なし一覧表示・実 ID 移動・選択機器 Ping 連携
