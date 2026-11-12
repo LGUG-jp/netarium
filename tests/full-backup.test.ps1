@@ -192,9 +192,22 @@ if ($action === 'init' || $action === 'init-legacy') {
     echo json_encode($db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC), JSON_THROW_ON_ERROR);
 } elseif ($action === 'verify') {
     $source = new PDO('sqlite:' . $argv[5]);
-    if ($db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
-        !== $source->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+    $sourceSchema = (int)$source->query('PRAGMA user_version')->fetchColumn();
+    $restoredUsers = $db->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $sourceUsers = $source->query('SELECT * FROM users ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    if ($sourceSchema < 22) {
+        foreach ($restoredUsers as &$restoredUser) {
+            if (!array_key_exists('deleted_at', $restoredUser) || $restoredUser['deleted_at'] !== null) {
+                throw new RuntimeException('Migrated legacy user deleted_at must be NULL');
+            }
+            unset($restoredUser['deleted_at']);
+        }
+        unset($restoredUser);
+    }
+    if ((int)$db->query('PRAGMA user_version')->fetchColumn() !== APP_DATABASE_SCHEMA_VERSION
+        || $restoredUsers !== $sourceUsers
         || !password_verify('FullBackup-239-test!', $db->query("SELECT password_hash FROM users WHERE username='backup-admin'")->fetchColumn())
+        || $db->query('PRAGMA integrity_check')->fetchAll(PDO::FETCH_COLUMN) !== ['ok']
         || $db->query('PRAGMA foreign_key_check')->fetch() !== false) {
         throw new RuntimeException('Restored credentials/password/foreign keys differ');
     }
@@ -218,6 +231,12 @@ if ($action === 'init' || $action === 'init-legacy') {
                     || $row['sha256'] !== $manifest['files'][$name]['sha256']
                     || hash_file('sha256', $path) !== hash_file('sha256', $argv[7] . '/uploads/' . $name)) {
                     throw new RuntimeException('Restored image digest mismatch: ' . $name);
+                }
+                if ($table === 'view_floor_plans' && $sourceSchema < 23) {
+                    if (!array_key_exists('rotation', $row) || $row['rotation'] !== 0.0) {
+                        throw new RuntimeException('Migrated legacy floor plan rotation must be 0.0');
+                    }
+                    unset($row['rotation']);
                 }
                 $row['sha256'] = '';
                 if ($row !== $original[$index]) { throw new RuntimeException('Restored reference metadata differs'); }

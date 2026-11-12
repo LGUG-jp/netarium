@@ -32,13 +32,12 @@ eventBus.on('resources:reloaded', () => activePlacementDrag?.cancel());
 /**
  * キャンバス空白部分のポインター操作。
  *
- * Shift+ドラッグは矩形選択、
- * 通常ドラッグはパンとして処理する。
+ * 接続・メモモード以外のShift+ドラッグは矩形選択、
+ * それ以外の空白ドラッグはパンとして処理する。
  */
 export function onCanvasPointerDown(event) {
     if (
         event.button !== 0 ||
-        appState.linkMode ||
         isPanning ||
         appState.isRangeSelecting ||
         appState.floorPlanAdjustMode
@@ -64,7 +63,7 @@ export function onCanvasPointerDown(event) {
         return;
     }
 
-    if (event.shiftKey && !appState.noteMode) {
+    if (event.shiftKey && !appState.noteMode && !appState.linkMode) {
         eventBus.emit(
             'canvas:begin-range-selection',
             event

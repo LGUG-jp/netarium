@@ -22,6 +22,7 @@ const floorPlan = await import('../public/js/modals/floor-plan-modal.js');
 const routes = await import('../public/js/canvas/link-route-editor.js');
 const manager = await import('../public/js/modals/view-manager-modal.js');
 const { onKeyDown } = await import('../public/js/canvas/selection.js');
+const { onCanvasPointerDown } = await import('../public/js/canvas/drag-drop.js');
 const { eventBus } = await import('../public/js/core/event-bus.js');
 const { syncLinkModeButton } = await import('../public/js/ui/toolbar-controls.js');
 eventBus.on('toolbar:sync-link-mode', syncLinkModeButton);
@@ -36,6 +37,7 @@ const { registerStaticListeners } = await import('../public/js/main.js');
 registerStaticListeners();
 dom.events.addEventListener('keydown', onKeyDown);
 dom.get('canvas').addEventListener('click', canvas.onCanvasClick);
+dom.get('canvas').addEventListener('pointerdown', onCanvasPointerDown);
 navigation.initWorkspaceNavigation();
 wiring.initWiringControls();
 notes.initCanvasNotes();
@@ -202,6 +204,82 @@ test('開始は一覧を閉じて補助パネルを開き、固定OFFでは1本�
     assert.equal(requests[0].views[0].expected_revision, 1);
     assert.deepEqual(requests[0].views[0].links.map(link => [link.from_id, link.to_id]), [[1, 2]]);
     assertClientOnly(requests[0]);
+});
+
+for (const fixed of [false, true]) {
+    for (const finish of ['pointerup', 'pointercancel']) {
+        test(`接続元固定${fixed ? 'ON' : 'OFF'}の空白パンは${finish}後も接続を継続し、別ポインターと直後のクリックを無視する`, async () => {
+            await start();
+            await clickDevice(1);
+            if (fixed) {
+                await fixSource();
+                await clickDevice(3);
+                await flush();
+            }
+            const linksBefore = appState.links.length;
+            const connectedBefore = appState.linkSourceConnected;
+            const waiting = instruction();
+            appState.viewState = { scale: 1.5, panX: 20, panY: -10 };
+            const pointer = { pointerId: 7, button: 0, clientX: 100, clientY: 100, shiftKey: fixed };
+            await appState.canvas.dispatch('pointerdown', pointer);
+            assert.equal(appState.canvas.hasPointerCapture(7), true);
+            assert.equal(appState.isRangeSelecting, false, '接続中のShiftドラッグは矩形選択を始めない');
+            await dom.events.dispatch('pointermove', { ...pointer, clientX: 160, clientY: 140 });
+            assert.deepEqual(appState.viewState, { scale: 1.5, panX: 80, panY: 30 });
+            assert.equal(appState.world.style.transform, 'translate(80px, 30px) scale(1.5)');
+            assert.equal(appState.linkSourceId, 1);
+            assert.equal(appState.linkSourceFixed, fixed);
+            assert.equal(appState.linkSourceConnected, connectedBefore);
+            assert.equal(instruction(), waiting);
+            await dom.events.dispatch('pointermove', { ...pointer, pointerId: 8, clientX: 900 });
+            await dom.events.dispatch(finish, { ...pointer, pointerId: 8 });
+            assert.deepEqual(appState.viewState, { scale: 1.5, panX: 80, panY: 30 });
+            assert.equal(appState.canvas.hasPointerCapture(7), true);
+            await dom.events.dispatch(finish, pointer);
+            assert.equal(appState.canvas.hasPointerCapture(7), false);
+            assert.equal(appState.canvas.classList.contains('panning'), false);
+            await clickDevice(2);
+            assert.equal(appState.links.length, linksBefore, 'パン直後の機器クリックでは接続しない');
+            assert.equal(appState.linkSourceId, 1);
+            assert.equal(appState.linkSourceConnected, connectedBefore);
+            await dom.events.dispatch('pointermove', { ...pointer, clientX: 700 });
+            assert.deepEqual(appState.viewState, { scale: 1.5, panX: 80, panY: 30 });
+            await appState.canvas.dispatch('pointerdown', pointer);
+            await dom.events.dispatch('pointerup', pointer);
+            assert.equal(appState.canvas.hasPointerCapture(7), false, '終了後も次のパンを開始・終了できる');
+            await appState.canvas.dispatch('click');
+            assert.equal(appState.linkSourceId, 1, '空白の単純クリックでは接続元を変えない');
+            await clickDevice(2);
+            await flush();
+            assert.deepEqual(appState.links.map(link => [link.from_id, link.to_id]),
+                fixed ? [[1, 3], [1, 2]] : [[1, 2]]);
+            assert.equal(appState.linkMode, true);
+            assert.equal(appState.linkSourceId, fixed ? 1 : null);
+            assert.equal(appState.linkSourceFixed, fixed);
+        });
+    }
+}
+
+test('接続モードでは機器・接続線・経路編集・メモ・操作要素上からパンを開始しない', async () => {
+    await start();
+    await clickDevice(1);
+    for (const className of ['floor-rack', 'device', 'link-group', 'link-route-editor', 'canvas-note']) {
+        const parent = document.createElement('div');
+        parent.className = className;
+        const child = document.createElement('span');
+        parent.append(child);
+        await appState.canvas.dispatch('pointerdown', { target: child, pointerId: 7, button: 0 });
+        assert.equal(appState.canvas.hasPointerCapture(7), false, className);
+    }
+    for (const target of [dom.get('canvas-context-toolbar'),
+        ...['button', 'input', 'select', 'textarea'].map(tag => document.createElement(tag))]) {
+        await appState.canvas.dispatch('pointerdown', { target, pointerId: 7, button: 0 });
+        assert.equal(appState.canvas.hasPointerCapture(7), false, target.tagName);
+    }
+    await dom.events.dispatch('pointermove', { pointerId: 7, clientX: 500, clientY: 600 });
+    assert.deepEqual(appState.viewState, { scale: 1, panX: 0, panY: 0 });
+    assert.equal(appState.linkSourceId, 1);
+    assert.equal(appState.linkMode, true);
 });
 
 test('未選択・通常完了・固定作成・選び直しで同じ骨格を保ち、未選択操作をdisabledにする', async () => {
