@@ -57,7 +57,7 @@ import {
 
 import {
     getDefaultDeviceName
-} from './toolbar.js';
+} from '../core/device-defaults.js';
 
 import { eventBus } from '../core/event-bus.js';
 import { endLinkMode } from '../core/link-mode.js';

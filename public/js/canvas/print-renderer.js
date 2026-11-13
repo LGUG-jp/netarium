@@ -37,7 +37,65 @@ function rackText(svg, text, x, y, attributes = {}) {
     svg.appendChild(node);
 }
 
+// CanvasとSVGで同じフォントを使い、全角・英数字を実際の文字幅で折り返す。
+const RACK_FONT = 'Arial, sans-serif';
+function wrapRackLabel(value, width, maxLines, measure, suffix = '') {
+    const lines = [''];
+    for (const char of String(value).replace(/\s+/gu, ' ')) {
+        const last = lines.length - 1;
+        if (measure(lines[last] + char) <= width) {
+            lines[last] += char;
+        } else if (lines.length < maxLines) {
+            lines.push(char);
+        } else {
+            const tail = `…${suffix}`;
+            const chars = [...lines[last]];
+            while (chars.length && measure(chars.join('') + tail) > width) chars.pop();
+            lines[last] = chars.join('') + tail;
+            return { lines, truncated: true };
+        }
+    }
+    return { lines, truncated: false };
+}
+
+function renderRackLabel(group, block, context) {
+    // 内側viewportで隣の機器・U目盛りへの描画を防ぐ。文字は10px未満に縮めない。
+    const label = svgElement('svg', { x: block.x + 4, y: block.y + 3,
+        width: block.width - 8, height: block.height - 6, overflow: 'hidden',
+        'font-family': RACK_FONT });
+    const width = block.width - 12;
+    const height = block.height - 6;
+    let usedHeight = 0;
+    const measure = text => context.measureText(text).width;
+    if (block.name) {
+        let fitted, fontSize;
+        for (fontSize of [12, 11, 10]) {
+            context.font = `${fontSize}px ${RACK_FONT}`;
+            fitted = wrapRackLabel(block.name, width, Math.floor(height / (fontSize + 2)), measure,
+                block.shelfId !== undefined ? ` / ${block.shelfCount}台` : '');
+            if (!fitted.truncated) break;
+        }
+        fitted.lines.forEach((line, index) => rackText(label, line, 2, fontSize + index * (fontSize + 2),
+            { 'font-size': fontSize, class: 'print-rack-name' }));
+        usedHeight = fitted.lines.length * (fontSize + 2);
+    }
+    // 名称の行数・文字サイズを先に確定する。IP ONでも名称の領域を奪わない。
+    context.font = `10px ${RACK_FONT}`;
+    const type = block.showDeviceType ? PRINT_DEVICE_TYPE_LABELS[block.type] : '';
+    for (const [value, className] of [[block.ip, 'print-rack-ip'], [type, 'print-rack-type']]) {
+        if (!value) continue;
+        const available = Math.floor((height - usedHeight) / 12);
+        if (!available) break;
+        const fitted = wrapRackLabel(value, width, available, measure);
+        fitted.lines.forEach((line, index) => rackText(label, line, 2, usedHeight + 10 + index * 12,
+            { 'font-size': 10, class: className }));
+        usedHeight += fitted.lines.length * 12;
+    }
+    group.appendChild(label);
+}
+
 function renderRack(svg, rack) {
+    const context = document.createElement('canvas').getContext('2d');
     for (const frame of rack.faces) {
         rackText(svg, frame.label, frame.x + frame.width / 2, 21, { 'text-anchor': 'middle', 'font-size': 16 });
         svg.appendChild(svgElement('rect', { x: frame.x, y: frame.y, width: frame.width, height: frame.height,
@@ -75,19 +133,11 @@ function renderRack(svg, rack) {
         group.appendChild(svgElement('rect', { x: block.x + 1, y: block.y + 1,
             width: block.width - 2, height: block.height - 2, rx: 2, fill: '#e2e8f0',
             stroke: '#334155', 'stroke-width': 1 }));
-        const shorten = value => {
-            const max = Math.floor((block.width - 12) / 12);
-            return [...value].length > max ? [...value].slice(0, max - 1).join('') + '…' : value;
-        };
-        const compact = block.height < 64 && Boolean(block.ip);
-        rackText(group, shorten([block.name, type].filter(Boolean).join(' / ')), block.x + 6,
-            block.y + (compact ? 10 : 13), { 'font-size': compact ? 10 : 12 });
-        if (block.ip) rackText(group, block.ip, block.x + 6, block.y + (compact ? 23 : 32),
-            { 'font-size': compact ? 9 : 10 });
+        renderRackLabel(group, block, context);
         svg.appendChild(group);
     }
     for (const detail of rack.shelfDetails || []) {
-        const group = svgElement('g', { 'data-rack-shelf-detail': detail.shelfId });
+        const group = svgElement('g', { 'data-rack-shelf-detail': detail.shelfId, 'font-family': RACK_FONT });
         group.appendChild(svgElement('rect', { x: detail.x, y: detail.y, width: detail.width,
             height: detail.height, fill: '#ffffff', stroke: '#64748b' }));
         detail.headingLines.forEach((line, index) =>

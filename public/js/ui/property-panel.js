@@ -87,6 +87,10 @@ if (typeof document !== 'undefined') {
         updatePanelDraft(target);
     });
     document.addEventListener('click', async event => {
+        if (event.target?.closest?.('#p-open-sheet-btn')) {
+            await openDeviceSheetFromPanel();
+            return;
+        }
         const copyButton = event.target?.closest?.('#p-copy-link-btn');
         if (copyButton) {
             await copyShareLink({ viewId: appState.currentViewId, deviceId: appState.editingDeviceId }, copyButton);
@@ -102,6 +106,7 @@ if (typeof document !== 'undefined') {
 }
 
 let panelDisplayedValues = null;
+let panelTargetGeneration = 0;
 let linkPanelDisplayedValues = null;
 let linkPanelEndpointsSwapped = false;
 let devicePanelReadOnly = false;
@@ -159,6 +164,27 @@ async function resolveUnappliedChanges(hasChanges, apply, discard) {
     if (choice !== 'discard') return false;
     discard();
     return true;
+}
+
+async function openDeviceSheetFromPanel() {
+    const deviceId = appState.editingDeviceId;
+    const generation = panelTargetGeneration;
+    const panel = document.getElementById('panel');
+    const isCurrent = () => deviceId !== null && generation === panelTargetGeneration &&
+        appState.editingDeviceId === deviceId && !appState.authExpired &&
+        panel && !panel.hidden && !panel.classList.contains('hidden') && !!getDeviceById(deviceId);
+    if (!isCurrent()) return false;
+    if (!await resolveUnappliedChanges(hasUnappliedPanelChanges,
+        options => isCurrent() && applyPanelValues(options),
+        () => {
+            if (!isCurrent()) return;
+            discardDeviceDraft('panel', deviceId);
+            panelDisplayedValues = null;
+            openPanel(getDeviceById(deviceId));
+        })) return false;
+    if (!isCurrent()) return false;
+    const { openLedgerDetail } = await import('../modals/ledger-modal.js');
+    return openLedgerDetail(deviceId, { canOpen: () => isCurrent() && !hasUnappliedPanelChanges() });
 }
 
 function updatePanelConflictButtons() {
@@ -516,6 +542,7 @@ export function openPanel(device) {
 
 function populatePanelForm(device, panel) {
     closeToolbarMenu();
+    if (appState.editingDeviceId !== Number(device.id)) panelTargetGeneration++;
     appState.editingDeviceId = Number(device.id);
     device = getDeviceDraft('panel', device.id) || device;
     panel.classList.remove('hidden');
@@ -839,6 +866,7 @@ export function closePanel() {
 }
 
 function finishClosePanel(panel) {
+    panelTargetGeneration++;
     closeDeviceTypePicker();
     discardDeviceDraft('panel', appState.editingDeviceId);
     clearAllPanelErrors();

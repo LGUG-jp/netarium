@@ -115,7 +115,7 @@ test('別ラック移設は表示条件を確認してから両ラックを保�
         ['元位置', () => { appState.rackMounts[0].start_u = 4; }],
         ['先位置', () => change('start', '10')],
         ['機器変更', () => { appState.devices[0].resource_revision++; }],
-        ['選択解除', () => change('search', '機器2')],
+        ['機器削除', () => { appState.devices = appState.devices.filter(device => device.id !== 1); }],
         ['権限', () => { window.APP_CONFIG.user.isAdmin = false; }],
         ['元競合', () => { appState.resourceConflicts.views.set(1, {}); }],
         ['先競合', () => { appState.resourceConflicts.views.set(2, {}); }],

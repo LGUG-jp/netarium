@@ -73,6 +73,18 @@ export function installPrintDom({ main = false, templates = [] } = {}) {
         focus() { document.activeElement = this; }
         getBoundingClientRect() { return { x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 }; }
         decode() { return decodeImage(this); }
+        // 字幅依存の分岐用。実フォントの描画・紙/PDFの検証は行わない。
+        getContext() {
+            return {
+                font: '10px sans-serif',
+                measureText(text) {
+                    const size = parseFloat(this.font);
+                    const width = [...text].reduce((sum, char) =>
+                        sum + size * (/[^\x00-\x7f]/u.test(char) ? 1 : /[MW]/.test(char) ? 0.9 : /[il]/.test(char) ? 0.25 : 0.55), 0);
+                    return { width };
+                }
+            };
+        }
     }
     const body = new Element('body');
     const docListeners = new Map();

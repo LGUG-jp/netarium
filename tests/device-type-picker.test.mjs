@@ -57,10 +57,10 @@ async function fixture(t) {
     // 各fixtureで常設監視の参照先も隔離し、他テストのdocumentへ持ち越さない。
     picker = await import('../public/js/ui/device-type-picker.js');
     let nextId = 1;
-    const add = ({ value = 'router', disabled = false, onChange } = {}) => {
+    const add = ({ value = 'router', disabled = false, includeAll = false, onChange } = {}) => {
         const changes = [];
         const result = picker.createDeviceTypePicker({
-            deviceId: nextId++, value, disabled,
+            deviceId: nextId++, value, disabled, includeAll,
             onChange: control => {
                 changes.push({ control, value: control.value, label: control.textContent, icon: control.querySelector('img')?.src });
                 onChange?.(control);
@@ -156,6 +156,41 @@ test('PCはプリンタとその他の間で選択でき、PCラベルとアイ�
     assert.equal(control.querySelector('img').src, 'assets/icons/devices/pc.svg');
     assert.equal(changes[0].value, 'pc');
     assertClosed(control);
+});
+
+test('任意の全種別候補は空値と共通アイコンを持ち、再同期と通常ピッカーを分離する', async t => {
+    const { add, picker } = await fixture(t);
+    const { control, changes } = add({ value: '', includeAll: true });
+    assert.equal(control.value, '');
+    assert.equal(control.textContent, 'すべての種別');
+    assert.equal(control.querySelector('img').src, DEVICE_TYPES.other.icon);
+    control.focus();
+    await control.dispatch('keydown', { key: 'ArrowDown' });
+    assert.deepEqual(options().map(option => option.value), ['', ...Object.keys(DEVICE_TYPES)]);
+    assert.equal(activeOption(control).value, '');
+    assert.equal(optionFor('').getAttribute('aria-selected'), 'true');
+    await control.dispatch('keydown', { key: 'ArrowUp' });
+    assert.equal(activeOption(control).value, 'other');
+    await control.dispatch('keydown', { key: 'Enter' });
+    assert.equal(control.textContent, DEVICE_TYPES.other.label);
+    await control.dispatch('keydown', { key: ' ' });
+    await control.dispatch('keydown', { key: 'Home' });
+    await control.dispatch('keydown', { key: ' ' });
+    assert.equal(control.value, '');
+    assert.equal(changes.length, 2);
+    assert.equal(changes[1].label, 'すべての種別');
+    assert.equal(changes[1].icon, DEVICE_TYPES.other.icon);
+    assert.equal(document.activeElement, control);
+    picker.createDeviceTypePicker({ control, value: 'server', includeAll: true });
+    assert.equal(control.textContent, DEVICE_TYPES.server.label);
+    picker.createDeviceTypePicker({ control, value: '', includeAll: true });
+    assert.equal(control.textContent, 'すべての種別');
+    assert.equal(control.getAttribute('aria-label'), '種別: すべての種別');
+    const normal = add({ value: '' }).control;
+    assert.equal(normal.value, 'other');
+    await normal.dispatch('click');
+    assert.deepEqual(options().map(option => option.value), Object.keys(DEVICE_TYPES));
+    assert.equal(optionFor(''), undefined);
 });
 
 test('矢印・Home・Endは未確定候補だけを移動し、EnterとSpaceで単一選択を確定する', async t => {

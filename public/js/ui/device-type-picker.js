@@ -83,7 +83,7 @@ function bindGlobalListeners() {
 function createIcon(type) {
     const icon = document.createElement('img');
     icon.className = 'device-type-icon';
-    icon.src = DEVICE_TYPES[type].icon;
+    icon.src = (DEVICE_TYPES[type] || DEVICE_TYPES.other).icon;
     icon.alt = '';
     icon.width = 24;
     icon.height = 24;
@@ -91,7 +91,9 @@ function createIcon(type) {
 }
 
 function syncSelection(picker) {
-    const definition = DEVICE_TYPES[picker.control.value] || DEVICE_TYPES.other;
+    const definition = picker.includeAll && picker.control.value === ''
+        ? { label: 'すべての種別', icon: DEVICE_TYPES.other.icon }
+        : DEVICE_TYPES[picker.control.value] || DEVICE_TYPES.other;
     picker.icon.src = definition.icon;
     picker.label.textContent = definition.label;
     picker.control.setAttribute('aria-label', `種別: ${definition.label}`);
@@ -133,7 +135,9 @@ function openPopup(picker) {
     popup.setAttribute('role', 'listbox');
     popup.setAttribute('aria-label', '種別');
     picker.popup = popup;
-    picker.options = Object.entries(DEVICE_TYPES).map(([value, definition], index) => {
+    const entries = Object.entries(DEVICE_TYPES);
+    if (picker.includeAll) entries.unshift(['', { label: 'すべての種別', icon: DEVICE_TYPES.other.icon }]);
+    picker.options = entries.map(([value, definition], index) => {
         const option = document.createElement('button');
         option.type = 'button';
         option.id = `${picker.popupId}-${index}`;
@@ -162,12 +166,13 @@ function openPopup(picker) {
     setActive(picker, Math.max(0, picker.options.findIndex(option => option.value === picker.control.value)));
 }
 
-export function createDeviceTypePicker({ deviceId, value, disabled = false, onChange, control = null }) {
+export function createDeviceTypePicker({ deviceId, value, disabled = false, includeAll = false, onChange, control = null }) {
     bindGlobalListeners();
     if (control && pickers.has(control)) {
         const picker = pickers.get(control);
         if (activePicker === picker) closeDeviceTypePicker();
-        control.value = Object.hasOwn(DEVICE_TYPES, value) ? String(value) : 'other';
+        picker.includeAll = includeAll;
+        control.value = includeAll && value === '' ? '' : Object.hasOwn(DEVICE_TYPES, value) ? String(value) : 'other';
         control.disabled = Boolean(disabled) || !isCurrentUserAdmin() || Boolean(appState.authExpired) || Boolean(appState.isPinging);
         picker.onChange = onChange;
         syncSelection(picker);
@@ -178,7 +183,7 @@ export function createDeviceTypePicker({ deviceId, value, disabled = false, onCh
     control ||= document.createElement('button');
     control.type = 'button';
     control.classList.add('device-type-trigger');
-    control.value = Object.hasOwn(DEVICE_TYPES, value) ? String(value) : 'other';
+    control.value = includeAll && value === '' ? '' : Object.hasOwn(DEVICE_TYPES, value) ? String(value) : 'other';
     control.dataset.field = 'type';
     if (deviceId != null) control.dataset.deviceId = String(deviceId);
     control.disabled = Boolean(disabled) || !isCurrentUserAdmin() ||
@@ -194,7 +199,7 @@ export function createDeviceTypePicker({ deviceId, value, disabled = false, onCh
     control.appendChild(icon);
     control.appendChild(label);
     if (element !== control) element.appendChild(control);
-    const picker = { element, control, icon, label, popupId, popup: null, options: [], activeIndex: -1, onChange };
+    const picker = { element, control, icon, label, popupId, popup: null, options: [], activeIndex: -1, includeAll, onChange };
     pickers.set(control, picker);
     syncSelection(picker);
     control.addEventListener('click', () => {

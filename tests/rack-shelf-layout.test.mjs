@@ -125,3 +125,30 @@ test('棚子印刷は機器種別フィルタと名称・IP・種別の各表示
     assert.equal(empty.rack.blocks[0].height, 32);
     assert.equal(empty.notes[0].y, 32);
 });
+
+test('長い棚板名でも1Uサマリの台数を残し、右側明細の見出しと機器名は全文を枠内へ折り返す', t => {
+    const dom = installPrintDom(); t.after(() => dom.restore());
+    const data = fixture();
+    data.rackShelves[0].name = '長い棚板の名称'.repeat(12);
+    data.devices[0].name = '長い所属機器の名称'.repeat(20);
+    data.devices[1].name = 'distribution-switch-building-'.repeat(20);
+    data.devices[0].ip = '2001:db8:1234:5678:90ab:cdef:1234:5678';
+    const model = shelfPrintModel(data);
+    const sheet = renderPrintSheet(model);
+    const summary = sheet.querySelectorAll('.print-rack-name').map(node => node.textContent).join('');
+    assert.ok(summary.endsWith('… / 2台'));
+    assert.ok(data.rackShelves[0].name.startsWith(summary.slice(0, summary.indexOf('…'))));
+    const detail = shelfDetailGroups(sheet)[0];
+    const text = visibleText(detail);
+    assert.ok(text.startsWith(data.rackShelves[0].name + ' / 2台'));
+    assert.ok(text.includes(data.devices[0].name + 'L2SW' + data.devices[0].ip));
+    assert.ok(text.includes(data.devices[1].name + 'L2SW'));
+    const context = document.createElement('canvas').getContext('2d');
+    for (const node of detail.querySelectorAll('text')) {
+        context.font = `${node.getAttribute('font-size')}px ${detail.getAttribute('font-family')}`;
+        assert.ok(Number(node.getAttribute('x')) + context.measureText(node.textContent).width <=
+            model.rack.shelfDetails[0].x + model.rack.shelfDetails[0].width - 10);
+        assert.ok(Number(node.getAttribute('y')) + 3 < model.rack.shelfDetails[0].y + model.rack.shelfDetails[0].height);
+    }
+    assert.ok(model.notes[0].y > model.rack.shelfDetails[0].y + model.rack.shelfDetails[0].height);
+});

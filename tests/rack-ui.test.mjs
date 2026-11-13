@@ -158,6 +158,8 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         rack.openRackMountDialog({ viewId: 1, startU: 3 });
         const search = dom.get('rack-mount-search');
         assert.equal(dom.get('rack-mount-view'), null, '空きセルからは搭載先を固定する');
+        assert.equal(dom.get('rack-mount-error').textContent, '', '位置・入力に不備がなければ未選択をエラー表示しない');
+        assert.equal(submitButton().disabled, true, '未選択時の搭載は引き続き禁止する');
         await choose('192.0.2.22');
         assert.equal(search.value, '機器2');
         assert.equal(submitButton().disabled, false);
@@ -184,13 +186,34 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         await onKeyDown({ key: 'Escape', preventDefault() {}, stopImmediatePropagation() {} });
         assert.equal(dom.get('rack-mount-candidates').hidden, true);
         assert.ok(dom.get('rack-mount-title'), '候補だけ閉じ、モーダルを維持する');
-        const mode = document.querySelector('.rack-mount-device-area').querySelector('button');
+        const mode = dom.get('rack-mount-new-mode');
         await mode.dispatch('click');
         assert.equal(dom.get('rack-mount-type').parentElement.parentElement.hidden, false);
-        assert.equal(submitButton().textContent, 'ラックへ搭載');
+        assert.equal(submitButton().textContent, '登録して搭載');
         assert.equal(submitButton().disabled, false);
-        await mode.dispatch('click');
+        await dom.get('rack-mount-existing-mode').dispatch('click');
         assert.equal(submitButton().disabled, true, '既存機器へ戻しても以前の選択を復活させない');
+        await cancelDialog();
+    });
+    await t.test('種別フィルタで対象外の選択を解除し、任意IPの不正入力を保存しない', async () => {
+        rack.openRackMountDialog({ viewId: 1, startU: 3 });
+        await choose('機器2');
+        assert.equal(submitButton().disabled, false);
+        const filter = dom.get('rack-mount-filter');
+        filter.value = 'router'; await filter.dispatch('change');
+        assert.equal(submitButton().disabled, true);
+        await document.querySelector('.rack-mount-form').dispatch('submit');
+        assert.deepEqual(appState.rackMounts, [initialMount], '候補から外れた古いIDで搭載しない');
+        await dom.get('rack-mount-new-mode').dispatch('click');
+        assert.equal(dom.get('rack-mount-name').value, 'L2スイッチ3');
+        await change('name', '  試験機器  ');
+        await change('ip', '192.0.2.999');
+        assert.equal(submitButton().disabled, true);
+        assert.ok(dom.get('rack-mount-error').textContent.includes('IPアドレスの形式が不正'));
+        await document.querySelector('.rack-mount-form').dispatch('submit');
+        assert.deepEqual(appState.devices.map(row => row.id), [1, 2]);
+        await change('ip', '');
+        assert.equal(submitButton().disabled, false, 'IP空欄を許可する');
         await cancelDialog();
     });
     await t.test('範囲と背面左右・奥行き全体の衝突を入力中に検証する', async () => {
@@ -229,6 +252,12 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         rack.openRackMountDialog({ viewId: 1, deviceId: 1 });
         assert.equal(dom.get('rack-mount-view').value, '1');
         assert.equal(dom.get('rack-mount-search').readOnly, true);
+        assert.equal(document.querySelector('.rack-device-existing').hidden, true, '固定機器では検索枠・候補領域ごと隠す');
+        const info = document.querySelector('.rack-device-summary');
+        assert.ok(info.textContent.includes('機器1'));
+        assert.ok(info.querySelector('img'));
+        assert.ok(document.querySelector('.rack-mount-device-area').querySelector('.rack-transfer-from').textContent.includes('試験ラック'));
+        assert.equal(document.querySelector('.rack-mount-position-area').querySelector('.rack-transfer-from'), null);
         assert.equal(submitButton().disabled, false, '自機の現在位置とは衝突しない');
         assert.equal(submitButton().textContent, '搭載位置を変更');
         await change('view', '3');
@@ -268,23 +297,125 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     await cell('front', 5).dispatch('pointerenter');
     assert.equal(root.querySelectorAll('.rack-range-selected').length, 3);
     await cell('front', 5).dispatch('pointerup', { pointerType: 'mouse' });
-    assert.equal(dom.get('rack-mount-title'), null);
-    assert.equal(dom.get('canvas-context-toolbar').hidden, false);
-    await dom.get('rack-range-mount-btn').dispatch('click');
+    assert.equal(root.querySelectorAll('.rack-range-selected').length, 0);
+    assert.equal(dom.get('canvas-context-toolbar').hidden, true);
     assert.equal(dom.get('rack-mount-start').value, '3');
     assert.equal(dom.get('rack-mount-height').value, '3');
     assert.ok(document.querySelector('.rack-mount-form').querySelectorAll('button').some(node => node.textContent === '新しい機器を登録'));
     await cancelDialog();
-    // 左右をまたぐ範囲は全幅へ変換し、共通ツールバーで確定する。
+    // 左右をまたぐ範囲は全幅へ変換し、マウス解放時に確定する。
     await cell('front', 3).dispatch('pointerdown', { pointerType: 'mouse', button: 0 });
     await cell('front', 5, 'right').dispatch('pointerenter');
     await cell('front', 5, 'right').dispatch('pointerup', { pointerType: 'mouse' });
-    assert.equal(root.querySelectorAll('.rack-range-selected').length, 6);
-    await dom.get('rack-range-mount-btn').dispatch('click');
+    assert.equal(root.querySelectorAll('.rack-range-selected').length, 0);
     assert.equal(dom.get('rack-mount-width').value, 'full');
     assert.equal(dom.get('rack-mount-start').value, '3');
     assert.equal(dom.get('rack-mount-height').value, '3');
     await cancelDialog();
+    const mouse = { pointerType: 'mouse', pointerId: 10, button: 0 };
+    const release = async node => {
+        await node.dispatch('pointerup', mouse);
+        // 代替DOMはバブリングしないため、documentへの伝播も明示する。
+        await dom.events.dispatch('pointerup', { ...mouse, target: node });
+    };
+    await t.test('単一セル・左右全幅・背面の逆向きドラッグを解放時に一度だけ確定する', async () => {
+        for (const [face, startU, startSlot, endU, endSlot, width] of [
+            ['front', 6, 'left', 6, 'left', 'left'],
+            ['front', 6, 'left', 6, 'right', 'full'],
+            ['rear', 6, 'right', 3, 'right', 'right'],
+            ['rear', 6, 'right', 3, 'left', 'full']
+        ]) {
+            const start = cell(face, startU, startSlot), end = cell(face, endU, endSlot);
+            await start.dispatch('pointerdown', mouse);
+            await end.dispatch('pointerenter', mouse);
+            await release(end);
+            const form = document.querySelector('.rack-mount-form');
+            assert.ok(form);
+            assert.equal(dom.get('rack-mount-face').value, face);
+            assert.equal(dom.get('rack-mount-start').value, String(Math.min(startU, endU)));
+            assert.equal(dom.get('rack-mount-height').value, String(Math.abs(startU - endU) + 1));
+            assert.equal(dom.get('rack-mount-width').value, width);
+            assert.equal(root.querySelectorAll('.rack-range-selected').length, 0);
+            await end.dispatch('click', { detail: 1 });
+            assert.equal(document.querySelector('.rack-mount-form'), form, '後続clickでフォームを作り直さない');
+            await cancelDialog();
+        }
+        assert.deepEqual(appState.rackMounts, [initialMount], '設定画面を開くだけでは搭載しない');
+    });
+    await t.test('別ポインターの移動・解放・取消でマウス範囲を変更しない', async () => {
+        await cell('front', 3).dispatch('pointerdown', mouse);
+        const other = { ...mouse, pointerId: 11 };
+        await cell('front', 6, 'right').dispatch('pointerdown', other);
+        await cell('front', 6, 'right').dispatch('pointerenter', other);
+        await cell('front', 6, 'right').dispatch('pointerup', other);
+        await dom.events.dispatch('pointerup', other);
+        await dom.events.dispatch('pointercancel', other);
+        assert.equal(dom.get('rack-mount-title'), null);
+        assert.equal(root.querySelectorAll('.rack-range-selected').length, 1);
+        await cell('front', 5).dispatch('pointerenter', mouse);
+        await release(cell('front', 5));
+        assert.equal(dom.get('rack-mount-start').value, '3');
+        assert.equal(dom.get('rack-mount-height').value, '3');
+        assert.equal(dom.get('rack-mount-width').value, 'left');
+        await cancelDialog();
+    });
+    await t.test('選択中断後のpointerupとclickは設定画面を開かない', async () => {
+        const { registerModalOpen, registerModalClose } = await import('../public/js/core/modal-focus.js');
+        const modal = dom.add('section', 'range-interrupt-modal'); modal.hidden = true;
+        for (const reason of ['outside', 'other-face', 'occupied', 'pointercancel', 'Escape', 'render', 'view', 'modal']) {
+            const start = cell('front', 3), end = cell('front', 5);
+            await start.dispatch('pointerdown', mouse);
+            await end.dispatch('pointerenter', mouse);
+            if (reason === 'outside') await dom.events.dispatch('pointerup', { ...mouse, target: document.body });
+            if (reason === 'other-face') await release(cell('rear', 5));
+            if (reason === 'occupied') {
+                const occupied = root.querySelector('.rack-rear').querySelectorAll('.rack-empty').find(node => node.disabled);
+                await release(occupied);
+            }
+            if (reason === 'pointercancel') await dom.events.dispatch('pointercancel', mouse);
+            if (reason === 'Escape') await dom.events.dispatch('keydown', { key: 'Escape' });
+            if (reason === 'render') rack.renderRackView();
+            if (reason === 'view') appState.currentViewId = 2;
+            if (reason === 'modal') {
+                modal.hidden = false; registerModalOpen('range-interrupt', modal);
+                await dom.events.dispatch('focusin', { target: modal });
+            }
+            await release(end);
+            await end.dispatch('click', { detail: 1 });
+            assert.equal(dom.get('rack-mount-title'), null, reason);
+            assert.equal(root.querySelectorAll('.rack-range-selected').length, 0, reason);
+            if (reason === 'modal') { registerModalClose('range-interrupt'); modal.hidden = true; }
+            appState.currentViewId = 1; rack.renderRackView();
+        }
+        modal.remove();
+        assert.deepEqual(appState.rackMounts, [initialMount]);
+    });
+    await t.test('選択途中の占有・競合・権限・保存状態の変更では自動確定しない', async () => {
+        for (const reason of ['occupied-range', 'new-mount', 'new-shelf', 'conflict', 'permission', 'saving', 'unconfirmed', 'auth']) {
+            if (reason === 'occupied-range') {
+                appState.rackMounts.push({ device_id: 2, view_id: 1, face: 'front', start_u: 4, height_u: 1, width_slot: 'left' });
+                rack.renderRackView();
+            }
+            const start = cell('front', 3), end = cell('front', 5);
+            await start.dispatch('pointerdown', mouse);
+            await end.dispatch('pointerenter', mouse);
+            if (reason === 'new-mount') appState.rackMounts.push({ device_id: 2, view_id: 1, face: 'front', start_u: 4, height_u: 1, width_slot: 'left' });
+            if (reason === 'new-shelf') appState.rackShelves = [{ id: -1, view_id: 1, face: 'front', start_u: 4, height_u: 1, depth: 'half' }];
+            if (reason === 'conflict') appState.resourceConflicts.views.set(1, {});
+            if (reason === 'permission') window.APP_CONFIG.user.isAdmin = false;
+            if (reason === 'saving') appState.isSaving = true;
+            if (reason === 'unconfirmed') appState.appStatus.state = 'unconfirmed';
+            if (reason === 'auth') appState.authExpired = true;
+            await release(end); await end.dispatch('click', { detail: 1 });
+            assert.equal(dom.get('rack-mount-title'), null, reason);
+            assert.equal(root.querySelectorAll('.rack-range-selected').length, 0, reason);
+            appState.rackMounts = [initialMount]; appState.rackShelves = [];
+            appState.resourceConflicts.views.clear(); window.APP_CONFIG.user.isAdmin = true;
+            appState.isSaving = false; appState.appStatus.state = 'saved'; appState.authExpired = false;
+            rack.renderRackView();
+        }
+        assert.deepEqual(resource.buildResourceSave(), { devices: [], views: [] });
+    });
     const tap = async node => {
         await node.dispatch('pointerdown', { pointerType: 'touch', button: 0 });
         await node.dispatch('pointerup', { pointerType: 'touch' });
@@ -545,8 +676,38 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         const modeBtn = document.querySelector('.rack-mount-device-area').querySelectorAll('button').find(b => b.textContent.includes('新しい機器を登録'));
         await modeBtn.dispatch('pointerdown');
         await modeBtn.dispatch('click');
-        assert.equal(modeBtn.textContent, '既存機器から選択');
+        assert.equal(modeBtn.getAttribute('aria-pressed'), 'true');
         assert.equal(dom.get('rack-mount-type').parentElement.parentElement.hidden, false);
         await cancelDialog();
+    });
+    await t.test('新規入力した名称・任意IPと搭載位置を同じ保存へ渡す', async () => {
+        rack.openRackMountDialog({ viewId: 1, face: 'rear', startU: 6, widthSlot: 'right' });
+        await dom.get('rack-mount-new-mode').dispatch('click');
+        await change('name', '  試験登録スイッチ  ');
+        await change('ip', '  192.0.2.88  ');
+        const writes = [];
+        globalThis.fetch = async (_url, options) => {
+            writes.push(JSON.parse(options.body));
+            const createdId = writes.at(-1).devices.find(row => row.operation === 'create').id;
+            return new Response(JSON.stringify({
+                ok: true, revision: 4, id_maps: { devices: { [createdId]: 90 } },
+                devices: appState.devices.map(device => ({ ...device, id: device.id === createdId ? 90 : device.id, resource_revision: 30 })),
+                views: [{ ...appState.views[0], resource_revision: 30 }], placements: [], links: [], canvas_notes: [],
+                rack_settings: appState.rackSettings,
+                rack_mounts: appState.rackMounts.map(mount => ({ ...mount, device_id: mount.device_id === createdId ? 90 : mount.device_id })),
+                affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: []
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+        await document.querySelector('.rack-mount-form').dispatch('submit');
+        assert.equal(await queue.flushSaveQueue({ silent: true }), true);
+        const device = appState.devices.find(row => row.name === '試験登録スイッチ');
+        assert.equal(device.ip, '192.0.2.88');
+        assert.deepEqual(appState.rackMounts.find(row => row.device_id === device.id), {
+            device_id: device.id, view_id: 1, face: 'rear', start_u: 6, height_u: 1, width_slot: 'right', depth: 'half'
+        });
+        assert.equal(writes.length, 1);
+        assert.equal(writes[0].devices[0].device.name, device.name);
+        assert.ok(writes[0].views[0].rack_mounts.some(row => row.device_id === writes[0].devices[0].id));
+        assert.equal(dom.get('rack-mount-title'), null);
     });
 });

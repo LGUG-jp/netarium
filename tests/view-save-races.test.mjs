@@ -186,6 +186,12 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
             rack_mounts: payload.views.flatMap(row => (row.rack_mounts || []).map(mount => ({
                 ...mount, view_id: map('views', mount.view_id), device_id: map('devices', mount.device_id)
             }))),
+            rack_shelves: payload.views.flatMap(row => (row.rack_shelves || []).map(shelf => ({
+                ...shelf, view_id: map('views', shelf.view_id)
+            }))),
+            rack_shelf_devices: payload.views.flatMap(row => (row.rack_shelf_devices || []).map(member => ({
+                ...member, device_id: map('devices', member.device_id)
+            }))),
             deleted_device_ids: [], deleted_view_ids: payload.views.filter(row => row.operation === 'delete').map(row => row.id),
             affected_view_ids: payload.views.map(row => map('views', row.id))
         };
@@ -224,6 +230,8 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         appState.links = []; appState.floorPlans = []; appState.deviceImages = [];
         appState.canvasNotes = []; appState.selectedCanvasNoteId = null; appState.nextCanvasNoteId = 1; appState.noteMode = false;
         appState.rackSettings = []; appState.rackMounts = [];
+        appState.rackShelves = []; appState.rackShelfDevices = [];
+        appState.addressSpaces = []; appState.ipSegments = [];
         appState.currentViewId = 1; appState.nextViewId = 3; appState.nextPlacementId = 101; appState.nextLinkId = 1;
         appState.viewStates = new Map(); appState.selectedPlacementIds = new Set();
         appState.resourceConflicts = { devices: new Map(), views: new Map() };
@@ -860,12 +868,18 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         const { addDevice } = await import('../public/js/ui/toolbar.js');
         const mount = { view_id: 1, face: 'both', start_u: 40, height_u: 3, width_slot: 'full' };
         const placements = structuredClone(appState.placements);
-        assert.ok(await addDevice('server', { rackMount: mount }));
+        appState.ipSegments = [{ id: 7, address_space_id: 1, name: '検証用', cidr: '192.0.2.0/24' }];
+        assert.ok(await addDevice('server', { rackMount: mount, openDevicePanel: false,
+            deviceValues: { name: '  ラック内サーバー  ', ip: ' 192.0.2.12 ' } }));
         await queue.flushSaveQueue({ silent: true });
         assert.equal(calls.length, 1);
         const request = calls[0];
         assert.equal(request.devices[0].operation, 'create');
         assert.equal(request.devices[0].device.type, 'server');
+        assert.equal(request.devices[0].device.name, 'ラック内サーバー');
+        assert.equal(request.devices[0].device.ip, '192.0.2.12');
+        assert.equal(request.devices[0].device.ip_segment_id, 7);
+        assert.equal(appState.editingDeviceId, null);
         const device = appState.devices.find(row => row.type === 'server');
         assert.equal(appState.rackMounts[0].device_id, device.id);
         assert.deepEqual(appState.placements, placements);
@@ -906,6 +920,127 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(appState.rackMounts[0].device_id, failedDeviceId);
         assert.equal(await addDevice('server', { rackMount: mount }), false);
         assert.equal(appState.devices.length, 2); assert.equal(calls.length, 1);
+    });
+    await t.test('ラック機器の空白名称は種別の初期名称になりIPは省略できる', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        const { getDefaultDeviceName } = await import('../public/js/core/device-defaults.js');
+        const expectedName = getDefaultDeviceName('switch');
+        const device = await addDevice('switch', {
+            rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+            deviceValues: { name: ' \t ', ip: '  ' }, openDevicePanel: false
+        });
+        assert.ok(device);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].devices[0].device.name, expectedName);
+        assert.equal(calls[0].devices[0].device.ip, '');
+        assert.equal(calls[0].devices[0].device.ip_segment_id, null);
+    });
+    await t.test('ラック機器の不正IPと名称上限超過は機器と搭載を変更しない', async () => {
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        for (const deviceValues of [{ name: '検証用', ip: '192.0.2.999' }, { name: 'あ'.repeat(101), ip: '' }]) {
+            await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+            const devices = structuredClone(appState.devices);
+            assert.equal(await addDevice('server', {
+                rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+                deviceValues, openDevicePanel: false
+            }), false);
+            assert.deepEqual(appState.devices, devices);
+            assert.deepEqual(appState.rackMounts, []);
+            assert.equal(calls.length, 0);
+            assert.equal(confirmations.length, 0);
+            assert.equal(appState.appStatus.dirty, false);
+        }
+    });
+    await t.test('ラック機器の重複IP確認を取り消すと機器と搭載を変更しない', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        appState.devices[0].ip = '192.0.2.20';
+        resource.resetResourceBaseline(appState);
+        const devices = structuredClone(appState.devices);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        answers = [false];
+        assert.equal(await addDevice('server', {
+            rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+            deviceValues: { name: '重複候補', ip: '192.0.2.20' }, openDevicePanel: false
+        }), false);
+        assert.equal(confirmations.length, 1);
+        assert.deepEqual(appState.devices, devices);
+        assert.deepEqual(appState.rackMounts, []);
+        assert.equal(calls.length, 0);
+        assert.equal(appState.appStatus.dirty, false);
+    });
+    await t.test('重複IP確認中に入力が失効したら承認フラグも機器も搭載も変更しない', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        appState.devices[0].ip = '192.0.2.20';
+        resource.resetResourceBaseline(appState);
+        const devices = structuredClone(appState.devices);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        let current = true;
+        const originalConfirm = globalThis.confirm;
+        globalThis.confirm = message => { confirmations.push(message); current = false; return true; };
+        try {
+            assert.equal(await addDevice('server', {
+                rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+                deviceValues: { name: '失効候補', ip: '192.0.2.20' }, isCurrent: () => current, openDevicePanel: false
+            }), false);
+        } finally { globalThis.confirm = originalConfirm; }
+        assert.equal(confirmations.length, 1);
+        assert.deepEqual(appState.devices, devices);
+        assert.deepEqual(appState.rackMounts, []);
+        assert.equal(calls.length, 0);
+        assert.equal(appState.appStatus.dirty, false);
+    });
+    await t.test('未分類の重複IPを承認すると新規機器の承認と搭載を同時保存する', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        appState.devices[0].ip = '192.0.2.20';
+        resource.resetResourceBaseline(appState);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        assert.ok(await addDevice('server', {
+            rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+            deviceValues: { name: '承認候補', ip: '192.0.2.20' }, openDevicePanel: false
+        }));
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(confirmations.length, 1);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].devices.length, 1);
+        assert.equal(appState.devices.find(row => row.id === 10).ip_conflicts_confirmed, true);
+        assert.ok(calls[0].devices.every(row => row.device.ip_conflicts_confirmed));
+        assert.equal(calls[0].views[0].rack_mounts[0].device_id, calls[0].devices.find(row => row.operation === 'create').id);
+    });
+    await t.test('同一空間の重複IPは確認を出さず新規搭載を拒否する', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        appState.ipSegments = [{ id: 7, address_space_id: 1, name: '検証用', cidr: '192.0.2.0/24' }];
+        Object.assign(appState.devices[0], { ip: '192.0.2.20', ip_segment_id: 7 });
+        resource.resetResourceBaseline(appState);
+        const devices = structuredClone(appState.devices);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        assert.equal(await addDevice('server', {
+            rackMount: { view_id: 1, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' },
+            deviceValues: { name: '拒否候補', ip: '192.0.2.20' }, openDevicePanel: false
+        }), false);
+        assert.deepEqual(appState.devices, devices);
+        assert.deepEqual(appState.rackMounts, []);
+        assert.equal(confirmations.length, 0);
+        assert.equal(calls.length, 0);
+    });
+    await t.test('棚板への新規登録も共通の名称IP入力と所属推定を一括保存する', async () => {
+        await rackFixture({ occupied: false }); await manager.closeViewManager(); appState.currentViewId = 1;
+        appState.rackShelves = [{ id: 4, view_id: 1, name: '検証棚板', face: 'front', start_u: 2, height_u: 2, depth: 'full' }];
+        appState.ipSegments = [{ id: 7, address_space_id: 1, name: '検証用', cidr: '192.0.2.0/24' }];
+        resource.resetResourceBaseline(appState);
+        const { addDevice } = await import('../public/js/ui/toolbar.js');
+        assert.ok(await addDevice('router', { rackShelfId: 4, openDevicePanel: false,
+            deviceValues: { name: '  棚板ルーター  ', ip: ' 192.0.2.30 ' } }));
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(calls.length, 1);
+        const created = calls[0].devices.find(row => row.operation === 'create');
+        assert.equal(created.device.name, '棚板ルーター');
+        assert.equal(created.device.ip, '192.0.2.30');
+        assert.equal(created.device.ip_segment_id, 7);
+        assert.deepEqual(calls[0].views[0].rack_shelf_devices, [{ device_id: created.id, shelf_id: 4, sort_order: 0 }]);
+        assert.equal(appState.rackShelfDevices[0].device_id, appState.devices.find(row => row.type === 'router').id);
+        assert.equal(appState.editingDeviceId, null);
     });
     await t.test('ラック編集のU境界・文字数・搭載範囲を保存前に検証する', async () => {
         await rackFixture();
