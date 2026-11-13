@@ -12,8 +12,10 @@ import { eventBus } from '../core/event-bus.js';
 import { createRackTransferConfirmation } from '../ui/rack-transfer-confirmation.js';
 import { validateDeviceValues } from '../core/device-validation.js';
 import { switchView } from '../modals/view-manager-modal.js';
+import { createRackDeviceInput } from '../ui/rack-device-input.js';
+import { mappedResourceId } from '../core/resource-save.js';
 
-let adding = false, selectedShelfId = null, dialog = null, dialogViewId = null, deviceDialog = null, deviceDialogViewId = null;
+let adding = false, selectedShelfId = null, dialog = null, dialogViewId = null, deviceDialog = null, deviceDialogViewId = null, activeShelfDialog = null;
 const eq = (a, b) => Number(a) === Number(b);
 const shelves = () => appState.rackShelves || [];
 const members = () => appState.rackShelfDevices || [];
@@ -90,6 +92,7 @@ export function deleteShelf(id) {
 }
 export function isShelfAdding() { return adding; }
 export function setShelfAdding(active) {
+    if (active) closeShelfDialog();
     adding = Boolean(active) && getCurrentView()?.view_type === 'rack' && shelfEditable();
     const control = document.getElementById('palette-shelf-btn');
     control?.classList.toggle('active', adding); control?.setAttribute('aria-pressed', String(adding));
@@ -97,111 +100,570 @@ export function setShelfAdding(active) {
     select?.classList.toggle('active', !adding); select?.setAttribute('aria-pressed', String(!adding));
     const mount = document.getElementById('rack-range-mount-btn'); if (mount) mount.textContent = adding ? '棚板を追加' : '機器を搭載';
 }
-function closeShelfDialog() {
-    closeDeviceTypePicker(); dialog?.remove(); dialog = null; dialogViewId = null; registerModalClose('rack-shelf'); setShelfAdding(false);
+function closeShelfDialog({ confirmIfDirty = false } = {}) {
+    if (confirmIfDirty && activeShelfDialog && !activeShelfDialog.waitingCreation && activeShelfDialog.isDirty?.()) {
+        if (typeof window.confirm === 'function' && !window.confirm('棚板の変更が保存されていません。破棄して閉じますか？')) return;
+    }
+    closeDeviceTypePicker();
+    activeShelfDialog?.hideCandidates?.();
+    activeShelfDialog = null;
+    dialog?.remove(); dialog = null; dialogViewId = null;
+    deviceDialog?.remove(); deviceDialog = null; deviceDialogViewId = null;
+    registerModalClose('rack-shelf'); registerModalClose('rack-shelf-device');
+    setShelfAdding(false);
 }
 export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 1, shelfId = null }) {
-    const previous = shelfById(shelfId);
     if (!requireAdminUiAction() || !shelfEditable([viewId])) return;
-    closeShelfDialog(); closeShelfDeviceDialog();
+    closeShelfDialog();
     const origin = appState.currentViewId;
-    const initialSnapshot = JSON.stringify([previous, shelves(), members(), appState.views, appState.rackMounts]);
-    let pending = null;
-    const overlay = el('div', 'view-manager-overlay rack-mount-overlay');
-    const section = el('section', 'view-manager-dialog rack-mount-dialog'); section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true'); section.setAttribute('aria-labelledby', 'rack-shelf-title');
+
+    let currentShelfId = shelfId != null ? Number(shelfId) : null;
+    let previous = currentShelfId != null ? shelfById(currentShelfId) : null;
+    let waitingCreation = currentShelfId == null;
+    let isSavingShelf = false;
+    let isAddingDevice = false;
+    let pendingShelfTransfer = null;
+    let pendingDeviceTransfer = null;
+    const shelfSnapshot = () => JSON.stringify([shelfById(currentShelfId), shelves(), members(), appState.views, appState.rackMounts]);
+    let initialSnapshot = shelfSnapshot();
+    let membershipSnapshotChanged = false;
+    const fields = {};
+    const overlay = el('div', 'view-manager-overlay rack-mount-overlay rack-shelf-overlay rack-shelf-device-overlay');
+    const section = el('section', 'view-manager-dialog rack-mount-dialog rack-mount-two-pane');
+    section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true'); section.setAttribute('aria-labelledby', 'rack-shelf-title');
     const title = el('h2', '', previous ? '棚板の設定' : '棚板を追加'); title.id = 'rack-shelf-title';
     const heading = el('div', 'modal-header-heading rack-mount-heading');
     const target = el('p', 'modal-header-target', `搭載先：${rackName(previous?.view_id || viewId)}`);
     heading.append(title, target);
-    const form = el('form', 'rack-mount-form'), body = el('div', 'rack-mount-body'), fields = {};
-    const comparison = el('div', 'rack-mount-comparison');
-    comparison.setAttribute('role', 'group'); comparison.setAttribute('aria-label', '搭載位置の比較');
-    const locationDetail = shelf => `棚板「${shelf.name}」 / ${shelf.face === 'rear' ? '背面' : '前面'} / ${shelf.start_u}〜${shelf.start_u + shelf.height_u - 1}U（${shelf.height_u}U） / 全幅 / 奥行き：${shelf.depth === 'full' ? '全体' : '半分'}`;
-    const previewCard = (label, className, shelf) => {
-        const card = el('div', `rack-transfer-card ${className}`), rack = el('strong', 'rack-transfer-rack'), detail = el('span', 'rack-transfer-detail');
-        card.append(el('span', 'rack-transfer-badge', label), rack, detail); comparison.appendChild(card);
-        if (shelf) { rack.textContent = rackName(shelf.view_id); detail.textContent = locationDetail(shelf); }
-        return { rack, detail };
-    };
-    if (previous) previewCard('現在の搭載位置', 'rack-transfer-from', previous);
-    else comparison.style.gridTemplateColumns = 'minmax(0, 1fr)';
-    const destinationCard = previewCard(previous ? '移設先（変更後）' : '搭載位置（指定先）', 'rack-transfer-to');
-    destinationCard.detail.setAttribute('role', 'status');
-    body.appendChild(comparison);
-    function field(name, label, tag, value, options) {
-        const group = el('div', 'rack-mount-field'), text = el('label', '', label), input = el(tag);
-        input.id = `rack-shelf-${name}`; text.setAttribute('for', input.id);
-        for (const [value, label] of options || []) { const option = el('option', '', label); option.value = value; input.appendChild(option); }
-        input.value = String(value); fields[name] = input; group.append(text, input); body.appendChild(group); return input;
+    const form = el('form', 'rack-mount-form rack-shelf-form rack-shelf-device-form');
+    const body = el('div', `rack-mount-body rack-mount-panes${waitingCreation ? ' is-new-shelf' : ''}`);
+
+    // --- 左ペイン: 機器の選択・登録、搭載済み機器の一覧 ---
+    const deviceArea = el('section', 'rack-mount-device-area');
+    deviceArea.setAttribute('aria-label', '機器の選択・登録');
+
+    // 1. 機器を棚板に追加エリア（上側）
+    const deviceAreaFieldset = el('fieldset', 'rack-mount-position');
+    deviceAreaFieldset.append(el('legend', '', '機器を棚板に追加'));
+    const disabledNotice = el('p', 'rack-shelf-disabled-notice');
+    deviceAreaFieldset.appendChild(disabledNotice);
+
+    const deviceConfirmation = createRackTransferConfirmation();
+    const deviceError = el('p', 'form-error rack-shelf-device-error');
+    deviceError.setAttribute('role', 'alert');
+
+    function canOperateDeviceInput() {
+        return currentShelfId != null && !waitingCreation && !isSavingShelf && !isAddingDevice && !isDirty() &&
+            shelfSnapshot() === initialSnapshot &&
+            shelfEditable([appState.currentViewId, previous?.view_id].filter(Boolean));
     }
-    const name = field('name', '棚板名', 'input', previous?.name || '棚板'); name.required = true; name.maxLength = 100;
-    const rack = previous ? field('view', '搭載先ラック', 'select', previous.view_id,
-        appState.views.filter(row => row.view_type === 'rack').map(row => [String(row.id), row.name])) : null;
-    const position = el('fieldset', 'rack-mount-position');
-    const units = el('div', 'rack-mount-position-grid');
-    const dimensions = el('div', 'rack-mount-position-grid');
-    position.append(el('legend', '', '棚板の搭載位置（全幅）'), units, dimensions);
-    for (const [key, label, value] of [['start', '開始U（最下段）', previous?.start_u || startU], ['height', '占有U数', previous?.height_u || heightU]]) {
-        const input = field(key, label, 'input', value); input.type = 'number'; input.min = '1'; input.max = '60'; input.step = '1'; input.required = true;
-        units.appendChild(input.parentElement);
-    }
-    const faceInput = field('face', '搭載面', 'select', previous?.face || face, [['front', '前面'], ['rear', '背面']]);
-    const depthInput = field('depth', '奥行き', 'select', previous?.depth || 'half', [['half', '半分'], ['full', '全体']]);
-    dimensions.append(faceInput.parentElement, depthInput.parentElement); body.appendChild(position);
-    const updateSummary = () => {
-        const destination = previous ? Number(rack.value) : Number(viewId);
-        const moving = previous && !eq(previous.view_id, destination);
-        title.textContent = moving ? '棚板をラックへ移設' : previous ? '棚板の設定' : '棚板を追加';
-        target.textContent = moving ? 'ラックへ移設：現在 → 移設先' : previous ? '設定・搭載位置を変更：現在 → 変更後' : `搭載先：${rackName(destination)}`;
-        submit.textContent = pending ? '移設を確定' : moving ? 'ラックへ移設' : previous ? '設定を保存' : '棚板を追加';
-        destinationCard.rack.textContent = rackName(destination);
-        destinationCard.detail.textContent = locationDetail({ name: fields.name.value, face: fields.face.value,
-            start_u: Number(fields.start.value), height_u: Number(fields.height.value), depth: fields.depth.value });
-    };
-    body.appendChild(el('p', 'rack-warning', '棚板は全幅です。棚板上の機器は追加のUを占有しません。奥行きは簡易占有であり、現物の干渉・耐荷重・放熱は保証しません。'));
-    const error = el('p', 'form-error'); error.setAttribute('role', 'alert'); body.appendChild(error);
-    const confirmation = createRackTransferConfirmation(); body.appendChild(confirmation.element);
-    const actions = el('div', 'rack-mount-actions'), submit = el('button', 'btn btn-primary', previous ? '設定を保存' : '棚板を追加'); submit.type = 'submit';
-    actions.append(btn('キャンセル', () => {
-        if (!pending) { closeShelfDialog(); return; }
-        pending = null; confirmation.hide(); updateSummary(); error.textContent = '';
-    }), submit);
-    updateSummary();
-    form.addEventListener('input', () => { pending = null; confirmation.hide(); updateSummary(); });
-    form.addEventListener('change', () => { pending = null; confirmation.hide(); updateSummary(); });
-    form.addEventListener('submit', event => {
-        event.preventDefault(); error.textContent = '';
-        const destination = previous ? Number(fields.view.value) : Number(viewId);
-        const currentSnapshot = JSON.stringify([shelfById(shelfId), shelves(), members(), appState.views, appState.rackMounts]);
-        if (!eq(appState.currentViewId, origin) || !shelfEditable([viewId, destination]) || (previous && currentSnapshot !== initialSnapshot)) { error.textContent = 'ラックまたは保存状態が変わりました。設定し直してください。'; return; }
-        let row, next;
-        try {
-            row = toSaveRackShelf({ id: previous?.id || allocateLocalId('rackShelves'), view_id: destination, name: fields.name.value, face: fields.face.value, start_u: fields.start.value, height_u: fields.height.value, depth: fields.depth.value });
-            next = [...shelves().filter(row => !eq(row.id, shelfId)), row];
-            validateRackLayout({ ...appState, rackShelves: next });
-        } catch (failure) { error.textContent = failure.message; return; }
-        const moving = previous && !eq(previous.view_id, row.view_id);
-        if (moving && !pending) {
-            pending = JSON.stringify(row);
-            confirmation.show({ name: `棚板「${previous.name}」と所属機器${shelfMembers(previous.id).length}台`,
-                from: { rack: rackName(previous.view_id), detail: shelfLocation(previous) },
-                to: { rack: rackName(row.view_id), detail: shelfLocation(row) } });
-            submit.textContent = '移設を確定'; return;
-        }
-        if (moving && pending !== JSON.stringify(row)) { pending = null; confirmation.hide(); error.textContent = '移設条件が変わりました。設定し直してください。'; return; }
-        closeShelfDialog();
-        if (commit({ rackShelves: next })) {
-            if (eq(row.view_id, appState.currentViewId)) showShelfPanel(row.id);
-            else closeShelfPanel();
+
+    const deviceInput = createRackDeviceInput({
+        idPrefix: 'rack-shelf-device',
+        getDevices: () => currentShelfId != null
+            ? appState.devices.filter(row => !shelfMembers(currentShelfId).some(member => eq(member.device_id, row.id)))
+            : [],
+        searchText: device => `${device.name} ${device.ip || ''} ${device.model || ''}`,
+        locationText: device => deviceRackLocation(device.id),
+        canChange: () => canOperateDeviceInput(),
+        onChange: () => {
+            deviceError.textContent = '';
+            pendingDeviceTransfer = null;
+            deviceConfirmation.hide();
+            addDeviceBtn.textContent = '棚板に追加';
         }
     });
-    form.append(body, actions); section.append(heading, form); overlay.appendChild(section); document.body.appendChild(overlay); dialog = overlay; dialogViewId = origin;
-    registerModalOpen('rack-shelf', overlay, '#rack-shelf-name', { onClose: closeShelfDialog });
+
+    deviceAreaFieldset.append(deviceInput.element, deviceConfirmation.element, deviceError);
+
+    const deviceActions = el('div', 'rack-shelf-device-actions');
+    const addDeviceBtn = el('button', 'btn btn-primary btn-sm rack-shelf-add-device-btn', '棚板に追加');
+    addDeviceBtn.type = 'button';
+    deviceActions.appendChild(addDeviceBtn);
+    deviceAreaFieldset.appendChild(deviceActions);
+    deviceArea.appendChild(deviceAreaFieldset);
+
+    // 2. 棚板の搭載機器一覧エリア（下側）
+    const summarySection = el('div', 'rack-shelf-devices-section');
+    const summaryHeader = el('div', 'rack-shelf-devices-header');
+    const summaryTitle = el('span', '', '棚板の搭載機器');
+    const summaryCount = el('span', 'rack-shelf-count', '0台');
+    summaryHeader.append(summaryTitle, summaryCount);
+    const summaryList = el('ul', 'rack-shelf-summary-list');
+    summarySection.append(summaryHeader, summaryList);
+    deviceArea.appendChild(summarySection);
+
+    function renderSummaryList() {
+        summaryList.replaceChildren();
+        const rows = currentShelfId != null ? shelfMembers(currentShelfId) : [];
+        summaryCount.textContent = `${rows.length}台`;
+        if (rows.length === 0) {
+            summaryList.appendChild(el('p', 'rack-shelf-summary-empty', '搭載機器はありません'));
+        } else {
+            for (const row of rows) {
+                const dev = getDeviceById(row.device_id);
+                if (!dev) continue;
+                const item = el('li', 'rack-shelf-summary-item');
+                const def = DEVICE_TYPES[dev.type] || DEVICE_TYPES.other;
+                const ico = el('img', 'device-type-icon');
+                ico.src = def.icon;
+                ico.alt = '';
+                const nameSpan = el('span', 'rack-shelf-summary-name', dev.name);
+                const detailSpan = el('span', 'rack-shelf-summary-detail', [def.label, dev.ip].filter(Boolean).join(' / '));
+                const removeBtn = el('button', 'rack-shelf-member-remove-btn', '×');
+                removeBtn.type = 'button';
+                removeBtn.setAttribute('aria-label', `「${dev.name}」を棚板から取り外す`);
+                removeBtn.title = `「${dev.name}」を棚板から取り外す`;
+                removeBtn.disabled = !canOperateDeviceInput();
+                removeBtn.addEventListener('click', async () => {
+                    if (!canOperateDeviceInput() || !eq(shelfForDevice(dev.id)?.id, currentShelfId)) return;
+                    if (typeof window.confirm === 'function') {
+                        if (!window.confirm(`「${dev.name}」を棚板から取り外しますか？`)) return;
+                    }
+                    if (removeShelfDevice(dev.id)) {
+                        refreshMembershipSnapshot(dev.id);
+                        renderSummaryList();
+                        updateAllStates();
+                        showToast(`機器「${dev.name}」を棚板から取り外しました`);
+                    }
+                });
+                item.append(ico, nameSpan, detailSpan, removeBtn);
+                summaryList.appendChild(item);
+            }
+        }
+    }
+
+    // --- 右ペイン: 棚板名・搭載先（設置位置）の設定 ---
+    const positionArea = el('section', 'rack-mount-position-area');
+    positionArea.setAttribute('aria-label', '棚板の設定');
+
+    function field(name, label, tag, value, options) {
+        const group = el('div', 'rack-mount-field');
+        const text = el('label', '', label);
+        const input = el(tag);
+        input.id = `rack-shelf-${name}`;
+        text.setAttribute('for', input.id);
+        for (const [val, lab] of options || []) {
+            const option = el('option', '', lab);
+            option.value = val;
+            input.appendChild(option);
+        }
+        input.value = String(value);
+        fields[name] = input;
+        group.append(text, input);
+        return { group, input };
+    }
+
+    const nameField = field('name', '棚板名', 'input', previous?.name || '棚板');
+    nameField.input.required = true;
+    nameField.input.maxLength = 100;
+
+    let rackField = null;
+    let rackContainer = null;
+    if (previous) {
+        rackField = field('view', '搭載先ラック', 'select', previous.view_id,
+            appState.views.filter(row => row.view_type === 'rack').map(row => [String(row.id), row.name]));
+        rackContainer = rackField.group;
+    } else {
+        rackContainer = el('div', 'rack-mount-field');
+        rackContainer.append(
+            el('span', 'rack-mount-fixed-label', '搭載先ラック'),
+            el('strong', 'rack-transfer-rack', rackName(viewId))
+        );
+    }
+
+    const positionFieldset = el('fieldset', 'rack-mount-position');
+    const units = el('div', 'rack-mount-position-grid');
+    const dimensions = el('div', 'rack-mount-position-grid');
+    positionFieldset.append(el('legend', '', '棚板の設置位置'), nameField.group, rackContainer, units, dimensions);
+
+    const startField = field('start', '開始U（最下段）', 'input', previous?.start_u || startU);
+    startField.input.type = 'number'; startField.input.min = '1'; startField.input.max = '60'; startField.input.step = '1'; startField.input.required = true;
+    const heightField = field('height', '占有U数', 'input', previous?.height_u || heightU);
+    heightField.input.type = 'number'; heightField.input.min = '1'; heightField.input.max = '60'; heightField.input.step = '1'; heightField.input.required = true;
+    units.append(startField.group, heightField.group);
+
+    const faceField = field('face', '搭載面', 'select', previous?.face || face, [['front', '前面'], ['rear', '背面']]);
+    const depthField = field('depth', '奥行き', 'select', previous?.depth || 'half', [['half', '半分'], ['full', '全体']]);
+    dimensions.append(faceField.group, depthField.group);
+
+    const shelfWarning = el('p', 'rack-warning', '棚板は全幅です。棚板上の機器は追加のUを占有しません。奥行きは簡易占有であり、現物の干渉・耐荷重・放熱は保証しません。');
+    const shelfError = el('p', 'form-error');
+    shelfError.setAttribute('role', 'alert');
+    shelfError.id = 'rack-shelf-error';
+
+    const shelfConfirmation = createRackTransferConfirmation();
+    const shelfActions = el('div', 'rack-shelf-save-actions');
+    const shelfSubmit = el('button', 'btn btn-primary rack-shelf-save-btn', previous ? '設定を保存' : '棚板を作成');
+    shelfSubmit.type = 'button';
+    shelfActions.appendChild(shelfSubmit);
+
+    positionArea.append(positionFieldset, shelfWarning, shelfError, shelfConfirmation.element, shelfActions);
+
+    body.append(deviceArea, positionArea);
+
+    const actions = el('div', 'rack-mount-actions');
+    const closeBtn = el('button', 'btn btn-secondary btn-sm', waitingCreation ? 'キャンセル' : '閉じる');
+    closeBtn.type = 'button';
+    actions.appendChild(closeBtn);
+
+    form.append(body, actions);
+    section.append(heading, form);
+    overlay.appendChild(section);
+    document.body.appendChild(overlay);
+    dialog = overlay;
+    dialogViewId = origin;
+    deviceDialog = overlay;
+    deviceDialogViewId = origin;
+
+    function getShelfInputValues() {
+        return {
+            name: fields.name.value.trim(),
+            view_id: rackField ? Number(fields.view.value) : Number(viewId),
+            start_u: Number(fields.start.value),
+            height_u: Number(fields.height.value),
+            face: fields.face.value,
+            depth: fields.depth.value
+        };
+    }
+
+    let baselineSnapshot = previous ? JSON.stringify({
+        name: previous.name,
+        view_id: previous.view_id,
+        start_u: previous.start_u,
+        height_u: previous.height_u,
+        face: previous.face,
+        depth: previous.depth
+    }) : null;
+
+    function isDirty() {
+        if (waitingCreation || currentShelfId == null || !fields.name) return true;
+        return JSON.stringify(getShelfInputValues()) !== baselineSnapshot;
+    }
+
+    function updateAllStates() {
+        const destination = rackField ? Number(fields.view.value) : Number(viewId);
+        const moving = previous && !eq(previous.view_id, destination);
+        title.textContent = moving ? '棚板をラックへ移設' : previous ? '棚板の設定' : '棚板を追加';
+        target.textContent = moving ? 'ラックへ移設：現在 → 移設先' : `搭載先：${rackName(destination)}`;
+
+        shelfSubmit.textContent = isSavingShelf ? '保存中...' :
+            pendingShelfTransfer ? '移設を確定' : moving ? 'ラックへ移設' : previous ? '設定を保存' : '棚板を作成';
+        shelfSubmit.disabled = isSavingShelf;
+
+        closeBtn.textContent = (pendingShelfTransfer || pendingDeviceTransfer || waitingCreation) ? 'キャンセル' : '閉じる';
+
+        body.classList.toggle('is-new-shelf', waitingCreation);
+
+        const canAdd = canOperateDeviceInput();
+        deviceInput.setDisabled(!canAdd);
+        addDeviceBtn.disabled = !canAdd;
+        for (const button of summaryList.querySelectorAll('.rack-shelf-member-remove-btn')) {
+            button.disabled = !canAdd;
+        }
+        deviceArea.classList.toggle('is-disabled', !canAdd);
+
+        if (waitingCreation || currentShelfId == null) {
+            disabledNotice.hidden = false;
+            disabledNotice.textContent = isSavingShelf ? '棚板を保存中...完了後に機器を追加できます。' : '棚板を作成・保存すると、機器を追加できるようになります。';
+        } else if (isDirty()) {
+            disabledNotice.hidden = false;
+            disabledNotice.textContent = '棚板の設定が変更されています。先に「設定を保存」してください。';
+        } else if (isSavingShelf) {
+            disabledNotice.hidden = false;
+            disabledNotice.textContent = '棚板を保存中...';
+        } else if (!shelfEditable([appState.currentViewId, previous?.view_id].filter(Boolean))) {
+            disabledNotice.hidden = false;
+            disabledNotice.textContent = '保存中または未確認のため、機器を追加できません。';
+        } else {
+            disabledNotice.hidden = true;
+        }
+    }
+
+    // この画面で変更した機器の所属だけを基準へ反映し、他の変更は古い条件として検出する。
+    function refreshMembershipSnapshot(deviceId) {
+        const snapshot = JSON.parse(initialSnapshot);
+        snapshot[2] = snapshot[2].filter(row => !eq(row.device_id, deviceId));
+        const member = members().find(row => eq(row.device_id, deviceId));
+        if (member) snapshot[2].push({ ...member });
+        snapshot[4] = snapshot[4].filter(row => !eq(row.device_id, deviceId));
+        initialSnapshot = JSON.stringify(snapshot);
+        membershipSnapshotChanged = true;
+    }
+
+    async function handleShelfSave() {
+        shelfError.textContent = '';
+        if (isSavingShelf) return;
+        const destination = rackField ? Number(fields.view.value) : Number(viewId);
+        const currentSnapshot = shelfSnapshot();
+        if (!eq(appState.currentViewId, origin) || !shelfEditable([viewId, destination]) || (previous && currentSnapshot !== initialSnapshot)) {
+            pendingShelfTransfer = null;
+            shelfConfirmation.hide();
+            shelfError.textContent = 'ラックまたは保存状態が変わりました。設定し直してください。';
+            updateAllStates();
+            return;
+        }
+        let row, next;
+        try {
+            row = toSaveRackShelf({
+                id: currentShelfId || allocateLocalId('rackShelves'),
+                view_id: destination,
+                name: fields.name.value,
+                face: fields.face.value,
+                start_u: fields.start.value,
+                height_u: fields.height.value,
+                depth: fields.depth.value
+            });
+            next = [...shelves().filter(r => !eq(r.id, row.id)), row];
+            validateRackLayout({ ...appState, rackShelves: next });
+        } catch (failure) {
+            shelfError.textContent = failure.message;
+            return;
+        }
+        const moving = previous && !eq(previous.view_id, row.view_id);
+        if (moving && !pendingShelfTransfer) {
+            pendingShelfTransfer = JSON.stringify(row);
+            shelfConfirmation.show({
+                name: `棚板「${previous.name}」と所属機器${shelfMembers(previous.id).length}台`,
+                from: { rack: rackName(previous.view_id), detail: shelfLocation(previous) },
+                to: { rack: rackName(row.view_id), detail: shelfLocation(row) }
+            });
+            shelfSubmit.textContent = '移設を確定';
+            updateAllStates();
+            return;
+        }
+        if (moving && pendingShelfTransfer !== JSON.stringify(row)) {
+            pendingShelfTransfer = null;
+            shelfConfirmation.hide();
+            shelfError.textContent = '移設条件が変わりました。設定し直してください。';
+            return;
+        }
+
+        pendingShelfTransfer = null;
+        shelfConfirmation.hide();
+        isSavingShelf = true;
+        currentShelfId = row.id;
+        updateAllStates();
+
+        if (!commit({ rackShelves: next })) {
+            isSavingShelf = false;
+            updateAllStates();
+            return;
+        }
+    }
+
+    async function handleAddDevice() {
+        deviceError.textContent = '';
+        if (!canOperateDeviceInput() || isAddingDevice) return;
+        const current = () => dialog === overlay && shelfById(currentShelfId) && eq(appState.currentViewId, previous?.view_id ?? viewId) &&
+            shelfSnapshot() === initialSnapshot;
+
+        if (deviceInput.mode === 'new') {
+            const values = deviceInput.values;
+            const validation = validateDeviceValues({ ...values, name: values.name || '新しい機器' });
+            if (Object.keys(validation.errors).length) {
+                deviceError.textContent = Object.values(validation.errors).join('\n');
+                return;
+            }
+            isAddingDevice = true;
+            addDeviceBtn.disabled = true;
+            try {
+                const { addDevice } = await import('../ui/toolbar.js');
+                if (!current() || !shelfEditable([previous?.view_id ?? viewId])) return;
+                const dev = await addDevice(deviceInput.type.value, {
+                    rackShelfId: currentShelfId,
+                    isCurrent: current,
+                    openDevicePanel: false,
+                    deviceValues: values
+                });
+                if (dev) {
+                    refreshMembershipSnapshot(dev.id);
+                    deviceInput.reset();
+                    renderSummaryList();
+                    showToast(`機器「${dev.name}」を棚板に追加しました`);
+                }
+            } finally {
+                isAddingDevice = false;
+                updateAllStates();
+            }
+            return;
+        }
+
+        const selectedId = deviceInput.selectedId;
+        const device = getDeviceById(selectedId);
+        if (!device) {
+            deviceError.textContent = '追加する機器を選択してください。';
+            return;
+        }
+        const source = shelfForDevice(device.id);
+        const mount = appState.rackMounts.find(r => eq(r.device_id, device.id));
+        const ids = [previous?.view_id ?? viewId, source?.view_id, mount?.view_id].filter(id => id != null);
+        if (!shelfEditable(ids)) {
+            deviceError.textContent = '移設元または移設先を変更できません。';
+            return;
+        }
+        const snapshot = assignmentSnapshot(device.id, currentShelfId);
+        if (pendingDeviceTransfer && pendingDeviceTransfer !== snapshot) {
+            pendingDeviceTransfer = null;
+            deviceConfirmation.hide();
+            addDeviceBtn.textContent = '棚板に追加';
+            deviceError.textContent = '移設条件が変わりました。機器を選び直してください。';
+            return;
+        }
+        if ((source || mount) && !pendingDeviceTransfer) {
+            pendingDeviceTransfer = snapshot;
+            deviceConfirmation.show({
+                name: device.name,
+                from: { rack: rackName(source?.view_id ?? mount.view_id), detail: deviceRackLocation(device.id) },
+                to: { rack: rackName(previous?.view_id ?? viewId), detail: shelfLocation(previous || { name: fields.name.value, view_id: viewId, face: fields.face.value, start_u: Number(fields.start.value), height_u: Number(fields.height.value) }) }
+            });
+            addDeviceBtn.textContent = '移設を確定';
+            updateAllStates();
+            return;
+        }
+        isAddingDevice = true;
+        addDeviceBtn.disabled = true;
+        try {
+            if (assignDeviceToShelf(device.id, currentShelfId, pendingDeviceTransfer ? { snapshot: pendingDeviceTransfer } : null)) {
+                refreshMembershipSnapshot(device.id);
+                pendingDeviceTransfer = null;
+                deviceConfirmation.hide();
+                addDeviceBtn.textContent = '棚板に追加';
+                deviceInput.reset();
+                renderSummaryList();
+                showToast(`機器「${device.name}」を棚板に追加しました`);
+            } else {
+                pendingDeviceTransfer = null;
+                deviceConfirmation.hide();
+                addDeviceBtn.textContent = '棚板に追加';
+                deviceError.textContent = '追加できませんでした。所属と保存状態を確認してください。';
+            }
+        } finally {
+            isAddingDevice = false;
+            updateAllStates();
+        }
+    }
+
+    shelfSubmit.addEventListener('click', handleShelfSave);
+    addDeviceBtn.addEventListener('click', handleAddDevice);
+
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (isDirty() || waitingCreation) await handleShelfSave();
+        else await handleAddDevice();
+    });
+    form.addEventListener('input', () => {
+        pendingShelfTransfer = null;
+        shelfConfirmation.hide();
+        updateAllStates();
+    });
+    form.addEventListener('change', () => {
+        pendingShelfTransfer = null;
+        shelfConfirmation.hide();
+        updateAllStates();
+    });
+
+    closeBtn.addEventListener('click', () => {
+        if (pendingShelfTransfer) { pendingShelfTransfer = null; shelfConfirmation.hide(); updateAllStates(); shelfError.textContent = ''; return; }
+        if (pendingDeviceTransfer) { pendingDeviceTransfer = null; deviceConfirmation.hide(); addDeviceBtn.textContent = '棚板に追加'; updateAllStates(); deviceError.textContent = ''; return; }
+        closeShelfDialog({ confirmIfDirty: true });
+    });
+
+    activeShelfDialog = {
+        overlay,
+        viewId: origin,
+        get currentShelfId() { return currentShelfId; },
+        get waitingCreation() { return waitingCreation; },
+        isDirty,
+        hideCandidates: () => deviceInput.hideCandidates(),
+        onIdsRemapped(maps) {
+            const snapshot = JSON.parse(initialSnapshot);
+            for (const shelf of [snapshot[0], ...snapshot[1]].filter(Boolean)) {
+                shelf.id = mappedResourceId(maps.rack_shelves, shelf.id);
+                shelf.view_id = mappedResourceId(maps.views, shelf.view_id);
+            }
+            for (const member of snapshot[2]) {
+                member.device_id = mappedResourceId(maps.devices, member.device_id);
+                member.shelf_id = mappedResourceId(maps.rack_shelves, member.shelf_id);
+            }
+            for (const view of snapshot[3]) view.id = mappedResourceId(maps.views, view.id);
+            for (const mount of snapshot[4]) {
+                mount.device_id = mappedResourceId(maps.devices, mount.device_id);
+                mount.view_id = mappedResourceId(maps.views, mount.view_id);
+            }
+            initialSnapshot = JSON.stringify(snapshot);
+            if (currentShelfId != null && maps.rack_shelves?.[currentShelfId] != null) {
+                currentShelfId = Number(maps.rack_shelves[currentShelfId]);
+                waitingCreation = false;
+            }
+            previous = shelfById(currentShelfId);
+            if (currentShelfId != null && !previous) {
+                closeShelfDialog();
+                return;
+            }
+            renderSummaryList();
+            updateAllStates();
+        },
+        onResourcesSaved(data) {
+            if (!membershipSnapshotChanged && !isAddingDevice) return;
+            const snapshot = JSON.parse(initialSnapshot);
+            for (const view of snapshot[3]) {
+                const saved = data.views.find(row => eq(row.id, view.id));
+                if (saved) view.resource_revision = saved.resource_revision;
+            }
+            initialSnapshot = JSON.stringify(snapshot);
+            membershipSnapshotChanged = false;
+        },
+        onSaveStateChanged(state) {
+            if (!isCurrentUserAdmin() || appState.authExpired || appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', origin)) {
+                closeShelfDialog();
+                return;
+            }
+            if (isSaveInFlight()) return;
+
+            if (isSavingShelf) {
+                if (state === 'saved') {
+                    isSavingShelf = false;
+                    waitingCreation = false;
+                    previous = shelfById(currentShelfId);
+                    if (previous) {
+                        baselineSnapshot = JSON.stringify({
+                            name: previous.name,
+                            view_id: previous.view_id,
+                            start_u: previous.start_u,
+                            height_u: previous.height_u,
+                            face: previous.face,
+                            depth: previous.depth
+                        });
+                        initialSnapshot = JSON.stringify([previous, shelves(), members(), appState.views, appState.rackMounts]);
+                    }
+                    updateAllStates();
+                    showToast('棚板の設定を保存しました');
+                } else if (state === 'error' || state === 'conflict') {
+                    isSavingShelf = false;
+                    shelfError.textContent = '棚板の保存に失敗しました。再試行してください。';
+                    updateAllStates();
+                }
+            } else {
+                updateAllStates();
+            }
+        }
+    };
+
+    renderSummaryList();
+    updateAllStates();
+
+    registerModalOpen('rack-shelf', overlay, waitingCreation ? '#rack-shelf-name' : '#rack-shelf-device-search', {
+        onClose: () => {
+            if (deviceInput.candidatesOpen) deviceInput.hideCandidates();
+            else if (pendingShelfTransfer) { pendingShelfTransfer = null; shelfConfirmation.hide(); updateAllStates(); }
+            else if (pendingDeviceTransfer) { pendingDeviceTransfer = null; deviceConfirmation.hide(); updateAllStates(); }
+            else closeShelfDialog({ confirmIfDirty: true });
+        }
+    });
 }
 function closeShelfDeviceDialog() {
-    closeDeviceTypePicker();
-    if (!deviceDialog) return;
-    deviceDialog.remove(); deviceDialog = null; deviceDialogViewId = null; registerModalClose('rack-shelf-device');
+    closeShelfDialog();
 }
 function deviceIcon(device) {
     const icon = el('img', 'device-type-icon'); icon.src = (DEVICE_TYPES[device.type] || DEVICE_TYPES.other).icon; icon.alt = ''; return icon;
@@ -209,90 +671,7 @@ function deviceIcon(device) {
 function openShelfDeviceDialog(shelfId) {
     const shelf = shelfById(shelfId);
     if (!requireAdminUiAction() || !shelf || !shelfEditable([shelf.view_id]) || !eq(shelf.view_id, appState.currentViewId)) return;
-    closeShelfDialog(); closeShelfDeviceDialog();
-    const overlay = el('div', 'view-manager-overlay rack-mount-overlay rack-shelf-device-overlay');
-    const section = el('section', 'view-manager-dialog rack-mount-dialog');
-    section.setAttribute('role', 'dialog'); section.setAttribute('aria-modal', 'true'); section.setAttribute('aria-labelledby', 'rack-shelf-device-title');
-    const title = el('h2', '', '棚板に機器を追加'); title.id = 'rack-shelf-device-title';
-    const heading = el('div', 'modal-header-heading rack-mount-heading');
-    heading.append(title, el('p', 'modal-header-target', `搭載先：${rackName(shelf.view_id)} / 棚板「${shelf.name}」`));
-    const form = el('form', 'rack-mount-form rack-shelf-device-form'), body = el('div', 'rack-mount-body');
-    const modes = el('div', 'rack-shelf-device-modes'), existing = el('div', 'rack-shelf-existing'), fresh = el('div', 'rack-shelf-new');
-    let mode = 'existing', selectedId = null, pending = null, busy = false;
-    const current = () => deviceDialog === overlay && shelfById(shelfId) === shelf && eq(appState.currentViewId, shelf.view_id);
-    const search = el('input'); search.id = 'rack-shelf-device-search'; search.type = 'search'; search.placeholder = '機器名・IP・型番で検索'; search.setAttribute('aria-label', '機器名・IP・型番で検索');
-    const results = el('div', 'rack-shelf-candidates'); existing.append(search, results);
-    const picker = createDeviceTypePicker({ value: 'switch', control: el('button') });
-    const typeGroup = el('div', 'rack-mount-field'); typeGroup.append(el('span', '', '機器の種別'), picker.control); fresh.appendChild(typeGroup);
-    const inputs = {};
-    for (const [key, label] of [['name', '機器名'], ['ip', 'IPアドレス（任意）']]) {
-        const group = el('div', 'rack-mount-field'), input = el('input'), text = el('label', '', label);
-        input.id = `rack-shelf-device-${key}`; text.setAttribute('for', input.id); input.maxLength = key === 'name' ? 100 : 45;
-        inputs[key] = input; group.append(text, input); fresh.appendChild(group);
-    }
-    const confirmation = createRackTransferConfirmation(), error = el('p', 'form-error'); error.setAttribute('role', 'alert');
-    const actions = el('div', 'rack-mount-actions'), submit = el('button', 'btn btn-primary', '棚板に追加'); submit.type = 'submit';
-    const resetConfirmation = () => { pending = null; confirmation.hide(); submit.textContent = '棚板に追加'; error.textContent = ''; };
-    const filter = () => {
-        results.replaceChildren(); const query = search.value.trim().toLocaleLowerCase('ja');
-        if (!query) { results.appendChild(el('p', '', '機器名・IP・型番を入力して検索してください')); return; }
-        for (const device of appState.devices.filter(row => !shelfMembers(shelfId).some(member => eq(member.device_id, row.id)) &&
-            `${row.name} ${row.ip || ''} ${row.model || ''}`.toLocaleLowerCase('ja').includes(query))) {
-            const candidate = btn('', () => {
-                selectedId = device.id; resetConfirmation();
-                for (const node of results.children) node.setAttribute('aria-pressed', String(node === candidate));
-            });
-            candidate.classList.add('rack-shelf-candidate'); candidate.setAttribute('aria-pressed', String(eq(selectedId, device.id)));
-            const label = el('span'); label.append(el('strong', '', device.name), el('small', '', `${DEVICE_TYPES[device.type]?.label || device.type} / ${device.ip || 'IP未設定'} / ${deviceRackLocation(device.id)}`));
-            candidate.append(deviceIcon(device), label); results.appendChild(candidate);
-        }
-        if (!results.children.length) results.appendChild(el('p', '', '該当する機器がありません'));
-    };
-    const setMode = value => {
-        mode = value; resetConfirmation(); closeDeviceTypePicker(); existing.hidden = value !== 'existing'; fresh.hidden = value !== 'new';
-        existingButton.setAttribute('aria-pressed', String(value === 'existing')); newButton.setAttribute('aria-pressed', String(value === 'new'));
-    };
-    const existingButton = btn('既存機器から選択', () => setMode('existing')), newButton = btn('新しい機器を登録', () => setMode('new'));
-    modes.append(existingButton, newButton); setMode('existing'); filter();
-    search.addEventListener('input', () => { selectedId = null; resetConfirmation(); filter(); });
-    form.addEventListener('submit', async event => {
-        event.preventDefault();
-        if (busy) return;
-        if (!current() || !shelfEditable([shelf.view_id])) { error.textContent = 'ラックまたは保存状態が変わりました。開き直してください。'; return; }
-        if (mode === 'new') {
-            const values = { name: inputs.name.value.trim(), ip: inputs.ip.value.trim() };
-            const validation = validateDeviceValues({ ...values, name: values.name || '新しい機器' });
-            if (Object.keys(validation.errors).length) { error.textContent = Object.values(validation.errors).join('\n'); return; }
-            busy = true; submit.disabled = true;
-            try {
-                const { addDevice } = await import('../ui/toolbar.js');
-                if (!current() || !shelfEditable([shelf.view_id])) return;
-                const device = await addDevice(picker.control.value, { rackShelfId: shelf.id, isCurrent: current,
-                    openDevicePanel: false, shelfDeviceValues: values });
-                if (device) { closeShelfDeviceDialog(); await showShelfPanel(shelf.id); }
-            } finally { busy = false; submit.disabled = false; }
-            return;
-        }
-        const device = getDeviceById(selectedId);
-        if (!device) { error.textContent = '追加する機器を選択してください。'; return; }
-        const source = shelfForDevice(device.id), mount = appState.rackMounts.find(row => eq(row.device_id, device.id));
-        const ids = [shelf.view_id, source?.view_id, mount?.view_id].filter(id => id != null);
-        if (!shelfEditable(ids)) { error.textContent = '移設元または移設先を変更できません。'; return; }
-        const snapshot = assignmentSnapshot(device.id, shelf.id);
-        if (pending && pending !== snapshot) { resetConfirmation(); error.textContent = '移設条件が変わりました。機器を選び直してください。'; return; }
-        if ((source || mount) && !pending) {
-            pending = snapshot;
-            confirmation.show({ name: device.name, from: { rack: rackName(source?.view_id ?? mount.view_id), detail: deviceRackLocation(device.id) },
-                to: { rack: rackName(shelf.view_id), detail: shelfLocation(shelf) } });
-            submit.textContent = '移設を確定'; return;
-        }
-        if (assignDeviceToShelf(device.id, shelf.id, { snapshot })) { closeShelfDeviceDialog(); await showShelfPanel(shelf.id); }
-        else { resetConfirmation(); error.textContent = '追加できませんでした。所属と保存状態を確認してください。'; }
-    });
-    actions.append(btn('キャンセル', () => { if (pending) resetConfirmation(); else closeShelfDeviceDialog(); }), submit);
-    body.append(modes, existing, fresh, confirmation.element, error); form.append(body, actions); section.append(heading, form); overlay.appendChild(section);
-    document.body.appendChild(overlay); deviceDialog = overlay; deviceDialogViewId = shelf.view_id;
-    registerModalOpen('rack-shelf-device', overlay, '#rack-shelf-device-search', { onClose: closeShelfDeviceDialog });
+    openShelfDialog({ viewId: shelf.view_id, shelfId: shelf.id });
 }
 export function closeShelfPanel() {
     closeShelfDeviceDialog(); closeShelfDialog();
@@ -362,9 +741,14 @@ function renderShelfPanel() {
     document.body.appendChild(panel);
 }
 eventBus.on('rack:changed', () => { if (selectedShelfId != null) renderShelfPanel(); });
-eventBus.on('save-state:changed', () => { if (!shelfEditable()) { setShelfAdding(false); closeShelfDialog(); closeShelfDeviceDialog(); } if (selectedShelfId != null) renderShelfPanel(); });
+eventBus.on('save-state:changed', state => {
+    if (activeShelfDialog) activeShelfDialog.onSaveStateChanged(state);
+    else if (!shelfEditable()) setShelfAdding(false);
+    if (selectedShelfId != null) renderShelfPanel();
+});
+eventBus.on('resources:saved', data => activeShelfDialog?.onResourcesSaved(data));
 eventBus.on('resources:ids-remapped', maps => {
-    closeShelfDialog(); closeShelfDeviceDialog();
+    if (activeShelfDialog) activeShelfDialog.onIdsRemapped(maps);
     if (selectedShelfId != null) {
         selectedShelfId = Number(maps.rack_shelves?.[selectedShelfId] ?? selectedShelfId);
         renderShelfPanel();
@@ -373,12 +757,11 @@ eventBus.on('resources:ids-remapped', maps => {
 eventBus.on('device-panel:opened', closeShelfPanel);
 eventBus.on('canvas:render-complete', () => {
     if (dialog && !eq(dialogViewId, appState.currentViewId)) closeShelfDialog();
-    if (deviceDialog && !eq(deviceDialogViewId, appState.currentViewId)) closeShelfDeviceDialog();
     if (getCurrentView()?.view_type !== 'rack' || (selectedShelfId != null && !eq(shelfById(selectedShelfId)?.view_id, appState.currentViewId))) { setShelfAdding(false); closeShelfDialog(); closeShelfPanel(); }
 });
 if (typeof document !== 'undefined') {
     document.addEventListener('click', event => {
-        if (event.target.closest?.('#palette-shelf-btn')) setShelfAdding(!adding);
+        if (event.target.closest?.('#palette-shelf-btn')) { closeShelfDialog(); setShelfAdding(!adding); }
         if (event.target.closest?.('#palette-view-btn')) { setShelfAdding(false); closeShelfDialog(); closeShelfDeviceDialog(); }
     });
     document.addEventListener('keydown', event => { if (event.key === 'Escape') { setShelfAdding(false); if (!dialog && !deviceDialog) closeShelfPanel(); } });

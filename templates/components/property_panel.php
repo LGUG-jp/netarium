@@ -38,9 +38,14 @@
                 接続設定 ⚙
             </button>
         </section>
-        <button id="p-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="現在のビューと機器のリンクをコピー（保存後に利用できます）">
-            機器のリンクをコピー
-        </button>
+        <div class="device-panel-actions" role="group" aria-label="機器の共通操作">
+            <button id="p-open-sheet-btn" type="button" class="btn btn-primary btn-sm">
+                個票を開く
+            </button>
+            <button id="p-copy-link-btn" type="button" class="btn btn-secondary btn-sm" title="現在のビューと機器のリンクをコピー（保存後に利用できます）">
+                リンクをコピー
+            </button>
+        </div>
 
         <!-- 第1分類: 基本情報 (初期展開) -->
         <details id="p-group-basic" class="panel-group" open>

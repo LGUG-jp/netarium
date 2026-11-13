@@ -1805,8 +1805,10 @@ eventBus.on('resources:reloaded', () => updateLedgerViewFilterOptions());
 eventBus.on('resource:reloaded', () => {
     updateLedgerViewFilterOptions();
 });
-export async function openLedgerDetail(deviceId, { reveal = true } = {}) {
+export async function openLedgerDetail(deviceId, { reveal = true, canOpen = () => true } = {}) {
+    if (!canOpen()) return false;
     if (Number(deviceId) !== activeLedgerDeviceId && !await confirmSheetNavigation()) return false;
+    if (!canOpen()) return false;
     const activeRow = document.activeElement?.closest?.('#ledger-table-body tr[data-device-id]');
     if (activeRow && !commitLedgerRow(Number(activeRow.dataset.deviceId))) return false;
     const device = getDeviceById(deviceId);

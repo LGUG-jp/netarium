@@ -355,3 +355,101 @@ test('1Uハーフ幅機器もIP設定の有効・無効を印刷テキストへ�
     await change(dom, 'print-ip', false);
     assert.ok(!printedTexts().includes('192.168.100.254'));
 });
+
+test('ラック名称は1U全幅・左右半幅と前後面で全角・英数字を折り返し、枠内の10px以上で表示する', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.rackSettings = [{ view_id: 1, total_u: 8 }];
+    appState.rackShelves = []; appState.rackShelfDevices = [];
+    appState.canvasNotes = [];
+    const context = document.createElement('canvas').getContext('2d');
+    for (const name of ['AP-01', '試験棟管理ネットワーク集約装置', 'distribution-switch-building-A01']) {
+        for (const face of ['front', 'rear', 'both']) {
+            for (const width_slot of ['full', 'left', 'right']) {
+                appState.devices = [{ id: 1, name, type: 'switch', ip: '192.0.2.1' }];
+                appState.rackMounts = [{ device_id: 1, view_id: 1, face, start_u: 1, height_u: 1, width_slot }];
+                const before = stateSnapshot();
+                await dom.get('palette-print-btn').dispatch('click');
+                const sheet = dom.get('print-sheet-container').children[0];
+                const blocks = sheet.querySelectorAll('g').filter(group => group.getAttribute('data-device-id') === '1');
+                assert.equal(blocks.length, face === 'both' ? 2 : 1);
+                for (const block of blocks) {
+                    const names = block.querySelectorAll('.print-rack-name');
+                    assert.equal(names.map(node => node.textContent).join(''), name);
+                    const rect = block.querySelector('rect');
+                    const label = block.querySelector('svg');
+                    assert.ok(Number(label.getAttribute('x')) > Number(rect.getAttribute('x')));
+                    assert.ok(Number(label.getAttribute('x')) + Number(label.getAttribute('width')) <
+                        Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')));
+                    assert.ok(Number(label.getAttribute('y')) > Number(rect.getAttribute('y')));
+                    assert.ok(Number(label.getAttribute('y')) + Number(label.getAttribute('height')) <
+                        Number(rect.getAttribute('y')) + Number(rect.getAttribute('height')));
+                    for (const node of label.querySelectorAll('text')) {
+                        const size = Number(node.getAttribute('font-size'));
+                        assert.ok(size >= 10 && size <= 12);
+                        context.font = `${size}px ${label.getAttribute('font-family')}`;
+                        assert.ok(Number(node.getAttribute('x')) + context.measureText(node.textContent).width <=
+                            Number(label.getAttribute('width')) - 2);
+                        assert.ok(Number(node.getAttribute('y')) - size >= 0);
+                        assert.ok(Number(node.getAttribute('y')) + 2 <= Number(label.getAttribute('height')));
+                    }
+                }
+                assert.deepEqual(stateSnapshot(), before);
+            }
+        }
+    }
+});
+
+test('複数Uは名称の行数を増やし、限界時だけ末尾省略する。IP・種別ONで名称を押し出さない', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.rackSettings = [{ view_id: 1, total_u: 8 }];
+    appState.rackShelves = []; appState.rackShelfDevices = [];
+    const name = '管理ネットワーク集約装置'.repeat(3);
+    appState.devices = [{ id: 1, name, type: 'switch', ip: '2001:db8:1234:5678:90ab:cdef:1234:5678' }];
+    const names = () => dom.get('print-sheet-container').children[0].querySelectorAll('.print-rack-name')
+        .map(node => [node.textContent, node.getAttribute('font-size'), node.getAttribute('y')]);
+    for (const width_slot of ['full', 'left', 'right']) {
+        appState.rackMounts = [{ device_id: 1, view_id: 1, face: 'rear', start_u: 1, height_u: 1, width_slot }];
+        await dom.get('palette-print-btn').dispatch('click');
+        if (width_slot !== 'full') {
+            const compact = names().map(row => row[0]);
+            assert.ok(compact.at(-1).endsWith('…'));
+            assert.ok(compact.slice(0, -1).every(line => !line.includes('…')));
+            assert.ok(name.startsWith(compact.join('').slice(0, -1)));
+        }
+        const withMetadata = names();
+        await change(dom, 'print-ip', false);
+        await change(dom, 'print-deviceType', false);
+        assert.deepEqual(names(), withMetadata);
+        appState.rackMounts[0].height_u = 4;
+        await dom.get('palette-print-btn').dispatch('click');
+        assert.equal(names().map(row => row[0]).join(''), name);
+    }
+});
+
+test('ラックの名称・種別・IP設定は独立し、名称OFFの空き領域に種別と長いIPを表示できる', async t => {
+    const dom = setup(t);
+    appState.views[0].view_type = 'rack';
+    appState.rackSettings = [{ view_id: 1, total_u: 4 }];
+    appState.rackShelves = []; appState.rackShelfDevices = [];
+    appState.devices = [{ id: 1, name: '試験スイッチ', type: 'switch', ip: '2001:db8:1234:5678:90ab:cdef:1234:5678' }];
+    appState.rackMounts = [{ device_id: 1, view_id: 1, face: 'front', start_u: 1, height_u: 2, width_slot: 'right' }];
+    await dom.get('palette-print-btn').dispatch('click');
+    const text = className => dom.get('print-sheet-container').children[0].querySelectorAll(`.${className}`)
+        .map(node => node.textContent).join('');
+    for (const [id, className, expected] of [
+        ['print-deviceName', 'print-rack-name', appState.devices[0].name],
+        ['print-ip', 'print-rack-ip', appState.devices[0].ip],
+        ['print-deviceType', 'print-rack-type', 'L2SW']
+    ]) {
+        await change(dom, 'print-deviceName', false);
+        await change(dom, 'print-ip', false);
+        await change(dom, 'print-deviceType', false);
+        await change(dom, id, true);
+        assert.equal(text(className), expected);
+        for (const other of ['print-rack-name', 'print-rack-ip', 'print-rack-type'].filter(value => value !== className)) {
+            assert.equal(text(other), '');
+        }
+    }
+});

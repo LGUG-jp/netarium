@@ -1,5 +1,7 @@
 import { confirmDeviceIpChanges } from '../core/device-ip-addresses.js';
 import { segmentCandidates } from '../core/ip-management.js';
+import { getDefaultDeviceName } from '../core/device-defaults.js';
+import { validateDeviceValues } from '../core/device-validation.js';
 /**
  * Netarium - ui/toolbar.js
  */
@@ -808,26 +810,6 @@ export async function doPing(targets) {
 
 
 
-/**
- * 機器種別ごとの初期名称
- */
-
-/**
- * 機器種別ごとの初期名称
- */
-export function getDefaultDeviceName(type) {
-    const definition =
-        DEVICE_TYPES[type] ||
-        DEVICE_TYPES.other;
-
-    const baseName = definition.label;
-
-    const sameTypeCount = appState.devices.filter(
-        device => device.type === type
-    ).length;
-
-    return `${baseName}${sameTypeCount + 1}`;
-}
 
 
 
@@ -838,7 +820,7 @@ export function getDefaultDeviceName(type) {
 /**
  * 機器追加
  */
-export async function addDevice(type = 'switch', { rackMount = null, rackShelfId = null, isCurrent = () => true, openDevicePanel = true, shelfDeviceValues = null } = {}) {
+export async function addDevice(type = 'switch', { rackMount = null, rackShelfId = null, isCurrent = () => true, openDevicePanel = true, deviceValues = null } = {}) {
     if (!requireAdminUiAction()) {
         return;
     }
@@ -869,9 +851,9 @@ export async function addDevice(type = 'switch', { rackMount = null, rackShelfId
         type = 'switch';
     }
 
-    if (!await closePanel() || !await closeLinkPanel()) {
-        return;
-    }
+    if (!await closePanel()) return;
+    if (inRack && !canRegisterInRack()) return false;
+    if (!await closeLinkPanel()) return;
     if (inRack && !canRegisterInRack()) return false;
 
     let position;
@@ -943,43 +925,52 @@ export async function addDevice(type = 'switch', { rackMount = null, rackShelfId
         maintenance_expiry: ''
     };
 
-    if (rackShelfId != null) {
+    if (inRack) {
         if (!canRegisterInRack()) return false;
-        if (shelfDeviceValues) {
-            device.name = shelfDeviceValues.name || device.name;
-            device.ip = shelfDeviceValues.ip || '';
+        let confirmedDevices = [];
+        if (deviceValues) {
+            const validation = validateDeviceValues({
+                name: String(deviceValues.name ?? '').trim() || device.name,
+                ip: deviceValues.ip
+            });
+            if (Object.keys(validation.errors).length) {
+                showToast(Object.values(validation.errors).join('\n'), 'warning');
+                return false;
+            }
+            device.name = validation.values.name;
+            device.ip = validation.values.ip;
             const candidates = segmentCandidates(device.ip, appState.ipSegments || []);
             device.ip_segment_id = candidates.length === 1 ? Number(candidates[0].id) : null;
-            if (!confirmDeviceIpChanges(appState.devices, [...appState.devices, device])) return false;
         }
-        const assignment = { device_id: deviceId, shelf_id: Number(rackShelfId),
-            sort_order: Math.max(-1, ...(appState.rackShelfDevices || []).filter(row => Number(row.shelf_id) === Number(rackShelfId)).map(row => row.sort_order)) + 1 };
+        const assignment = rackShelfId == null ? null : {
+            device_id: deviceId, shelf_id: Number(rackShelfId),
+            sort_order: Math.max(-1, ...(appState.rackShelfDevices || []).filter(row => Number(row.shelf_id) === Number(rackShelfId)).map(row => row.sort_order)) + 1
+        };
+        const mount = assignment ? null : { ...rackMount, device_id: deviceId };
         try {
             validateRackLayout({ ...appState, devices: [...appState.devices, device],
-                rackShelfDevices: [...(appState.rackShelfDevices || []), assignment] });
+                ...(assignment
+                    ? { rackShelfDevices: [...(appState.rackShelfDevices || []), assignment] }
+                    : { rackMounts: [...appState.rackMounts, mount] }) });
+            if (deviceValues) {
+                // 確認で付く重複承認フラグも、登録成立までは共有状態へ反映しない。
+                confirmedDevices = appState.devices.map(row => ({ ...row }));
+                if (!confirmDeviceIpChanges(appState.devices, [...confirmedDevices, device])) return false;
+            }
         } catch (error) { showToast(error.message, 'warning'); return false; }
         if (!canRegisterInRack()) return false;
-        appState.devices.push(device); appState.rackShelfDevices.push(assignment);
-        appState.selectedPlacementIds.clear(); markDirty(); scheduleSave({ immediate: true, silent: true });
-        render();
-        if (openDevicePanel) await openPanel(device);
-        return device;
-    }
-    if (rackMount) {
-        const mount = { ...rackMount, device_id: deviceId };
-        try {
-            validateRackLayout({ ...appState, devices: [...appState.devices, device],
-                rackMounts: [...appState.rackMounts, mount] });
-        } catch (error) { showToast(error.message, 'warning'); return false; }
-        if (!canRegisterInRack()) return false;
-        // Register both resources before starting the queue: no device-only intermediate save.
+        for (let index = 0; index < confirmedDevices.length; index++) {
+            if (confirmedDevices[index].ip_conflicts_confirmed) appState.devices[index].ip_conflicts_confirmed = true;
+        }
+        // 保存キュー開始前に、機器と搭載先を一緒に登録する。
         appState.devices.push(device);
-        appState.rackMounts.push(mount);
+        if (assignment) appState.rackShelfDevices.push(assignment);
+        else appState.rackMounts.push(mount);
         appState.selectedPlacementIds.clear();
         markDirty();
         scheduleSave({ immediate: true, silent: true });
         render();
-        await openPanel(device);
+        if (openDevicePanel) await openPanel(device);
         return device;
     }
 

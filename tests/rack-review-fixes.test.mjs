@@ -129,9 +129,8 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         await cancelMount();
     });
     const mounted = { ...legacy, face: 'front', width_slot: 'left', depth: 'half' };
-    const preview = () => document.querySelector('.rack-mount-comparison');
-    const sourceText = () => preview().querySelector('.rack-transfer-from').textContent;
-    const destinationText = () => preview().querySelector('.rack-transfer-to').textContent;
+    const source = () => document.querySelector('.rack-mount-device-area').querySelector('.rack-transfer-from');
+    const sourceText = () => source().textContent;
     const submitMount = () => document.querySelector('.rack-mount-form').dispatch('submit');
     const change = async (name, value) => {
         dom.get(`rack-mount-${name}`).value = String(value);
@@ -147,11 +146,9 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         rack.openRackMountDialog({ viewId: 1, deviceId: 1 });
         const before = sourceText();
         assert.match(before, /ラック.*前面.*左半分.*1〜2U.*奥行き：半分/);
-        assert.match(document.querySelector('.modal-header-target').textContent, /搭載位置を変更：現在 → 変更後/);
         await change('start', 3); await change('height', 1);
         await change('face', 'rear'); await change('width', 'left'); await change('depth', 'full');
         assert.equal(sourceText(), before);
-        assert.match(destinationText(), /ラック.*背面.*左半分.*3〜3U.*奥行き：全体/);
         assert.deepEqual(appState.rackMounts, [mounted]);
         await cancelMount();
         assert.deepEqual(appState.rackMounts, [mounted]);
@@ -163,8 +160,6 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         const before = sourceText();
         await change('view', 2); await change('start', 3);
         assert.equal(sourceText(), before);
-        assert.match(destinationText(), /移設先ラック.*3〜4U/);
-        assert.match(document.querySelector('.modal-header-target').textContent, /ラックへ移設：現在 → 移設先/);
         await submitMount();
         const confirmation = document.querySelector('.rack-transfer-confirmation');
         assert.equal(confirmation.hidden, false);
@@ -174,7 +169,6 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         assert.equal(confirmation.hidden, true); assert.equal(sourceText(), before);
         assert.deepEqual(appState.rackMounts, [mounted]);
         await change('view', 1);
-        assert.match(document.querySelector('.modal-header-target').textContent, /搭載位置を変更：現在 → 変更後/);
         await cancelMount();
         assert.deepEqual(resource.buildResourceSave(), { devices: [], views: [] });
     });
@@ -184,9 +178,8 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         rack.openRackMountDialog({ viewId: 1, deviceId: 1 });
         const before = sourceText();
         assert.match(before, /ラック.*棚板「棚板」.*前面.*全幅.*4〜4U.*奥行き：半分/);
-        assert.match(document.querySelector('.modal-header-target').textContent, /ラックへ移設：現在 → 移設先/);
         await change('start', 1); await change('face', 'rear');
-        assert.equal(sourceText(), before); assert.match(destinationText(), /背面.*1〜1U/);
+        assert.equal(sourceText(), before);
         await submitMount();
         assert.equal(document.querySelector('.rack-transfer-confirmation').hidden, false);
         assert.match(document.querySelector('.rack-transfer-confirmation').querySelector('.rack-transfer-from').textContent, /棚板「棚板」/);
@@ -202,13 +195,12 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         await search.dispatch('keydown', { key: 'ArrowDown' }); await search.dispatch('keydown', { key: 'Enter' });
         const before = sourceText();
         assert.match(before, /未搭載/);
-        assert.equal(document.querySelector('.modal-header-target').textContent, '搭載位置（指定先）');
         await change('start', 3);
-        assert.equal(sourceText(), before); assert.match(destinationText(), /3〜3U/);
+        assert.equal(sourceText(), before);
         await document.querySelector('.rack-mount-device-area').querySelectorAll('button')
             .find(node => node.textContent === '新しい機器を登録').dispatch('click');
-        assert.equal(document.querySelector('.modal-header-target').textContent, '搭載位置（指定先）');
-        assert.match(sourceText(), /未搭載/);
+        assert.equal(source().hidden, true, '新規登録では現在位置を表示しない');
+        assert.equal(document.querySelector('.rack-mount-actions').querySelector('button[type="submit"]').textContent, '登録して搭載');
         await cancelMount();
         assert.deepEqual(appState.rackMounts, []);
         assert.equal(appState.devices.length, 2);

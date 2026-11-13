@@ -120,6 +120,17 @@
     flex-shrink: 0;
 }
 
+.device-panel-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.device-panel-actions > .btn {
+    flex: 1 1 120px;
+    white-space: nowrap;
+}
+
 .device-settings-jump-link {
     border: none;
     background: transparent;

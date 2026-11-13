@@ -465,7 +465,8 @@
         0 1px 0 #ffffff;
 }
 .device-name {
-    font-size: 14px;
+    font-size: 13px;
+    text-overflow: clip;
     font-weight: 700;
     line-height: 1.25;
     color: var(--text-main);
@@ -848,22 +849,35 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 .rack-mount-form { display: flex; flex-direction: column; min-height: 0; }
 .rack-mount-body { overflow-y: auto; min-height: 0; padding: 0 20px 12px; display: grid; gap: 10px; }
 .rack-mount-field { display: grid; gap: 4px; min-width: 0; align-content: start; }
-.rack-mount-field label { font-size: 12px; font-weight: 700; margin: 0; }
+.rack-mount-field label, .rack-mount-fixed-label { font-size: 12px; font-weight: 700; margin: 0; }
 .rack-mount-form input, .rack-mount-form select { box-sizing: border-box; width: 100%; height: 38px; min-width: 0; padding: 6px 8px; }
 .rack-mount-position { min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border-light); border-radius: var(--radius-xs); }
 .rack-mount-position legend { padding: 0 4px; font-size: 12px; font-weight: 700; }
 .rack-mount-position-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; }
 .rack-mount-position-grid + .rack-mount-position-grid { margin-top: 8px; }
 .rack-mount-position > .rack-mount-field { margin-bottom: 8px; }
-.rack-mount-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.rack-mount-device-area { display: grid; gap: 8px; }
-.rack-mount-device-area > .btn { justify-self: start; }
-.rack-mount-candidates { max-height: 180px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); }
-.rack-mount-option { display: grid; gap: 3px; padding: 8px; cursor: pointer; overflow-wrap: anywhere; border-bottom: 1px solid var(--border-light); }
-.rack-mount-option span { font-size: 12px; color: var(--text-muted); }
-.rack-mount-option:hover, .rack-mount-option[aria-selected="true"] { background: var(--primary-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
+.view-manager-dialog.rack-mount-two-pane { max-width: 1040px; }
+.rack-mount-panes { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: 20px; }
+.rack-mount-device-area, .rack-mount-position-area { display: grid; align-content: start; min-width: 0; gap: 12px; }
+.rack-device-input, .rack-device-existing, .rack-device-new, .rack-device-selection-details { display: grid; gap: 12px; min-width: 0; align-content: start; }
+.rack-device-input [hidden] { display: none; }
+.rack-device-input input, .rack-device-input .device-type-trigger { height: 44px; min-height: 44px; max-height: 44px; flex-shrink: 0; }
+.rack-device-modes { display: flex; flex-wrap: wrap; gap: 8px; }
+.rack-device-modes [aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
+.rack-device-summary { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.rack-device-summary > .device-type-icon { width: 24px; height: 24px; flex: 0 0 24px; }
+.rack-device-summary > span { display: grid; gap: 3px; min-width: 0; }
+.rack-device-summary small { font-size: 12px; color: var(--text-muted); }
+.rack-device-candidate-region { position: fixed; z-index: 5; min-height: 0; }
+.rack-device-candidates { height: 100%; overflow-y: auto; overscroll-behavior: contain; background: var(--bg-panel); box-shadow: 0 4px 12px rgb(0 0 0 / 15%); border: 1px solid var(--border-strong); border-radius: var(--radius-xs); box-sizing: border-box; }
+.rack-device-option { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; cursor: pointer; overflow-wrap: anywhere; border: 0; border-bottom: 1px solid var(--border-light); background: transparent; color: var(--text-main); font: inherit; text-align: left; }
+.rack-device-option > .device-type-icon { width: 24px; height: 24px; flex: 0 0 24px; }
+.rack-device-option > span { display: grid; gap: 3px; min-width: 0; }
+.rack-device-option-name { font-weight: 700; }
+.rack-device-option small { font-size: 12px; color: var(--text-muted); }
+.rack-device-option:hover, .rack-device-option.is-active, .rack-device-option[aria-selected="true"] { background: var(--primary-soft); outline: 2px solid var(--primary); outline-offset: -2px; }
 .rack-mount-body p { margin: 0; overflow-wrap: anywhere; }
-.rack-mount-candidates p { padding: 8px; }
+.rack-device-candidates p { padding: 8px; }
 .rack-mount-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--border-light); flex-shrink: 0; }
 .rack-mount-dialog [hidden] { display: none; }
 .rack-transfer-confirmation { padding: 8px 20px 16px; gap: 14px; }
@@ -903,13 +917,33 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
 .rack-shelf-candidates { max-height: 240px; overflow-y: auto; display: grid; gap: 6px; }
 .rack-shelf-candidate[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); }
 .rack-shelf { --rack-device-color: var(--text-muted); }
+.rack-shelf-device-icons { display: inline-flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; overflow: hidden; margin-inline: 4px; }
+.rack-shelf-device-icon { width: 16px; height: 16px; flex-shrink: 0; vertical-align: middle; }
+.rack-shelf-device-more { font-size: 10px; font-weight: 700; color: var(--text-muted); flex-shrink: 0; line-height: 1; padding: 0 1px; }
+.rack-shelf-count { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 11px; color: var(--text-muted); font-weight: 600; }
+.rack-shelf-summary-list { list-style: none; margin: 0; padding: 4px; display: grid; gap: 4px; max-height: 140px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-card); }
+.rack-shelf-summary-item { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 6px; border-radius: var(--radius-xs); }
+.rack-shelf-summary-item > .device-type-icon { width: 18px; height: 18px; flex-shrink: 0; }
+.rack-shelf-summary-item > .rack-shelf-summary-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.rack-shelf-summary-item > .rack-shelf-summary-detail { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+.rack-shelf-member-remove-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font-size: 14px; line-height: 1; cursor: pointer; flex-shrink: 0; margin-left: 2px; }
+.rack-shelf-member-remove-btn:hover:not(:disabled) { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: var(--danger); }
+.rack-shelf-member-remove-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.rack-shelf-summary-empty { font-size: 12px; color: var(--text-muted); padding: 8px; text-align: center; margin: 0; }
+.rack-shelf-disabled-notice { font-size: 12px; line-height: 1.4; color: var(--text-muted); margin: 0; padding: 6px 10px; background: var(--bg-hover); border-radius: var(--radius-sm); border: 1px dashed var(--border-light); }
+.rack-mount-device-area.is-disabled { opacity: 0.65; pointer-events: none; }
+.rack-shelf-device-actions { display: flex; justify-content: flex-start; gap: 8px; margin-top: 8px; }
+.rack-shelf-save-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 @media print { .rack-shelf-panel { display: none !important; } }
 @media (max-width: 480px) {
     .rack-mount-overlay { padding: 12px; }
     .view-manager-dialog.rack-mount-dialog { max-height: calc(100dvh - 24px); }
-    .rack-mount-comparison { grid-template-columns: minmax(0, 1fr); }
     .rack-transfer-flow { grid-template-columns: minmax(0, 1fr); gap: 6px; }
     .rack-transfer-arrow { transform: rotate(90deg); line-height: 1; margin: 2px 0; }
+}
+@media (max-width: 760px) {
+    .rack-mount-panes { grid-template-columns: minmax(0, 1fr); }
+    .rack-mount-panes.is-new-shelf > .rack-mount-position-area { order: -1; }
 }
 @media (max-width: 700px) {
     .rack-view { padding: 10px; }

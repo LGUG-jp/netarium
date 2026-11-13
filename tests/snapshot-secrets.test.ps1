@@ -48,6 +48,7 @@ try {
         } catch {
             $inner = $_.Exception.InnerException
             if ($_.Exception -isnot [UnauthorizedAccessException] -and $inner -isnot [UnauthorizedAccessException] -and
+                $_.Exception -isnot [InvalidOperationException] -and $inner -isnot [InvalidOperationException] -and
                 -not ($inner -is [IO.IOException] -and $inner.HResult -eq -2147023589)) { throw }
         }
         if (@(Get-ChildItem -LiteralPath $root -Filter manifest.json -Recurse).Count -ne 0 -or

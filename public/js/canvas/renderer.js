@@ -486,6 +486,7 @@ export function createDeviceElement(
     name.classList.add('device-name');
     name.textContent =
         device.name || '(名称未設定)';
+    name.title = name.textContent;
 
     const ip =
         document.createElement('div');

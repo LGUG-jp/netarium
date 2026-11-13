@@ -133,7 +133,7 @@ export function buildRackPrintLayout(view, devices, rackSettings = [], rackMount
             if (frame.face !== shelf.face) {
                 blockedSlots.push({ ...geometry, face: frame.face, slot: 'full', causeName: shelf.name }); continue;
             }
-            blocks.push({ shelfId: Number(shelf.id), deviceId: null, face: frame.face, slot: 'full', type: 'other',
+            blocks.push({ shelfId: Number(shelf.id), shelfCount: count, deviceId: null, face: frame.face, slot: 'full', type: 'other',
                 name: `${shelf.name} / ${count}台`, ip: '', showDeviceType: false,
                 startU: Number(shelf.start_u), heightU: Number(shelf.height_u), mountFace: shelf.face, ...geometry });
         }
