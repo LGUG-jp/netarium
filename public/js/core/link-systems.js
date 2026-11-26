@@ -18,9 +18,17 @@ export function getLinkSystem(systemId, systems = appState.linkSystems) {
     return systems.find(system => Number(system.id) === Number(systemId)) || null;
 }
 
+export function getLinkColorKey(link, systems = appState.linkSystems) {
+    if (link.system_ids?.length > 1) {
+        const key = getLinkSystem(link.system_ids[0], systems)?.color_key;
+        return link.system_ids.every(id => getLinkSystem(id, systems)?.color_key === key) ? key : undefined;
+    }
+    return getLinkSystem(link.system_id, systems)?.color_key;
+}
+
 export function getLinkColor(link, systems = appState.linkSystems) {
-    const system = getLinkSystem(link.system_id, systems);
-    const entry = LINK_SYSTEM_COLORS.find(color => color.key === system?.color_key);
+    const key = getLinkColorKey(link, systems);
+    const entry = LINK_SYSTEM_COLORS.find(color => color.key === key);
     return entry ? `var(--link-system-${entry.key}, ${entry.color})` : 'var(--link-default-color, rgba(71,85,105,.72))';
 }
 

@@ -14,6 +14,9 @@ final class PasswordHashing
         'threads' => 1,
     ];
 
+    // 未存在ユーザー・無効ユーザーでも同等の Argon2id 照合コストを発生させるための固定ダミーハッシュ。
+    private const DUMMY_ARGON2ID_HASH = '$argon2id$v=19$m=19456,t=2,p=1$NFFELm1oeHpMYk8xMmlKTg$IPeisv1I2pahKKBbMBTWwEmLqlEciSrnNpHDTW3ephg';
+
     public static function assertSupported(): void
     {
         if (!defined('PASSWORD_ARGON2ID') || !in_array('argon2id', password_algos(), true)) {
@@ -48,5 +51,11 @@ final class PasswordHashing
         }
         // 旧bcryptの成功入力から末尾の正当性は判定できない。照合だけで移行しない。
         return password_verify($password, $hash);
+    }
+
+    public static function verifyDummy(#[\SensitiveParameter] string $password): void
+    {
+        self::assertSupported();
+        password_verify($password, self::DUMMY_ARGON2ID_HASH);
     }
 }

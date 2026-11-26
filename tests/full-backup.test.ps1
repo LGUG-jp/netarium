@@ -101,9 +101,9 @@ Assert-ScriptTest -Name 'check-install accepts --allow-orphan-images flag' -Cond
     try {
         $dbFile = Join-Path $tempStorage 'db/data.sqlite'
         $php = (Get-Command php.exe -ErrorAction Stop).Source
-        $schemaScript = Join-Path $repoRoot 'src/Core/DatabaseSchema.php'
-        # Initialize schema and seed view
-        & $php -r 'require $argv[2]; $db = new PDO("sqlite:" . $argv[1]); migrateDatabase($db);' ([string]$dbFile -replace '\\', '/') ([string]$schemaScript -replace '\\', '/')
+        $bootstrap = Join-Path $repoRoot 'bootstrap.php'
+        & $php -r 'require $argv[2]; Netarium\Core\Database::connect($argv[1]);' $dbFile $bootstrap
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to initialize test database' }
         # Put an orphan image file in uploads/device_images
         $orphan = Join-Path $tempStorage 'uploads/device_images/0123456789abcdef0123456789abcdef.png'
         Set-Content -LiteralPath $orphan -Value 'fake image'
@@ -144,14 +144,16 @@ Assert-ScriptTest -Name 'check-install accepts --allow-orphan-images flag' -Cond
 
     $oldStorage = $env:NETARIUM_STORAGE_DIR
     $oldDb = $env:NETARIUM_DB_FILE
+    $script:maintenanceFixtureRoot = $null
     try {
         $php = (Get-Command php.exe -ErrorAction Stop).Source
         $srcDb = Join-Path $sourceStorage 'db/data.sqlite'
-        $schema = Join-Path $repoRoot 'src/Core/DatabaseSchema.php'
+        $bootstrap = Join-Path $repoRoot 'bootstrap.php'
         $initScript = Join-Path $workRoot 'init.php'
         $code = @'
 <?php
 require $argv[2];
+class_exists(\Netarium\Core\Database::class);
 $action = $argv[3];
 $root = $argv[4];
 $db = new PDO('sqlite:' . $argv[1], null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
@@ -266,7 +268,7 @@ if ($action === 'init' || $action === 'init-legacy') {
         Set-Content -LiteralPath $initScript -Value $code -Encoding UTF8
         function Invoke-BackupFixture {
             param([string]$Database, [string]$Action, [string]$Storage, [string[]]$Extra = @())
-            $result = & $php $initScript $Database $schema $Action $Storage @Extra
+            $result = & $php $initScript $Database $bootstrap $Action $Storage @Extra
             if ($LASTEXITCODE -ne 0) { throw "Fixture action failed: $Action" }
             return $result
         }
@@ -598,7 +600,9 @@ if ($action === 'init' || $action === 'init-legacy') {
         Remove-Item -LiteralPath $targetStorage -Recurse -Force
         Remove-Item -LiteralPath $workRoot -Recurse -Force
         Remove-Item -LiteralPath $backupDir -Recurse -Force
-        if (Test-Path -LiteralPath $script:maintenanceFixtureRoot) { Remove-Item -LiteralPath $script:maintenanceFixtureRoot -Recurse -Force }
+        if ($script:maintenanceFixtureRoot -and (Test-Path -LiteralPath $script:maintenanceFixtureRoot)) {
+            Remove-Item -LiteralPath $script:maintenanceFixtureRoot -Recurse -Force
+        }
     }
 }
 

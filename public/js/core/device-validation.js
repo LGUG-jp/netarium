@@ -30,8 +30,14 @@ export function validateDeviceValues(input) {
     const values = { ...input };
     const errors = {};
     for (const [field, [label, limit]] of Object.entries(fields)) {
-        values[field] = String(values[field] ?? '').trim();
-        if (Array.from(values[field]).length > limit) errors[field] = `${label}は${limit}文字以内で入力してください`;
+        const text = String(values[field] ?? '');
+        const trimmed = text.trim();
+        values[field] = field === 'facility' || field === 'floor' ? text : trimmed;
+        if (Array.from(trimmed).length > limit) errors[field] = `${label}は${limit}文字以内で入力してください`;
+    }
+    if (values.floor_id === '' || values.floor_id == null) values.floor_id = null;
+    else if (!Number.isSafeInteger(values.floor_id) || values.floor_id <= 0) {
+        errors.floor_id = '設置フロアを選び直してください';
     }
     if (!values.name) errors.name = '機器名称を入力してください';
     if (!errors.ip && values.ip && !isValidIpv4(values.ip)) errors.ip = 'IPアドレスの形式が不正です';

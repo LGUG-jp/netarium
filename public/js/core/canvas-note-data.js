@@ -81,19 +81,25 @@ export function toSaveCanvasNote(note) {
     };
 }
 
+export function canvasNoteTextLengthError(text) {
+    let length = 0;
+    for (let offset = 0; offset < text.length; offset++) {
+        if (text.codePointAt(offset) > 0xFFFF) offset++;
+        if (++length > CANVAS_NOTE_LIMITS.maxTextLength) {
+            return `本文は${CANVAS_NOTE_LIMITS.maxTextLength}文字以内で入力してください`;
+        }
+    }
+    return '';
+}
+
 export function validateCanvasNote(note) {
     const id = Number(note.id);
     if (!Number.isInteger(id) || id <= 0) throw new Error('メモIDが不正です');
     const viewId = Number(note.view_id);
     if (!Number.isInteger(viewId) || viewId <= 0) throw new Error(`メモID ${id}: ビューIDが不正です`);
     if (typeof note.text !== 'string') throw new Error(`メモID ${id}: 本文は文字列で入力してください`);
-    let textLength = 0;
-    for (let offset = 0; offset < note.text.length; offset++) {
-        if (note.text.codePointAt(offset) > 0xFFFF) offset++;
-        if (++textLength > CANVAS_NOTE_LIMITS.maxTextLength) {
-            throw new Error(`メモID ${id}: 本文は${CANVAS_NOTE_LIMITS.maxTextLength}文字以内で入力してください`);
-        }
-    }
+    const textError = canvasNoteTextLengthError(note.text);
+    if (textError) throw new Error(`メモID ${id}: ${textError}`);
     for (const [key, min, max] of [
         ['x', 0, Infinity], ['y', 0, Infinity],
         ['width', CANVAS_NOTE_LIMITS.minWidth, CANVAS_NOTE_LIMITS.maxWidth],

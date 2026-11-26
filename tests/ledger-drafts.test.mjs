@@ -92,7 +92,7 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
     }
     elements.get('ledger-device-sheet-overlay').hidden = true;
     for (const [id, values] of [
-        ['ledger-view-filter', ['1']], ['ledger-facility-filter', []],
+        ['ledger-view-filter', ['1']], ['ledger-building-filter', []],
         ['ledger-floor-filter', []], ['ledger-type-filter', ['switch']],
         ['ledger-status-filter', ['green', 'red', 'unknown']],
         ['ledger-ip-presence-filter', ['registered', 'empty']],
@@ -114,6 +114,8 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
     const ledger = await import('../public/js/modals/ledger-modal.js');
     const queue = await import('../public/js/core/save-queue.js');
     appState.devices = [normalizeDevice({ id: 1, name: 'SW1', type: 'switch', management_scheme: 'https', resource_revision: 1 }), normalizeDevice({ id: 2, name: 'SW2', type: 'switch', resource_revision: 1 })];
+    appState.buildings = [{ id: 1, name: '庁舎A' }, { id: 2, name: '庁舎B' }];
+    appState.floors = [{ id: 11, building_id: 1, name: '1F' }, { id: 21, building_id: 2, name: '2F' }];
     appState.views = [{ id: 1, name: 'Floor', view_type: 'topology', resource_revision: 1 }];
     appState.placements = []; appState.links = []; appState.resourceConflicts = { devices: new Map(), views: new Map() };
     resetResourceBaseline(appState);
@@ -126,7 +128,7 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
             failNextSave = false;
             return new Response(JSON.stringify({ ok: false, error: '入力を確認してください' }), { status: 422 });
         }
-        return new Response(JSON.stringify({ ok: true, revision: calls.length + 1, id_maps: {}, devices: payload.devices.filter(row => row.operation !== 'delete').map(row => ({ ...row.device, resource_revision: (row.expected_revision || 1) + 1 })), views: [], placements: [], links: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
+        return new Response(JSON.stringify({ ok: true, revision: calls.length + 1, id_maps: {}, devices: payload.devices.filter(row => row.operation !== 'delete').map(row => ({ ...row.device, resource_revision: (row.expected_revision || 1) + 1 })), views: [], placements: [], view_link_routes: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
     };
     const table = elements.get('ledger-table-body');
     const row = id => table.querySelector(`tr[data-device-id="${id}"]`);
@@ -138,6 +140,33 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         if (btn) btn.click();
         await new Promise(resolve => setTimeout(resolve, 0));
     };
+    await t.test('台帳と個票の設置フロア選択は下書き保護と明示保存・解除を保つ', async () => {
+        Object.assign(appState.devices[0], { facility: ' 旧施設 ', floor: ' 旧階 ', floor_id: 11 });
+        resetResourceBaseline(appState);
+        ledger.renderLedgerTable();
+        const select = field(row(1), 'floor_id');
+        assert.deepEqual(select.options.map(option => option.textContent), ['未分類', '庁舎A / 1F', '庁舎B / 2F']);
+        select.value = '21'; select.emit('change');
+        assert.equal(appState.devices[0].floor_id, 11);
+        assert.equal(drafts.getDeviceDraft('ledger', 1).floor_id, 21);
+        assert.equal(calls.length, 0);
+        row(1).emit('focusout', { target: select, relatedTarget: elements.get('ledger-save-btn') });
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.devices[0].floor_id, 21);
+        assert.equal(calls.at(-1).devices[0].device.floor_id, 21);
+        await ledger.openLedgerDetail(1);
+        const sheetSelect = field(elements.get('ledger-sheet-body'), 'floor_id');
+        sheetSelect.value = ''; sheetSelect.emit('change');
+        assert.equal(appState.devices[0].floor_id, 21);
+        assert.equal(drafts.hasDeviceDraftChanges('sheet', 1), true);
+        assert.equal(await ledger.saveLedgerSheet(), true);
+        assert.equal(appState.devices[0].floor_id, null);
+        assert.equal(calls.at(-1).devices[0].device.floor_id, null);
+        assert.equal(calls.at(-1).devices[0].device.facility, ' 旧施設 ');
+        assert.equal(calls.at(-1).devices[0].device.floor, ' 旧階 ');
+        await ledger.closeLedgerDetailPane();
+        calls = [];
+    });
     await t.test('行内のTab/Enter/change/blurは送信せず、管理ポートも再描画で保持', async () => {
         ledger.renderLedgerTable();
         const first = row(1); const name = field(first, 'name'); const port = field(first, 'management_port');
@@ -305,12 +334,14 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         assert.equal(calls.length, before + 1);
         assert.equal(field(sheet, 'memo').value, 'retry the same input');
         assert.equal(elements.get('ledger-sheet-save-btn').disabled, false);
+        assert.equal(elements.get('ledger-sheet-save-btn').hidden, false);
         assert.equal(drafts.hasDeviceDraftChanges('sheet', 1), false);
         assert.equal(await ledger.saveLedgerSheet(), true);
         assert.equal(calls.length, before + 2);
         assert.equal(calls.at(-1).devices[0].device.memo, 'retry the same input');
         assert.equal(field(sheet, 'memo').value, 'retry the same input');
         assert.equal(elements.get('ledger-sheet-save-btn').disabled, true);
+        assert.equal(elements.get('ledger-sheet-save-btn').hidden, true);
     });
 
     await t.test('仮ID再採番後も同じ入力を編集し、適用する', async () => {
@@ -371,20 +402,21 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
     await t.test('一括編集は表示外選択も固定して確認し、空欄化後に選択解除して既存キューで保存する', async () => {
         drafts.discardDeviceDrafts();
         appState.resourceConflicts.devices.clear();
-        for (const id of ['ledger-bulk-edit-overlay', 'ledger-bulk-edit-body', 'ledger-bulk-edit-fields', 'ledger-bulk-edit-title', 'ledger-bulk-edit-count', 'ledger-bulk-edit-next', 'ledger-bulk-edit-form', 'ledger-bulk-edit-confirm', 'ledger-bulk-edit-preview', 'ledger-bulk-edit-warning', 'ledger-bulk-edit-apply', 'ledger-bulk-edit-error', 'ledger-bulk-edit-btn', 'ledger-selection-summary', 'ledger-facility-filter']) {
+        for (const id of ['ledger-bulk-edit-overlay', 'ledger-bulk-edit-body', 'ledger-bulk-edit-fields', 'ledger-bulk-edit-title', 'ledger-bulk-edit-count', 'ledger-bulk-edit-next', 'ledger-bulk-edit-form', 'ledger-bulk-edit-confirm', 'ledger-bulk-edit-preview', 'ledger-bulk-edit-warning', 'ledger-bulk-edit-apply', 'ledger-bulk-edit-error', 'ledger-bulk-edit-btn', 'ledger-selection-summary', 'ledger-building-filter']) {
             body.appendChild(new Element(id.endsWith('filter') ? 'select' : id.endsWith('btn') ? 'button' : 'div', id));
         }
         const overlay = elements.get('ledger-bulk-edit-overlay'); overlay.hidden = true;
         const firstId = Number(appState.devices[0].id);
         appState.devices[0].facility = '庁舎A'; appState.devices[1].facility = '庁舎B';
         appState.devices[0].floor = '1F'; appState.devices[1].floor = '2F';
+        appState.devices[0].floor_id = 11; appState.devices[1].floor_id = 21;
         appState.placements = [{ id: 1, view_id: 1, device_id: firstId, x: 10, y: 20 }];
         resetResourceBaseline(appState);
         ledger.updateLedgerFilters();
         ledger.ledgerSelectedDeviceIds.clear(); ledger.updateLedgerSelectionUI();
         assert.equal(elements.get('ledger-bulk-edit-btn').disabled, true);
         ledger.ledgerSelectedDeviceIds.add(firstId); ledger.ledgerSelectedDeviceIds.add(2);
-        elements.get('ledger-facility-filter').value = '庁舎A'; ledger.renderLedgerTable();
+        elements.get('ledger-building-filter').value = '1'; ledger.renderLedgerTable();
         assert.equal(table.children.length, 1);
         await ledger.openLedgerBulkEdit();
         assert.equal(overlay.hidden, false);
@@ -392,12 +424,10 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         assert.equal(elements.get('ledger-bulk-edit-title').textContent, '2台の機器を一括編集');
         assert.equal(elements.get('ledger-bulk-edit-next').disabled, true);
         ledger.ledgerSelectedDeviceIds.clear();
-        const change = elements.get('ledger-bulk-change-floor');
+        const change = elements.get('ledger-bulk-change-floor_id');
         change.checked = true; change.emit('change');
-        assert.equal(elements.get('ledger-bulk-value-floor').disabled, false);
-        const facilityChange = elements.get('ledger-bulk-change-facility');
-        facilityChange.checked = true; facilityChange.emit('change');
-        elements.get('ledger-bulk-value-facility').value = '庁舎C';
+        assert.equal(elements.get('ledger-bulk-value-floor_id').disabled, false);
+        elements.get('ledger-bulk-value-floor_id').value = '';
         for (const key of ['management_scheme', 'management_port']) {
             const checkbox = elements.get(`ledger-bulk-change-${key}`);
             checkbox.checked = true; checkbox.emit('change');
@@ -436,8 +466,9 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         appState.resourceConflicts.devices.clear();
         ledger.confirmLedgerBulkEdit();
         assert.equal(overlay.hidden, true);
-        assert.deepEqual(appState.devices.map(device => device.floor), ['', '']);
-        assert.deepEqual(appState.devices.map(device => device.facility), ['庁舎C', '庁舎C']);
+        assert.deepEqual(appState.devices.map(device => device.floor_id), [null, null]);
+        assert.deepEqual(appState.devices.map(device => device.floor), ['1F', '2F']);
+        assert.deepEqual(appState.devices.map(device => device.facility), ['庁舎A', '庁舎B']);
         assert.deepEqual(appState.devices.map(device => [device.management_scheme, device.management_port]), [['ssh', 2222], ['ssh', 2222]]);
         assert.equal(table.children.length, 0);
         assert.deepEqual([...ledger.ledgerSelectedDeviceIds], []);
@@ -446,10 +477,10 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
         assert.equal(calls.at(-1).devices.length, 2);
         assert.deepEqual(calls.at(-1).views, []);
         assert.deepEqual(appState.placements, [{ id: 1, view_id: 1, device_id: firstId, x: 10, y: 20 }]);
-        elements.get('ledger-facility-filter').value = '';
+        elements.get('ledger-building-filter').value = '';
         ledger.renderLedgerTable();
         await ledger.openLedgerDetail(firstId);
-        assert.equal(field(elements.get('ledger-sheet-body'), 'floor').value, '');
+        assert.equal(field(elements.get('ledger-sheet-body'), 'floor_id').value, '');
         await ledger.closeLedgerDetailPane();
         ledger.ledgerSelectedDeviceIds.add(firstId);
         window.APP_CONFIG.user.isAdmin = false;
@@ -463,5 +494,145 @@ test('台帳の行境界と個票の明示適用は入力を保存応答から�
     await t.test('一般閲覧者はinputイベントでも下書きを変更しない', () => {
         window.APP_CONFIG.user.isAdmin = false; ledger.renderLedgerTable(); const memo = field(row(2), 'memo');
         input(memo, 'forbidden'); assert.equal(drafts.hasDeviceDraftChanges('ledger', 2), false); assert.equal(appState.devices[1].memo, 'other device');
+    });
+
+    await t.test('台帳の競合下書きは確認取消・非競合入力の確定失敗・個票の閉鎖取消では残る', async t => {
+        window.APP_CONFIG.user.isAdmin = true;
+        drafts.discardDeviceDrafts('ledger');
+        appState.resourceConflicts.devices.clear();
+        elements.get('ledger-overlay').hidden = false;
+        ledger.renderLedgerTable();
+        const [target, other] = appState.devices;
+        input(field(row(target.id), 'name'), '競合中編集');
+        appState.resourceConflicts.devices.set(target.id, { id: target.id, name: target.name });
+        assert.equal(await ledger.openLedgerDetail(target.id), true);
+        let confirmed = false;
+        let confirmations = 0;
+        window.confirm = message => {
+            assert.match(message, /競合機器の入力を破棄/);
+            confirmations++;
+            return confirmed;
+        };
+        t.after(() => {
+            appState.resourceConflicts.devices.clear();
+            delete window.confirm;
+        });
+        const assertRetained = () => {
+            assert.equal(elements.get('ledger-overlay').hidden, false);
+            assert.equal(elements.get('ledger-device-sheet-overlay').hidden, false);
+            assert.equal(drafts.getDeviceDraft('ledger', target.id).name, '競合中編集');
+        };
+        assert.equal(await ledger.closeLedger(), false);
+        assertRetained();
+
+        confirmed = true;
+        const originalMemo = other.memo;
+        input(field(row(other.id), 'memo'), '台帳の入力');
+        other.memo = '他画面で確定した同じ項目';
+        try {
+            assert.equal(await ledger.closeLedger(), false);
+            assertRetained();
+            assert.equal(drafts.getDeviceDraft('ledger', other.id).memo, '台帳の入力');
+        } finally {
+            other.memo = originalMemo;
+            drafts.discardDeviceDraft('ledger', other.id);
+        }
+
+        assert.equal(await ledger.openLedgerDetail(other.id), true);
+        input(field(elements.get('ledger-sheet-body'), 'name'), '個票の入力');
+        const cancelled = ledger.closeLedger();
+        await chooseAction('cancel');
+        assert.equal(await cancelled, false);
+        assertRetained();
+
+        const closing = ledger.closeLedger();
+        await chooseAction('discard');
+        assert.equal(await closing, true);
+        assert.equal(confirmations, 4);
+        assert.equal(elements.get('ledger-overlay').hidden, true);
+        assert.equal(elements.get('ledger-device-sheet-overlay').hidden, true);
+        assert.equal(drafts.hasDeviceDraftChanges('ledger', target.id), false);
+    });
+
+    await t.test('階層からの全再読込で台帳・個票を新しい値に更新し消えた個票だけ閉じる', async () => {
+        elements.get('ledger-overlay').hidden = false;
+        ledger.renderLedgerTable();
+        const previous = appState.devices;
+        const target = previous[0];
+        assert.equal(await ledger.openLedgerDetail(target.id), true);
+        const refresh = () => {
+            eventBus.emit('resources:reloaded', { source: 'hierarchy-editor' });
+            ledger.refreshOpenLedgerAfterReload();
+        };
+        try {
+            appState.devices = [{ ...target, name: 'サーバーから再取得' }, ...previous.slice(1)];
+            refresh();
+            assert.equal(field(row(target.id), 'name').value, 'サーバーから再取得');
+            assert.equal(field(elements.get('ledger-sheet-body'), 'name').value, 'サーバーから再取得');
+            assert.equal(elements.get('ledger-device-sheet-overlay').hidden, false);
+
+            appState.devices = previous.slice(1);
+            refresh();
+            assert.equal(row(target.id), null);
+            assert.equal(elements.get('ledger-device-sheet-overlay').hidden, true);
+            assert.equal(elements.get('ledger-overlay').hidden, false);
+        } finally {
+            appState.devices = previous;
+            ledger.renderLedgerTable();
+        }
+    });
+
+    await t.test('management_portのvalidity.badInput時はnullクリアせずエラー扱いにして送信しない', async () => {
+        window.APP_CONFIG.user.isAdmin = true;
+        drafts.discardDeviceDrafts('ledger');
+        elements.get('ledger-overlay').hidden = false;
+        ledger.renderLedgerTable();
+        const target = appState.devices[0];
+        const port = field(row(target.id), 'management_port');
+        Object.defineProperty(port, 'validity', { get() { return { badInput: true }; }, configurable: true });
+        port.value = '';
+        port.emit('input');
+        assert.equal(drafts.getDeviceDraft('ledger', target.id).management_port, 'invalid');
+        const before = calls.length;
+        assert.equal(await ledger.saveLedger(), false);
+        assert.equal(calls.length, before);
+        drafts.discardDeviceDrafts('ledger');
+    });
+
+    await t.test('台帳の選択を維持したまま自動保存が終わると一括操作を再開できる', async t => {
+        body.append(
+            new Element('span', 'status-save-state'),
+            new Element('button', 'ledger-bulk-place-btn'),
+            new Element('button', 'ledger-delete-btn')
+        );
+        elements.get('ledger-overlay').hidden = false;
+        const stopRender = eventBus.on('ledger:render', ledger.renderLedgerTable);
+        t.after(() => {
+            if (typeof release === 'function') release();
+            stopRender();
+            ledger.clearLedgerSelection();
+        });
+        ledger.renderLedgerTable();
+        const target = appState.devices[0];
+        const selected = row(target.id);
+        const checkbox = selected.querySelectorAll('input').find(input => input.type === 'checkbox');
+        checkbox.checked = true;
+        checkbox.emit('change');
+        const actions = ['ledger-bulk-place-btn', 'ledger-delete-btn'].map(id => elements.get(id));
+        assert.deepEqual(actions.map(button => button.disabled), [false, false]);
+
+        const name = field(selected, 'name');
+        input(name, '自動保存後も選択した機器');
+        release = 'defer';
+        selected.emit('focusout', { target: name, relatedTarget: actions[0] });
+        const saving = queue.flushSaveQueue({ silent: true });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(actions.map(button => button.disabled), [true, true]);
+
+        release(); release = null;
+        assert.equal(await saving, true);
+        assert.equal(calls.at(-1).devices[0].device.name, '自動保存後も選択した機器');
+        assert.deepEqual(ledger.getLedgerSelectedDeviceIds(), [target.id]);
+        assert.deepEqual(actions.map(button => button.disabled), [false, false]);
     });
 });

@@ -12,6 +12,8 @@ const modalStack = [];
 const backdropListeners = new WeakSet();
 const initializedDocuments = new WeakSet();
 const canvasInertStates = new WeakMap();
+const statusBarInertStates = new WeakMap();
+let modalFocusEpoch = 0;
 
 /** ×・背景・Escは、登録された同じ閉鎖処理へ渡す。 */
 export function requestModalClose() {
@@ -48,8 +50,19 @@ export function syncCanvasViewControlsVisibility() {
         }
     }
     const controls = document.getElementById('canvas-view-controls');
-    if (controls) controls.hidden = visibleModal || !canvas;
+    if (controls) controls.hidden = visibleModal || !canvas || canvas.classList.contains('building-view-active');
+    const statusBar = document?.querySelector?.('.status-bar');
+    if (statusBar) {
+        if (visibleModal && !statusBarInertStates.has(statusBar)) statusBarInertStates.set(statusBar, statusBar.inert);
+        if (visibleModal) statusBar.inert = true;
+        else if (statusBarInertStates.has(statusBar)) {
+            statusBar.inert = statusBarInertStates.get(statusBar);
+            statusBarInertStates.delete(statusBar);
+        }
+    }
 }
+
+eventBus.on('building-view:changed', syncCanvasViewControlsVisibility);
 
 function syncModalStack() {
     const top = getTopModalContainer();
@@ -60,6 +73,7 @@ function syncModalStack() {
         const dialog = entry.container.querySelector('[role="dialog"]');
         if (dialog) dialog.setAttribute('aria-modal', entry.container === top ? 'true' : 'false');
     });
+    eventBus.emit('modal-stack:changed');
 }
 
 /**
@@ -114,9 +128,10 @@ export function getFocusableElements(container) {
  * @param {string} modalId - モーダルの識別子 (例: 'ledger', 'backup')
  * @param {HTMLElement|string} container - ダイアログまたはオーバーレイ要素
  * @param {HTMLElement|string|null} preferredInitialFocus - 優先する初期フォーカス要素
- * @param {{onClose?: function, finishFloorPlan?: boolean}} options - 閉鎖処理。表示専用UIは図面編集を保持できる
+ * @param {{onClose?: function, finishFloorPlan?: boolean, restoreFocusTo?: () => HTMLElement|null}} options - 閉鎖処理とフォーカス復帰先。表示専用UIは図面編集を保持できる
  */
-export function registerModalOpen(modalId, container, preferredInitialFocus = null, { onClose = null, finishFloorPlan = true } = {}) {
+export function registerModalOpen(modalId, container, preferredInitialFocus = null,
+    { onClose = null, finishFloorPlan = true, restoreFocusTo } = {}) {
     const containerEl = typeof container === 'string'
         ? document.querySelector(container)
         : container;
@@ -130,10 +145,12 @@ export function registerModalOpen(modalId, container, preferredInitialFocus = nu
         ? document.activeElement
         : null;
 
+    modalFocusEpoch++;
     modalStack.push({
         id: modalId,
         container: containerEl,
         previousFocus,
+        restoreFocusTo,
         originalZIndex: containerEl.style?.zIndex || '',
         onClose,
         closing: false
@@ -151,6 +168,9 @@ export function registerModalOpen(modalId, container, preferredInitialFocus = nu
 
     window.requestAnimationFrame(() => {
         if (getTopModalContainer() !== containerEl) return;
+        // 個票の編集欄など、遷移先が先に設定したフォーカスを上書きしない。
+        if (document.activeElement && document.activeElement !== previousFocus &&
+            typeof containerEl.contains === 'function' && containerEl.contains(document.activeElement)) return;
         let target = null;
         if (preferredInitialFocus) {
             target = typeof preferredInitialFocus === 'string'
@@ -185,14 +205,28 @@ export function registerModalClose(modalId, { restoreFocus = true } = {}) {
     const dialog = entry.container.querySelector('[role="dialog"]');
     if (dialog) dialog.setAttribute('aria-modal', 'true');
     syncModalStack();
-    const previousFocus = entry.previousFocus;
 
-    if (restoreFocus && index === modalStack.length && previousFocus && typeof previousFocus.focus === 'function') {
+    if (restoreFocus && index === modalStack.length && (entry.previousFocus || entry.restoreFocusTo)) {
+        const closeEpoch = ++modalFocusEpoch;
         window.requestAnimationFrame(() => {
+            if (modalFocusEpoch !== closeEpoch) return;
             const top = getTopModalContainer();
-            if (document.body.contains(previousFocus) && !previousFocus.hidden && !previousFocus.disabled &&
-                !previousFocus.closest?.('[hidden], .hidden, [inert]') && (!top || top.contains(previousFocus))) {
-                previousFocus.focus();
+            const previousFocus = entry.restoreFocusTo?.() ?? entry.previousFocus;
+            let focusTarget = previousFocus;
+            if (focusTarget?.closest?.('details') && !focusTarget.closest('details').open &&
+                !focusTarget.closest?.('summary')) {
+                const summary = focusTarget.closest('details').querySelector?.('summary');
+                if (summary && !summary.hidden && !summary.disabled &&
+                    !summary.closest?.('[hidden], .hidden, [inert]')) {
+                    focusTarget = summary;
+                }
+            }
+            if (typeof focusTarget?.focus === 'function' && document.body.contains(focusTarget) &&
+                !focusTarget.hidden && !focusTarget.disabled &&
+                !focusTarget.closest?.('[hidden], .hidden, [inert]') &&
+                !(focusTarget.closest?.('details') && !focusTarget.closest('details').open && !focusTarget.closest?.('summary')) &&
+                (!top || top.contains(focusTarget))) {
+                focusTarget.focus();
             } else if (top && !top.hidden) {
                 (getFocusableElements(top)[0] || top).focus();
             }
@@ -227,7 +261,8 @@ export function initModalFocusTrap() {
         const lastElement = focusables[focusables.length - 1];
 
         if (event.shiftKey) {
-            if (document.activeElement === firstElement || !container.contains(document.activeElement)) {
+            if (document.activeElement === firstElement || document.activeElement === container ||
+                !container.contains(document.activeElement)) {
                 event.preventDefault();
                 lastElement.focus();
             }

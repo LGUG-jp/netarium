@@ -95,7 +95,7 @@ test('保存応答待ちの後続U編集を保持し、確認・再読込もラ�
     assert.equal(inspectPendingResourceSave(pending, remote), 'saved');
     appState.rackMounts[0].start_u = 4;
     applyResourceSaveResult({
-        revision: 5, id_maps: {}, devices: [], views: [remote.views[0]], placements: [], links: [], canvas_notes: [],
+        revision: 5, id_maps: {}, devices: [], views: [remote.views[0]], placements: [], view_link_routes: [], canvas_notes: [],
         rack_settings: [remote.rackSettings[0]], rack_mounts: remote.rackMounts,
         deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [1]
     }, pending);

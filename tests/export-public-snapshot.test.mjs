@@ -28,20 +28,20 @@ function snapshotFixture(t, readme, files = {}, options = {}) {
     git(['add', '-f', 'README.md', 'THIRD_PARTY_NOTICES.md', 'scripts/export-public-snapshot.mjs', ...Object.keys(files)]);
     git(['-c', 'user.name=Snapshot Fixture', '-c', 'user.email=snapshot@example.test', '-c', 'commit.gpgsign=false',
         '-c', 'core.hooksPath=' + path.join(root, 'no-hooks'), 'commit', '-qm', 'Synthetic export fixture']);
-    if (options.ancestorLeakPath) {
+    if (options.historyReferencePath) {
         const parentSha = git(['rev-parse', 'HEAD']).toString('utf8').trim();
-        const leakedFile = path.join(repo, options.ancestorLeakPath);
+        const leakedFile = path.join(repo, options.historyReferencePath);
         fs.mkdirSync(path.dirname(leakedFile), { recursive: true });
-        fs.writeFileSync(leakedFile, `Private parent ${options.uppercaseAncestor ? parentSha.toUpperCase() : parentSha}\n`);
-        git(['add', '-f', options.ancestorLeakPath]);
+        fs.writeFileSync(leakedFile, `Parent commit ${options.uppercaseAncestor ? parentSha.toUpperCase() : parentSha}\n`);
+        git(['add', '-f', options.historyReferencePath]);
         git(['-c', 'user.name=Snapshot Fixture', '-c', 'user.email=snapshot@example.test', '-c', 'commit.gpgsign=false',
-            '-c', 'core.hooksPath=' + path.join(root, 'no-hooks'), 'commit', '-qm', 'Child containing forbidden parent reference']);
+            '-c', 'core.hooksPath=' + path.join(root, 'no-hooks'), 'commit', '-qm', 'Child referencing parent']);
     }
     // These must not become the generated documentation.
     fs.writeFileSync(path.join(repo, 'README.md'), 'UNCOMMITTED WORKTREE CONTENT');
     fs.writeFileSync(path.join(repo, 'docs-untracked.md'), 'UNTRACKED CONTENT');
     const manifestDir = path.join(root, 'private-ledger');
-    const result = spawnSync(process.execPath, [path.join(repo, 'scripts/export-public-snapshot.mjs'), '--commit', 'HEAD', '--out-dir', output, ...(options.separateManifest ? ['--manifest-dir', manifestDir] : [])], {
+    const result = spawnSync(process.execPath, [path.join(repo, 'scripts/export-public-snapshot.mjs'), '--commit', 'HEAD', '--out-dir', output, ...(options.separateManifest ? ['--manifest-dir', manifestDir] : []), ...(options.publicValidation ? ['--public-validation'] : [])], {
         cwd: repo, encoding: 'utf8'
     });
     assert.ifError(result.error);
@@ -91,6 +91,20 @@ test('公開成果物は両リポジトリ名の内部リンク・生URL・自�
     assert.ok(!fs.existsSync(path.join(output, 'docs-untracked.md')));
     assert.equal(fs.readFileSync(path.join(output, 'THIRD_PARTY_NOTICES.md'), 'utf8'),
         '# Third-party notices\n\nSynthetic attribution fixture.\n');
+});
+
+test('公開タグの照合用 SHA はテストガイドだけに残し、未知の SHA は除く', t => {
+    const publicTagShas = ['6802576c3e54ffc82aae6f2b88a0c81ba72e120e', 'c7638baa9abf384d628579790ffdca1c969db361'];
+    const pins = publicTagShas.map(sha => `Sha = '${sha}'`).join('\n');
+    const { output, result } = snapshotFixture(t, `# Fixture\n\n${pins}\n`, {
+        'tests/README.md': `# 公開タグ smoke\n\n\`\`\`powershell\n${pins}\nSha = '${privateSha}'\n\`\`\`\n`
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const guide = fs.readFileSync(path.join(output, 'tests/README.md'), 'utf8');
+    const readme = fs.readFileSync(path.join(output, 'README.md'), 'utf8');
+    assert.ok(guide.includes(pins));
+    assert.ok(!guide.includes(privateSha));
+    for (const sha of publicTagShas) assert.ok(!readme.includes(sha));
 });
 
 for (const repository of repositories) {
@@ -205,23 +219,36 @@ test('改名した旧NCSC metadataのcanonical hashを拒否する', t => {
     assert.ok(!fs.existsSync(output));
 });
 
-test('Markdown以外に置いたPrivate Issue URLも公開配置前に拒否する', t => {
-    const url = 'https://github.com/' + 'LGUG-jp/' + 'netarium-dev/issues/999';
-    const { output, result } = snapshotFixture(t, '# Private URL fixture\n', { 'src/reference.txt': url });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Private参照/);
-    assert.ok(!result.stderr.includes(url));
-    assert.ok(!fs.existsSync(output));
-});
+for (const publicValidation of [false, true]) {
+    test(`${publicValidation ? 'Public 再検証' : 'Private 抽出'}は Markdown 以外の Private Issue URL も公開配置前に拒否する`, t => {
+        const url = 'https://github.com/' + 'LGUG-jp/' + 'netarium-dev/issues/999';
+        const { output, result } = snapshotFixture(t, '# Private URL fixture\n', { 'src/reference.txt': url }, { publicValidation });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /Private参照/);
+        assert.ok(!result.stderr.includes(url));
+        assert.ok(!fs.existsSync(output));
+    });
+}
 
 for (const [name, uppercaseAncestor] of [['src/parent-reference.txt', false], ['public/parent-reference.png', true]]) {
     test(`Private祖先SHAを含む${name}は大小文字と拡張子にかかわらず公開前に拒否する`, t => {
-        const { output, result } = snapshotFixture(t, '# Ancestor reference fixture\n', {}, { ancestorLeakPath: name, uppercaseAncestor });
+        const { output, result } = snapshotFixture(t, '# Ancestor reference fixture\n', {}, { historyReferencePath: name, uppercaseAncestor });
         assert.notEqual(result.status, 0);
         assert.match(result.stderr, /Private参照/);
         assert.ok(!fs.existsSync(output));
     });
 }
+
+test('Public 再検証は公開済み祖先の SHA を含むファイルを保持する', t => {
+    const reference = 'src/public-history.txt';
+    const { output, result, repo } = snapshotFixture(t, '# Public history fixture\n', {}, {
+        historyReferencePath: reference,
+        publicValidation: true
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const parent = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: repo, encoding: 'utf8' }).trim();
+    assert.equal(fs.readFileSync(path.join(output, reference), 'utf8'), `Parent commit ${parent}\n`);
+});
 
 test('Docker配備資材（Dockerfile, compose.yaml, compose.image.yaml, .dockerignore, docker/）が安全に公開成果物に含まれる', t => {
     const { output, result } = snapshotFixture(t, '# Docker export fixture\n\nPublic documentation.\n', {

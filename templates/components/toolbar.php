@@ -36,15 +36,16 @@
                 aria-label="表示するビューを検索"
                 aria-autocomplete="list"
                 aria-controls="view-search-results"
+                aria-haspopup="tree"
                 aria-expanded="false"
                 autocomplete="off"
                 placeholder="ビューを検索"
-                title="ビュー名・施設・フロア・種別で検索"
+                title="ビュー名・建物・フロア・種別で検索"
             >
             <span class="view-search-arrow" aria-hidden="true">▾</span>
             <div id="view-search-popup" class="view-search-popup" hidden>
                 <div id="view-search-summary" class="view-search-summary" role="status" aria-live="polite"></div>
-                <div id="view-search-results" role="listbox" aria-label="ビュー候補"></div>
+                <div id="view-search-results" role="tree" aria-label="ビュー候補"></div>
             </div>
         </div>
         <button id="view-copy-link-btn" type="button" class="toolbar-btn" aria-label="現在のビューのリンクをコピー" title="現在のビューのリンクをコピー（保存後に利用できます）">
@@ -66,6 +67,7 @@
                 <input
                     id="device-search-input"
                     type="search"
+                    role="combobox"
                     placeholder="機器を検索"
                     autocomplete="off"
                     aria-autocomplete="list"
@@ -146,6 +148,39 @@
                 <span class="toolbar-btn-label">更新</span>
             </button>
 
+            <div id="placement-history" class="admin-only" role="group" aria-label="配置の操作履歴" hidden>
+                <div id="placement-history-inline">
+                    <button class="toolbar-btn" type="button" data-history-action="undo" disabled>
+                        <img class="toolbar-btn-icon" src="assets/icons/app/undo.svg" width="20" height="20" alt="">
+                        <span class="toolbar-btn-label">元に戻す</span>
+                    </button>
+                    <button class="toolbar-btn" type="button" data-history-action="redo" disabled>
+                        <img class="toolbar-btn-icon" src="assets/icons/app/redo.svg" width="20" height="20" alt="">
+                        <span class="toolbar-btn-label">やり直す</span>
+                    </button>
+                </div>
+                <div id="placement-history-compact" hidden>
+                    <button id="placement-history-trigger" class="toolbar-btn" type="button"
+                        aria-label="操作履歴" title="操作履歴" aria-haspopup="menu"
+                        aria-controls="placement-history-menu" aria-expanded="false" aria-disabled="true">
+                        <img class="toolbar-btn-icon" src="assets/icons/app/undo.svg" width="20" height="20" alt="">
+                        <span class="toolbar-btn-label">操作履歴</span>
+                        <span class="toolbar-btn-caret" aria-hidden="true">▾</span>
+                    </button>
+                    <div id="placement-history-menu" class="toolbar-menu-popup" role="menu"
+                        aria-labelledby="placement-history-trigger" hidden>
+                        <button type="button" role="menuitem" tabindex="-1" data-history-action="undo" disabled>
+                            <img class="toolbar-btn-icon" src="assets/icons/app/undo.svg" width="20" height="20" alt="">
+                            元に戻す
+                        </button>
+                        <button type="button" role="menuitem" tabindex="-1" data-history-action="redo" disabled>
+                            <img class="toolbar-btn-icon" src="assets/icons/app/redo.svg" width="20" height="20" alt="">
+                            やり直す
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- 保存 (確定済みの保留分を送信・再試行) -->
             <button
                 id="saveBtn"
@@ -178,7 +213,7 @@
         >
             <summary
                 class="toolbar-btn"
-                aria-label="管理メニュー"
+                aria-label="管理メニュー（建物・フロア・ビュー管理など）"
                 title="管理メニュー"
             >
                 <img class="toolbar-btn-icon" src="assets/icons/app/admin.svg" width="20" height="20" alt="" aria-hidden="true">
@@ -196,7 +231,7 @@
                     class="admin-only"
                     type="button"
                 >
-                    ビュー管理
+                    建物・フロア・ビュー管理
                 </button>
 
 

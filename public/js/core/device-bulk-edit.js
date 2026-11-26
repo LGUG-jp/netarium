@@ -2,10 +2,10 @@ import { appState, getDeviceById, toSaveDevice, validateDevicesForSave } from '.
 import { validateDeviceValues } from './device-validation.js';
 import { hasDeviceDraftChangesForIds } from './device-drafts.js';
 import { getPlacedDeviceIds, getRackDeviceMounts } from './device-placement.js';
+import { viewHierarchyPath } from './building-hierarchy.js';
 
 export const BULK_DEVICE_FIELDS = [
-    { key: 'facility', label: '施設' },
-    { key: 'floor', label: 'フロア' },
+    { key: 'floor_id', label: '設置フロア' },
     { key: 'location', label: '設置場所' },
     { key: 'department', label: '担当部署' },
     { key: 'maintenance_vendor', label: '保守ベンダー' },
@@ -43,7 +43,10 @@ export function startDeviceBulkEdit(selectedIds) {
 
 export function summarizeBulkValues(session, key) {
     const values = new Set(session.bases.map(device => String(device[key] ?? '')));
-    if (values.size === 1) return [...values][0] || '未設定';
+    if (values.size === 1) {
+        const value = [...values][0];
+        return key === 'floor_id' ? (value ? viewHierarchyPath({ floor_id: Number(value) }, appState) : '未設定') : value || '未設定';
+    }
     return values.has('') ? '複数の値（未設定を含む）' : '複数の値';
 }
 
@@ -70,7 +73,7 @@ export function prepareDeviceBulkEdit(session, updates) {
     return {
         updates: Object.fromEntries(keys.map(key => [key, candidates[0][key]])),
         candidates,
-        placedCount: keys.some(key => key === 'facility' || key === 'floor')
+        placedCount: keys.includes('floor_id')
             ? session.ids.filter(id => placed.has(id)).length : 0
     };
 }

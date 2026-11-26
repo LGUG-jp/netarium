@@ -17,6 +17,11 @@ import {
     apiFetch
 } from '../core/api-client.js';
 import {
+    getPendingSave,
+    hasPendingChanges,
+    isSaveInFlight
+} from '../core/save-queue.js';
+import {
     formatStatusTime,
     setTextContent
 } from '../core/utils.js';
@@ -42,8 +47,17 @@ export function openBackupRestore() {
         return;
     }
 
+    if (appState.authExpired) {
+        showToast(
+            '認証が失効しています。別タブで再ログインしてから画面を再読み込みしてください',
+            'warning'
+        );
+        return;
+    }
+
     if (
         appState.isSaving ||
+        isSaveInFlight() ||
         appState.isPinging ||
         appState.isDevicesCsvImporting ||
         appState.isFloorPlanUpdating ||
@@ -57,9 +71,14 @@ export function openBackupRestore() {
         return;
     }
 
-    if (appState.appStatus.dirty) {
+    if (
+        appState.appStatus?.dirty ||
+        hasPendingChanges() ||
+        Boolean(getPendingSave()) ||
+        (typeof window.hasAnyUnappliedChanges === 'function' && window.hasAnyUnappliedChanges())
+    ) {
         showToast(
-            '保存待ちの変更があります。保存完了を待ち、保存失敗時は「保存」で再試行してください',
+            '保存待ちまたは未適用の変更があります。保存完了を待ち、保存失敗時は「保存」で再試行してください',
             'warning'
         );
         return;
@@ -233,12 +252,14 @@ export function updateBackupRestoreButtons() {
 
     if (previewButton) {
         previewButton.disabled =
+            appState.authExpired ||
             isBackupRestoring ||
             !fileInput?.files?.length;
     }
 
     if (commitButton) {
         commitButton.disabled =
+            appState.authExpired ||
             isBackupRestoring ||
             !backupRestoreCanCommit ||
             !backupRestoreToken ||
@@ -255,7 +276,7 @@ function setBackupInputError(id, message) {
 }
 
 export async function previewBackupRestore() {
-    if (isBackupRestoring) {
+    if (appState.authExpired || isBackupRestoring) {
         return;
     }
 
@@ -460,6 +481,7 @@ export async function previewBackupRestore() {
 
 export async function commitBackupRestore() {
     if (
+        appState.authExpired ||
         isBackupRestoring ||
         !backupRestoreToken ||
         !backupRestoreCanCommit
@@ -538,6 +560,12 @@ export async function commitBackupRestore() {
         window.location.replace('index.php');
     } catch (err) {
         console.error(err);
+
+        const needsPreview = err.status === 409 && err.details?.reason !== 'operation_busy';
+        if (err.status === 401 || err.status === 403 || needsPreview || err.status === 410) {
+            backupRestoreToken = null;
+            backupRestoreCanCommit = false;
+        }
 
         if (err.status === 401) return;
         showToast(

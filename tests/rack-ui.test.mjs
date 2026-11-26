@@ -42,7 +42,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     resource.resetResourceBaseline(appState);
     globalThis.fetch = async () => new Response(JSON.stringify({
         ok: true, revision: 2, id_maps: {}, devices: [], views: [{ ...appState.views[0], resource_revision: 20 }],
-        placements: [], links: [], canvas_notes: [], rack_settings: [{ view_id: 1, total_u: 6, location: '東側' }],
+        placements: [], view_link_routes: [], canvas_notes: [], rack_settings: [{ view_id: 1, total_u: 6, location: '東側' }],
         rack_mounts: [initialMount, savedMount], affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: []
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     rack.renderRackView();
@@ -85,7 +85,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         appState.views[1].view_type = 'floor';
         appState.floorRackPlacements = [{ floor_view_id: 2, rack_view_id: 1, x: 150, y: 20 }];
         renderer.render();
-        await appState.deviceLayer.querySelector('.floor-rack-select').dispatch('click');
+        await appState.deviceLayer.querySelector('.floor-rack-trigger').dispatch('click');
         await new Promise(resolve => setTimeout(resolve, 0));
         const floorRack = appState.deviceLayer.querySelector('.floor-rack');
         assert.equal(floorRack.classList.contains('selected'), true);
@@ -97,6 +97,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         assert.deepEqual([...appState.selectedPlacementIds], [1]);
         assert.equal(appState.deviceLayer.querySelectorAll('.floor-rack').length, appState.floorRackPlacements.length);
         assert.equal(floorRack.classList.contains('selected'), false, '機器選択でラックの選択表示を解除する');
+        assert.equal(floorRack.querySelector('.floor-rack-open').hidden, true);
         await device.dispatch('click', { detail: 2 });
         await device.dispatch('dblclick');
         assert.equal(dom.get('ledger-device-sheet-overlay').hidden, false);
@@ -108,6 +109,20 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         assert.equal(document.activeElement, device);
         assert.deepEqual([...appState.selectedPlacementIds], [1]);
         assert.deepEqual(resource.buildResourceSave(), before, '開閉だけで保存対象を変更しない');
+        const name = dom.get('p-name');
+        name.value = '未適用の機器名';
+        const rackTrigger = floorRack.querySelector('.floor-rack-trigger');
+        const selectingRack = rackTrigger.dispatch('click', { detail: 1 });
+        await dom.get('unsaved-changes-cancel').dispatch('click');
+        await selectingRack;
+        await rackTrigger.dispatch('click', { detail: 2 });
+        await rackTrigger.dispatch('dblclick');
+        assert.equal(appState.currentViewId, 2, '編集継続を選んだ場合はラックを開かない');
+        assert.equal(floorRack.querySelector('.floor-rack-open').hidden, true);
+        assert.equal(dom.get('panel').hidden, false);
+        assert.equal(name.value, '未適用の機器名');
+        assert.deepEqual([...appState.selectedPlacementIds], [1]);
+        name.value = appState.devices[0].name;
         for (let index = 0; index < 3; index++) {
             await device.dispatch('click', { detail: 1 });
             assert.equal(appState.deviceLayer.querySelectorAll('.floor-rack').length, appState.floorRackPlacements.length);
@@ -508,7 +523,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
     rack.renderRackPanel(appState.devices[1]);
     assert.equal(dom.get('rack-position-section').open, false);
     const section = dom.get('rack-position-section');
-    assert.equal(section.parentElement.children.indexOf(section) + 1, section.parentElement.children.indexOf(dom.get('p-apply-btn').parentElement));
+    assert.equal(section.parentElement.children.indexOf(section) + 1, section.parentElement.children.indexOf(dom.get('panel').querySelector('.panel-actions')));
     assert.ok(section.querySelector('summary').textContent.includes('試験ラック'));
     await rearBlock.dispatch('dblclick');
     assert.equal(dom.get('rack-mount-search').value, '機器2', 'ラックの既存ダブルクリックは搭載位置変更を維持する');
@@ -552,7 +567,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
         globalThis.fetch = async () => {
             writes++;
             return new Response(JSON.stringify({ ok: true, revision: 3, id_maps: {}, devices: [],
-                views: [{ ...appState.views[0], resource_revision: 21 }], placements: [], links: [], canvas_notes: [],
+                views: [{ ...appState.views[0], resource_revision: 21 }], placements: [], view_link_routes: [], canvas_notes: [],
                 rack_settings: appState.rackSettings, rack_mounts: appState.rackMounts, affected_view_ids: [1],
                 deleted_device_ids: [], deleted_view_ids: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         };
@@ -692,7 +707,7 @@ test('ラックの両面表示・範囲選択・背面入力・機器詳細・�
             return new Response(JSON.stringify({
                 ok: true, revision: 4, id_maps: { devices: { [createdId]: 90 } },
                 devices: appState.devices.map(device => ({ ...device, id: device.id === createdId ? 90 : device.id, resource_revision: 30 })),
-                views: [{ ...appState.views[0], resource_revision: 30 }], placements: [], links: [], canvas_notes: [],
+                views: [{ ...appState.views[0], resource_revision: 30 }], placements: [], view_link_routes: [], canvas_notes: [],
                 rack_settings: appState.rackSettings,
                 rack_mounts: appState.rackMounts.map(mount => ({ ...mount, device_id: mount.device_id === createdId ? 90 : mount.device_id })),
                 affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: []

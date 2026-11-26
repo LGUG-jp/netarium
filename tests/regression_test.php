@@ -35,6 +35,9 @@ require_once __DIR__ . '/suites/BackupAcceptanceTest.php';
 require_once __DIR__ . '/suites/IpManagementTest.php';
 require_once __DIR__ . '/suites/ChangeHistoryTest.php';
 require_once __DIR__ . '/suites/DeviceConfigTest.php';
+require_once __DIR__ . '/suites/BuildingHierarchyTest.php';
+require_once __DIR__ . '/suites/ConnectionSaveTest.php';
+require_once __DIR__ . '/suites/PortVlanMigrationTest.php';
 
 class RegressionTestRunner
 {
@@ -60,6 +63,9 @@ class RegressionTestRunner
         Suites\IpManagementTest::class,
         Suites\ChangeHistoryTest::class,
         Suites\DeviceConfigTest::class,
+        Suites\BuildingHierarchyTest::class,
+        Suites\ConnectionSaveTest::class,
+        Suites\PortVlanMigrationTest::class,
         Suites\TransportSecurityTest::class,
         Suites\CapacityTest::class,
         Suites\BackupAcceptanceTest::class,

@@ -81,7 +81,11 @@ jobs:
 
       - name: Validate public snapshot without Docker
         run: |
-          node scripts/export-public-snapshot.mjs --commit HEAD \
+          mode=()
+          if [[ "$GITHUB_REPOSITORY" == "LGUG-jp/netarium" ]]; then
+            mode+=(--public-validation)
+          fi
+          node scripts/export-public-snapshot.mjs --commit HEAD "${mode[@]}" \
             --out-dir "$RUNNER_TEMP/netarium-public-snapshot" \
             --manifest-dir "$RUNNER_TEMP/netarium-public-snapshot-manifest"
 

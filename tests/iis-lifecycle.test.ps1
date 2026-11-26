@@ -334,7 +334,37 @@ $db = new SQLite3($argv[1]); $db->exec('CREATE TABLE users (id INTEGER PRIMARY K
     if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Out-of-range security count accepted' }
     [IO.File]::WriteAllText($stateFile, '{}', $utf8)
     if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Invalid security state schema accepted' }
-    Write-Host 'PASS security state schema, time, counter preservation and valid window reset'
+    [IO.File]::WriteAllText($stateFile, '[' + $validJson + ']', $utf8)
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Array-wrapped security state accepted' }
+    $additionalKeys = @('new_security_reason')
+    Save-Fixture $stateFile $priorState
+    if (-not (Test-LifecycleSecurityState $stateFile $priorState -AdditionalKeys $additionalKeys)) {
+        throw 'Legacy security state without an optional key rejected'
+    }
+    $extendedState = $validJson | ConvertFrom-Json
+    $extendedState | Add-Member new_security_reason ([pscustomobject]@{ window = $window; count = 2 })
+    Save-Fixture $stateFile $extendedState
+    if (Test-LifecycleSecurityState $stateFile $priorState) { throw 'Unregistered security reason accepted' }
+    if (-not (Test-LifecycleSecurityState $stateFile $priorState -AdditionalKeys $additionalKeys)) {
+        throw 'Registered security reason addition rejected'
+    }
+    $priorExtendedState = Get-Content $stateFile -Raw | ConvertFrom-Json
+    $extendedState.new_security_reason.count = 1
+    Save-Fixture $stateFile $extendedState
+    if (Test-LifecycleSecurityState $stateFile $priorExtendedState -AdditionalKeys $additionalKeys) {
+        throw 'Optional security counter regression accepted'
+    }
+    Save-Fixture $stateFile $priorState
+    if (Test-LifecycleSecurityState $stateFile $priorExtendedState -AdditionalKeys $additionalKeys) {
+        throw 'Previously recorded security reason removal accepted'
+    }
+    [IO.File]::WriteAllText($stateFile + '.tmp', '{"partial":', $utf8)
+    $inventory = @(Get-LifecycleInventory $logRoot -ExcludeFile 'logs/audit/.security-window.tmp')
+    if ($inventory.RelativePath -ccontains 'logs/audit/.security-window.tmp' -or
+        $inventory.RelativePath -cnotcontains 'logs/audit/.security-window') {
+        throw 'Security window inventory did not distinguish staged and committed state'
+    }
+    Write-Host 'PASS security state schema, counter preservation, optional reasons and temporary file handling'
 } finally {
     Remove-Item -LiteralPath $sandbox -Recurse -Force
 }

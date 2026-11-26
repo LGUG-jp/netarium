@@ -72,7 +72,6 @@ class TopologyService
         $views = $this->viewRepo->getAll();
         $devices = $this->deviceRepo->getAllWithStatus();
         $placements = $this->placementRepo->getAll();
-        $links = $this->linkRepo->getAll();
         $canvasNotes = $this->db->query('SELECT * FROM canvas_notes ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
         $floorPlans = $this->floorPlanRepo->getAll();
         $rawImages = $this->deviceImageRepo->getAll();
@@ -118,9 +117,15 @@ class TopologyService
                 'is_admin' => isAdminUser(),
             ],
             'views' => $views,
+            'buildings' => $this->db->query('SELECT * FROM buildings ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
+            'floors' => $this->db->query('SELECT * FROM floors ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
             'devices' => $devices,
             'placements' => $placements,
-            'links' => $links,
+            'device_ports' => $this->linkRepo->getDevicePorts(),
+            'links' => $this->linkRepo->getAll(),
+            'view_link_routes' => $this->linkRepo->getViewLinkRoutes(),
+            'legacy_link_conflicts' => $this->linkRepo->getLegacyLinkConflicts(),
+            'legacy_link_vlans' => $this->linkRepo->getLegacyLinkVlans(),
             'link_systems' => (new LinkSystemService($this->db))->list()['link_systems'],
             'address_spaces' => (new IpManagementService($this->db))->masters()['address_spaces'],
             'ip_segments' => (new IpManagementService($this->db))->masters()['ip_segments'],
@@ -151,7 +156,7 @@ class TopologyService
             throw new ApiException('他の利用者または別画面でデータが更新されています。再読み込みしてください', 409);
         }
 
-        [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks] =
+        [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedRoutes, $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks] =
             $this->normalizeTopology($input, $config);
         $newRevision = $requestedRevision + 1;
         $savedAt = null;
@@ -194,12 +199,44 @@ class TopologyService
             foreach ($normalizedDevices as &$device) { unset($device['ip_conflicts_confirmed']); }
             unset($device);
             $existingViews = $this->viewRepo->getAll();
+            $existingMembership = array_column($existingViews, 'floor_id', 'id');
+            $existingViewsById = array_column($existingViews, null, 'id');
+            $inputViews = array_column($input['views'], null, 'id');
+            $floors = array_fill_keys($this->db->query('SELECT id FROM floors')->fetchAll(PDO::FETCH_COLUMN), true);
+            $existingDevices = array_column($this->deviceRepo->getAllWithStatus(), null, 'id');
+            $inputDevices = array_column($input['devices'], null, 'id');
+            foreach ($normalizedDevices as &$device) {
+                foreach (['floor_id', 'facility', 'floor'] as $field) {
+                    if (!array_key_exists($field, $inputDevices[$device['id']])) {
+                        $device[$field] = $existingDevices[$device['id']][$field] ?? ($field === 'floor_id' ? null : '');
+                    }
+                }
+                BuildingHierarchyService::normalizeFloorId($device['floor_id'], $floors);
+            }
+            unset($device);
+            foreach ($normalizedViews as &$view) {
+                if (!array_key_exists('show_connections', $inputViews[$view['id']])) {
+                    $view['show_connections'] = $existingViewsById[$view['id']]['show_connections'] ?? 1;
+                }
+                if (!array_key_exists('floor_id', $inputViews[$view['id']])) {
+                    $view['floor_id'] = $existingMembership[$view['id']] ?? null;
+                }
+                foreach (['facility', 'floor'] as $field) {
+                    if (!array_key_exists($field, $inputViews[$view['id']])) {
+                        $view[$field] = $existingViewsById[$view['id']][$field] ?? '';
+                    }
+                }
+                $view['floor_id'] = BuildingHierarchyService::normalizeFloorId($view['floor_id'], $floors);
+            }
+            unset($view);
+            $representatives = $this->db->query('SELECT id, representative_view_id FROM floors WHERE representative_view_id IS NOT NULL')->fetchAll(PDO::FETCH_ASSOC);
             $existingMounts = $this->db->query('SELECT * FROM rack_mounts')->fetchAll(PDO::FETCH_ASSOC);
             $existingShelves = $this->db->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC);
-            if (!array_key_exists('floor_rack_placements', $input)
-                && $this->db->query('SELECT 1 FROM floor_rack_placements LIMIT 1')->fetchColumn() !== false) {
+            $existingFloorRacks = $this->db->query('SELECT floor_view_id, rack_view_id FROM floor_rack_placements')->fetchAll(PDO::FETCH_ASSOC);
+            if (!array_key_exists('floor_rack_placements', $input) && $existingFloorRacks !== []) {
                 throw new ApiException('ラック配置情報が欠落しています。画面を再読み込みしてください', 400);
             }
+            FloorRackPlacement::assertNewPairsMatchFloors($normalizedFloorRacks, $existingFloorRacks, $normalizedViews);
             if ((!array_key_exists('rack_shelves', $input) || !array_key_exists('rack_shelf_devices', $input)) && $existingShelves !== []) {
                 throw new ApiException('棚板情報が欠落しています。画面を再読み込みしてください', 400);
             }
@@ -215,10 +252,17 @@ class TopologyService
                 }
             }
             RackLayout::assertViewChanges($existingViews, $normalizedViews, array_merge($existingMounts, $existingShelves));
-            // マスタ削除との競合もwriter取得後に検査し、未知参照を400として返す。
-            $systems = array_fill_keys($this->db->query('SELECT id FROM link_systems')->fetchAll(PDO::FETCH_COLUMN), true);
-            foreach ($normalizedLinks as $link) {
-                LinkSystemService::normalizeSystemId($link['system_id'], $systems);
+            if (!array_key_exists('view_link_routes', $input)) {
+                // Old clients cannot express routes; preserve rows whose view and devices survive.
+                $viewTypes = array_column($normalizedViews, 'view_type', 'id');
+                foreach ($this->linkRepo->getViewLinkRoutes() as $route) {
+                    if (isset($viewTypes[$route['view_id']], $deviceIds[$route['device_a_id']], $deviceIds[$route['device_b_id']])
+                        && $viewTypes[$route['view_id']] !== 'rack') {
+                        $normalizedRoutes[] = $route;
+                    }
+                }
+            } else {
+                $this->assertRoutePairsExist($normalizedRoutes);
             }
 
             // 明示IDの新規挿入では、後続のサーバー採番を最低1件残す。
@@ -227,7 +271,6 @@ class TopologyService
                 'views' => $normalizedViews,
                 'devices' => $normalizedDevices,
                 'device_placements' => $normalizedPlacements,
-                'links' => $normalizedLinks,
             ] as $table => $rows) {
                 $existingId = $this->db->prepare("SELECT 1 FROM {$table} WHERE id = :id");
                 foreach ($rows as $row) {
@@ -346,11 +389,7 @@ class TopologyService
                 FROM view_floor_plans
             ");
 
-            /*
-             * 外部キー制約を満たす削除順。
-             *
-             * devicesはここでは削除しない。
-             */
+            // View-owned rows are rebuilt below. Common links and ports are not view data.
             $existingViewIds = $this->db->query("SELECT id FROM views")->fetchAll(PDO::FETCH_COLUMN);
             foreach ($existingViewIds as $existingViewId) {
                 if (!isset($viewIds[(int)$existingViewId])) {
@@ -358,12 +397,11 @@ class TopologyService
                 }
             }
 
-            $this->db->exec('DELETE FROM links');
             $this->db->exec('DELETE FROM device_placements');
             $this->db->exec('DELETE FROM views');
             $viewStmt = $this->db->prepare("
-                INSERT INTO views (id, name, facility, floor, view_type, sort_order, memo)
-                VALUES (:id, :name, :facility, :floor, :view_type, :sort_order, :memo)
+                INSERT INTO views (id, name, facility, floor, view_type, floor_id, sort_order, memo, show_connections)
+                VALUES (:id, :name, :facility, :floor, :view_type, :floor_id, :sort_order, :memo, :show_connections)
             ");
 
             foreach ($normalizedViews as $view) {
@@ -373,9 +411,16 @@ class TopologyService
                     ':facility' => $view['facility'],
                     ':floor' => $view['floor'],
                     ':view_type' => $view['view_type'],
+                    ':floor_id' => $view['floor_id'],
                     ':sort_order' => $view['sort_order'],
                     ':memo' => $view['memo'],
+                    ':show_connections' => $view['show_connections'],
                 ]);
+            }
+            $restoreRepresentative = $this->db->prepare("UPDATE floors SET representative_view_id = :view_id
+                WHERE id = :id AND EXISTS (SELECT 1 FROM views WHERE id = :view_id AND floor_id = :id AND view_type = 'floor')");
+            foreach ($representatives as $representative) {
+                $restoreRepresentative->execute([':id' => $representative['id'], ':view_id' => $representative['representative_view_id']]);
             }
 
             /*
@@ -436,12 +481,12 @@ class TopologyService
                     id, name, type, ip, x, y, facility, floor, location,
                     manufacturer, model, asset_number, serial_number, mac_address, memo,
                     management_scheme, management_port, department, maintenance_vendor,
-                    install_date, maintenance_expiry, ip_segment_id
+                    install_date, maintenance_expiry, ip_segment_id, floor_id
                 ) VALUES (
                     :id, :name, :type, :ip, :x, :y, :facility, :floor, :location,
                     :manufacturer, :model, :asset_number, :serial_number, :mac_address, :memo,
                     :management_scheme, :management_port, :department, :maintenance_vendor,
-                    :install_date, :maintenance_expiry, :ip_segment_id
+                    :install_date, :maintenance_expiry, :ip_segment_id, :floor_id
                 )
                 ON CONFLICT(id)
                 DO UPDATE SET
@@ -452,6 +497,7 @@ class TopologyService
                     y = excluded.y,
                     facility = excluded.facility,
                     floor = excluded.floor,
+                    floor_id = excluded.floor_id,
                     location = excluded.location,
                     manufacturer = excluded.manufacturer,
                     model = excluded.model,
@@ -477,6 +523,7 @@ class TopologyService
                     ':y' => $device['y'],
                     ':facility' => $device['facility'],
                     ':floor' => $device['floor'],
+                    ':floor_id' => $device['floor_id'],
                     ':location' => $device['location'],
                     ':manufacturer' => $device['manufacturer'],
                     ':model' => $device['model'],
@@ -540,6 +587,7 @@ class TopologyService
                     FROM save_device_ids
                 )
             ");
+            $this->db->exec('DELETE FROM legacy_link_conflicts WHERE view_id NOT IN (SELECT id FROM views) OR device_a_id NOT IN (SELECT id FROM devices) OR device_b_id NOT IN (SELECT id FROM devices)');
             /*
              * 新規機器の監視状態を作成
              */
@@ -596,26 +644,11 @@ class TopologyService
                 ]);
             }
 
-            $linkStmt = $this->db->prepare("
-                INSERT INTO links (id, view_id, from_id, to_id, system_id, label, from_port, to_port, vlan, memo, route_mode, manual_route)
-                VALUES (:id, :view_id, :from_id, :to_id, :system_id, :label, :from_port, :to_port, :vlan, :memo, :route_mode, :manual_route)
-            ");
-
-            foreach ($normalizedLinks as $link) {
-                $linkStmt->execute([
-                    ':id' => $link['id'],
-                    ':view_id' => $link['view_id'],
-                    ':from_id' => $link['from_id'],
-                    ':to_id' => $link['to_id'],
-                    ':system_id' => $link['system_id'],
-                    ':label' => $link['label'],
-                    ':from_port' => $link['from_port'],
-                    ':to_port' => $link['to_port'],
-                    ':vlan' => $link['vlan'],
-                    ':memo' => $link['memo'],
-                    ':route_mode' => $link['route_mode'],
-                    ':manual_route' => json_encode($link['manual_route'], JSON_THROW_ON_ERROR),
-                ]);
+            $routeStmt = $this->db->prepare('INSERT INTO view_link_routes (view_id, device_a_id, device_b_id, manual_route)
+                VALUES (:view_id, :device_a_id, :device_b_id, :manual_route)');
+            foreach ($normalizedRoutes as $route) {
+                $route['manual_route'] = json_encode($route['manual_route'], JSON_THROW_ON_ERROR);
+                $routeStmt->execute($route);
             }
 
             $noteStmt = $this->db->prepare('INSERT INTO canvas_notes (' . implode(', ', CanvasNote::COLUMNS)
@@ -663,7 +696,11 @@ class TopologyService
         }
 
         if (!empty($deletedImageFiles)) {
-            (new DeviceImageService($this->db))->processGcQueue($config);
+            try {
+                (new DeviceImageService($this->db))->processGcQueue($config);
+            } catch (Throwable $e) {
+                error_log('[Netarium Save] Device image GC failed: ' . $e->getMessage());
+            }
         }
 
         return array_merge($snapshot, [
@@ -681,7 +718,6 @@ class TopologyService
         $views = $input['views'] ?? null;
         $devices = $input['devices'] ?? null;
         $placements = $input['placements'] ?? null;
-        $links = $input['links'] ?? null;
 
         if (!is_array($views)) {
             throw new ApiException('viewsが配列ではありません', 400);
@@ -695,13 +731,8 @@ class TopologyService
             throw new ApiException('placementsが配列ではありません', 400);
         }
 
-        if (!is_array($links)) {
-            throw new ApiException('linksが配列ではありません', 400);
-        }
-
         $maxViews = max(1, (int)($config['max_views'] ?? 100));
         $maxPlacementsPerView = max(1, (int)($config['max_placements_per_view'] ?? 2000));
-        $maxLinksPerView = max(1, (int)($config['max_links_per_view'] ?? 5000));
 
         if (count($views) < 1) {
             throw new ApiException('ビューを最低1件登録してください', 400);
@@ -722,6 +753,7 @@ class TopologyService
         $normalizedViews = [];
         $viewIds = [];
         $viewNames = [];
+        $floorIds = array_fill_keys($this->db->query('SELECT id FROM floors')->fetchAll(PDO::FETCH_COLUMN), true);
 
         foreach ($views as $view) {
             if (!is_array($view)) {
@@ -754,22 +786,29 @@ class TopologyService
                 throw new ApiException("ビューID {$id}: 種別が不正です", 400);
             }
 
-            $viewIds[$id] = true;
+            $showConnections = array_key_exists('show_connections', $view) ? $view['show_connections'] : 1;
+            if (!in_array($showConnections, [0, 1], true)) {
+                throw new ApiException("ビューID {$id}: show_connectionsは0または1を指定してください", 400);
+            }
+            $viewIds[$id] = $viewType;
             $viewNames[$nameKey] = true;
 
             $normalizedViews[] = [
                 'id' => $id,
                 'name' => $name,
-                'facility' => Request::normalizeLedgerText($view['facility'] ?? '', 100),
-                'floor' => Request::normalizeLedgerText($view['floor'] ?? '', 50),
+                'facility' => DeviceFields::legacyLocation($view['facility'] ?? '', 100),
+                'floor' => DeviceFields::legacyLocation($view['floor'] ?? '', 50),
                 'view_type' => $viewType,
+                'floor_id' => BuildingHierarchyService::normalizeFloorId($view['floor_id'] ?? null, $floorIds),
                 'sort_order' => (int)($view['sort_order'] ?? 0),
                 'memo' => Request::normalizeLedgerText($view['memo'] ?? '', 1000),
+                'show_connections' => $showConnections,
             ];
         }
 
         $normalizedDevices = [];
         $deviceIds = [];
+        $devicesWithAdditionalIps = [];
 
         foreach ($devices as $device) {
             if (!is_array($device)) {
@@ -817,8 +856,9 @@ class TopologyService
                 'ip' => $ip,
                 'x' => max(0, $legacyX),
                 'y' => max(0, $legacyY),
-                'facility' => Request::normalizeLedgerText($device['facility'] ?? '', 100),
-                'floor' => Request::normalizeLedgerText($device['floor'] ?? '', 50),
+                'floor_id' => BuildingHierarchyService::normalizeFloorId($device['floor_id'] ?? null, $floorIds),
+                'facility' => DeviceFields::legacyLocation($device['facility'] ?? '', 100),
+                'floor' => DeviceFields::legacyLocation($device['floor'] ?? '', 50),
                 'location' => Request::normalizeLedgerText($device['location'] ?? '', 150),
                 'manufacturer' => Request::normalizeLedgerText($device['manufacturer'] ?? '', 100),
                 'model' => Request::normalizeLedgerText($device['model'] ?? '', 100),
@@ -834,7 +874,7 @@ class TopologyService
                 'maintenance_expiry' => $fields['maintenance_expiry'],
                 'additional_ips' => array_key_exists('additional_ips', $device)
                     ? (is_array($device['additional_ips'])
-                        ? DeviceIpAddressRepository::normalize($device['additional_ips'], $ip, "機器ID {$id}: ")
+                        ? $device['additional_ips']
                         : throw new ApiException('追加IPは配列で指定してください', 400))
                     : null,
             ];
@@ -842,6 +882,18 @@ class TopologyService
                 $normalizedDevices[array_key_last($normalizedDevices)]['ip_segment_id'] = $device['ip_segment_id'];
             }
             $normalizedDevices[array_key_last($normalizedDevices)]['ip_conflicts_confirmed'] = ($device['ip_conflicts_confirmed'] ?? false) === true;
+            if (!empty($device['additional_ips'])) {
+                $devicesWithAdditionalIps[$id] = array_key_last($normalizedDevices);
+            }
+        }
+        $existingAdditional = (new DeviceIpAddressRepository($this->db))->getByDeviceIds(array_keys($devicesWithAdditionalIps));
+        foreach ($devicesWithAdditionalIps as $id => $index) {
+            $device = &$normalizedDevices[$index];
+            $device['additional_ips'] = DeviceIpAddressRepository::normalize(
+                $device['additional_ips'], $device['ip'], "機器ID {$id}: ",
+                array_column($existingAdditional[$id] ?? [], null, 'id')
+            );
+            unset($device);
         }
 
         $normalizedPlacements = [];
@@ -901,73 +953,36 @@ class TopologyService
             ];
         }
 
-        $normalizedLinks = [];
-        $linkIds = [];
-        $linkPairs = [];
-        $linkCountsByView = [];
-        $systems = array_fill_keys($this->db->query('SELECT id FROM link_systems')->fetchAll(PDO::FETCH_COLUMN), true);
-
-        foreach ($links as $link) {
-            if (!is_array($link)) {
-                throw new ApiException('links内のデータ形式が不正です', 400);
+        $normalizedRoutes = [];
+        $routes = array_key_exists('view_link_routes', $input) ? $input['view_link_routes'] : [];
+        if (!is_array($routes) || !array_is_list($routes)) {
+            throw new ApiException('view_link_routesは配列で指定してください', 400);
+        }
+        foreach ($routes as $route) {
+            if (!is_array($route)) {
+                throw new ApiException('view_link_routes内のデータ形式が不正です', 400);
             }
-
-            $id = ResourceId::parse($link['id'] ?? null, '接続ID');
-            $viewId = ResourceId::parse($link['view_id'] ?? null, 'view_id');
-            $fromId = ResourceId::parse($link['from_id'] ?? $link['fromId'] ?? null, 'from_id');
-            $toId = ResourceId::parse($link['to_id'] ?? $link['toId'] ?? null, 'to_id');
-
-            if (isset($linkIds[$id])) {
-                throw new ApiException("接続ID {$id} が重複しています", 400);
+            $viewId = ResourceId::parse($route['view_id'] ?? null, 'view_id');
+            $a = ResourceId::parse($route['device_a_id'] ?? null, 'device_a_id');
+            $b = ResourceId::parse($route['device_b_id'] ?? null, 'device_b_id');
+            if (!isset($viewIds[$viewId]) || $viewIds[$viewId] === 'rack') {
+                throw new ApiException("ビューID {$viewId}: 手動経路を保存できません", 400);
             }
-
-            if (!isset($viewIds[$viewId])) {
-                throw new ApiException("接続ID {$id}: ビューが存在しません", 400);
+            if ($a === $b || !isset($deviceIds[$a], $deviceIds[$b])) {
+                throw new ApiException('手動経路の端点機器が不正です', 400);
             }
-
-            if (!isset($deviceIds[$fromId]) || !isset($deviceIds[$toId])) {
-                throw new ApiException("接続ID {$id}: 接続元または接続先の機器が存在しません", 400);
+            $points = LinkRoute::normalize(['route_mode' => 'manual', 'manual_route' => $route['manual_route'] ?? null])['manual_route'];
+            $low = min($a, $b);
+            $high = max($a, $b);
+            $key = "{$viewId}:{$low}:{$high}";
+            if (isset($normalizedRoutes[$key])) {
+                throw new ApiException("ビューID {$viewId}: 同じ機器ペアの手動経路が重複しています", 400);
             }
-
-            if ($fromId === $toId) {
-                throw new ApiException("接続ID {$id}: 同一機器同士は接続できません", 400);
-            }
-
-            if (!isset($placementPairs[$fromId . ':' . $viewId]) || !isset($placementPairs[$toId . ':' . $viewId])) {
-                throw new ApiException("接続ID {$id}: 両端の機器を同じビューへ配置してください", 400);
-            }
-
-            $pairIds = [$fromId, $toId];
-            sort($pairIds, SORT_NUMERIC);
-            $pairKey = $viewId . ':' . $pairIds[0] . ':' . $pairIds[1];
-
-            if (isset($linkPairs[$pairKey])) {
-                throw new ApiException("接続ID {$id}: 同じビュー内で接続が重複しています", 400);
-            }
-
-            $linkCountsByView[$viewId] = ($linkCountsByView[$viewId] ?? 0) + 1;
-
-            if ($linkCountsByView[$viewId] > $maxLinksPerView) {
-                throw new ApiException("ビューID {$viewId}の接続数が上限{$maxLinksPerView}件を超えています", 400);
-            }
-
-            $linkIds[$id] = true;
-            $linkPairs[$pairKey] = true;
-
-            $route = LinkRoute::normalize($link);
-            $normalizedLinks[] = [
-                'id' => $id,
+            $normalizedRoutes[$key] = [
                 'view_id' => $viewId,
-                'from_id' => $fromId,
-                'to_id' => $toId,
-                'system_id' => LinkSystemService::normalizeSystemId($link['system_id'] ?? null, $systems),
-                'label' => Request::normalizeLedgerText($link['label'] ?? '', 100),
-                'from_port' => Request::normalizeLedgerText($link['from_port'] ?? '', 50),
-                'to_port' => Request::normalizeLedgerText($link['to_port'] ?? '', 50),
-                'vlan' => Request::normalizeLedgerText($link['vlan'] ?? '', 100),
-                'memo' => Request::normalizeLedgerText($link['memo'] ?? '', 1000),
-                'route_mode' => $route['route_mode'],
-                'manual_route' => $route['manual_route'],
+                'device_a_id' => $low,
+                'device_b_id' => $high,
+                'manual_route' => $a < $b ? $points : array_reverse($points),
             ];
         }
         $normalizedNotes = CanvasNote::normalizeRows($input['canvas_notes'] ?? null, $viewIds);
@@ -984,12 +999,33 @@ class TopologyService
         [$normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices] =
             RackLayout::validate($settings, $mounts, $normalizedViews, $normalizedDevices, $shelves, $shelfDevices, true);
         $rackIds = array_fill_keys(array_column($normalizedSettings, 'view_id'), true);
-        foreach (array_merge($normalizedPlacements, $normalizedLinks, $input['floor_plans'] ?? []) as $row) {
+        foreach (array_merge($normalizedPlacements, $input['floor_plans'] ?? []) as $row) {
             if (isset($rackIds[$row['view_id']])) {
-                throw new ApiException('ラックにはXY配置・接続・図面を保存できません', 400);
+                throw new ApiException('ラックにはXY配置・図面を保存できません', 400);
             }
         }
         $normalizedFloorRacks = FloorRackPlacement::normalizeRows($input['floor_rack_placements'] ?? [], $normalizedViews);
-        return [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks];
+        return [$normalizedViews, $normalizedDevices, $normalizedPlacements, array_values($normalizedRoutes), $viewIds, $deviceIds, $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices, $normalizedFloorRacks];
+    }
+
+    /** Validate against current connections under the transaction's writer lock. */
+    public function assertRoutePairsExist(array $routes): void
+    {
+        if ($routes === []) {
+            return;
+        }
+        $check = $this->db->prepare('SELECT 1 WHERE EXISTS (
+            SELECT 1 FROM links WHERE min(from_id, to_id) = :a AND max(from_id, to_id) = :b
+        ) OR EXISTS (
+            SELECT 1 FROM legacy_link_conflicts WHERE device_a_id = :a AND device_b_id = :b
+        )');
+        foreach ($routes as $route) {
+            $check->bindValue(':a', $route['device_a_id'], PDO::PARAM_INT);
+            $check->bindValue(':b', $route['device_b_id'], PDO::PARAM_INT);
+            $check->execute();
+            if ($check->fetchColumn() === false) {
+                throw new ApiException('手動経路に対応する接続がありません', 400);
+            }
+        }
     }
 }

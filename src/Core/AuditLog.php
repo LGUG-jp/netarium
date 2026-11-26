@@ -21,13 +21,16 @@ final class AuditLog
     public const SECURITY_WINDOW_LIMIT = 10;
     public const SECURITY_BUSINESS_HEADROOM_BYTES = 16777216; // 16 MiB: 拒否洪水に通常業務用の空きを使わせない
     public const SECURITY_STATE_FILE = '.security-window';
-    private const SECURITY_EVENTS = [
+    private const SECURITY_STATE_MAX_BYTES = 4096;
+    private const REQUIRED_SECURITY_EVENTS = [
         'authentication_required' => ['auth.authentication_denied', 'failure', 401],
         'password_change_required' => ['auth.authorization_denied', 'failure', 403],
         'insufficient_role' => ['auth.authorization_denied', 'failure', 403],
         'invalid_csrf' => ['auth.csrf_denied', 'failure', 403],
         'logout' => ['auth.logout', 'success', 302],
     ];
+    // 追加理由はここで結合する。旧版が保存した必須キーは追加・変更しない。
+    private const SECURITY_EVENTS = self::REQUIRED_SECURITY_EVENTS;
     public const FILENAME_PATTERN = '/\Aaudit-(\d{4})(\d{2})(\d{2})-(\d{3})\.log\z/';
     private const RESERVATION_PATTERN = '/\A\.pending-[0-9a-f]{32}\z/';
     private const ALLOWED_COUNTS_KEYS = [
@@ -381,73 +384,84 @@ final class AuditLog
     private static function consumeSecurityQuota(string $dir, string $reason): ?bool
     {
         $path = $dir . DIRECTORY_SEPARATOR . self::SECURITY_STATE_FILE;
-        $file = @fopen($path, 'x+b');
-        $created = $file !== false;
-        if (!$created) {
-            $file = @fopen($path, 'r+b');
-        }
-        if ($file === false) {
+        $window = intdiv(time(), self::SECURITY_WINDOW_SECONDS);
+        if (is_link($path)) {
             return null;
         }
-
-        try {
-            $window = intdiv(time(), self::SECURITY_WINDOW_SECONDS);
-            if ($created) {
-                $state = [];
-                foreach (self::SECURITY_EVENTS as $key => $_event) {
-                    $state[$key] = ['window' => $window, 'count' => 0];
-                }
-            } else {
-                $raw = fread($file, 4097);
-                if ($raw === false || strlen($raw) > 4096) {
-                    return null;
-                }
-                $state = json_decode($raw, true);
-                if (!is_array($state) || count($state) !== count(self::SECURITY_EVENTS)) {
-                    return null;
-                }
-                foreach (self::SECURITY_EVENTS as $key => $_event) {
-                    $value = $state[$key] ?? null;
-                    if (
-                        !is_array($value)
-                        || count($value) !== 2
-                        || !isset($value['window'], $value['count'])
-                        || !is_int($value['window'])
-                        || $value['window'] < 0
-                        || $value['window'] > $window
-                        || !is_int($value['count'])
-                        || $value['count'] < 0
-                        || $value['count'] > self::SECURITY_WINDOW_LIMIT + 1
-                    ) {
-                        return null;
-                    }
-                }
-            }
-
-            if ($state[$reason]['window'] !== $window) {
-                $state[$reason] = ['window' => $window, 'count' => 0];
-            }
-            if ($state[$reason]['count'] > self::SECURITY_WINDOW_LIMIT) {
+        if (is_file($path)) {
+            $raw = @file_get_contents($path, false, null, 0, self::SECURITY_STATE_MAX_BYTES + 1);
+            if ($raw === false || strlen($raw) > self::SECURITY_STATE_MAX_BYTES) {
                 return null;
             }
-            $state[$reason]['count']++;
-            $serialized = json_encode($state, JSON_UNESCAPED_SLASHES);
-            if (!is_string($serialized) || strlen($serialized) > 4096) {
-                return null;
-            }
+            $state = json_decode($raw, true);
             if (
-                !rewind($file)
-                || fwrite($file, $serialized) !== strlen($serialized)
-                || !ftruncate($file, strlen($serialized))
-                || !fflush($file)
+                !is_array($state)
+                || array_diff_key(self::REQUIRED_SECURITY_EVENTS, $state) !== []
+                || array_diff_key($state, self::SECURITY_EVENTS) !== []
             ) {
                 return null;
             }
-
-            return $state[$reason]['count'] <= self::SECURITY_WINDOW_LIMIT;
-        } finally {
-            fclose($file);
+            foreach ($state as $value) {
+                if (
+                    !is_array($value)
+                    || count($value) !== 2
+                    || !isset($value['window'], $value['count'])
+                    || !is_int($value['window'])
+                    || $value['window'] < 0
+                    || $value['window'] > $window
+                    || !is_int($value['count'])
+                    || $value['count'] < 0
+                    || $value['count'] > self::SECURITY_WINDOW_LIMIT + 1
+                ) {
+                    return null;
+                }
+            }
+        } elseif (file_exists($path)) {
+            return null;
+        } else {
+            $state = array_fill_keys(array_keys(self::REQUIRED_SECURITY_EVENTS), ['window' => $window, 'count' => 0]);
         }
+
+        if (($state[$reason]['window'] ?? null) !== $window) {
+            $state[$reason] = ['window' => $window, 'count' => 0];
+        }
+        if ($state[$reason]['count'] > self::SECURITY_WINDOW_LIMIT) {
+            return null;
+        }
+        $state[$reason]['count']++;
+        $serialized = json_encode($state, JSON_UNESCAPED_SLASHES);
+        if (
+            !is_string($serialized)
+            || strlen($serialized) > self::SECURITY_STATE_MAX_BYTES
+            || !self::replaceSecurityState($path, $serialized)
+        ) {
+            return null;
+        }
+
+        return $state[$reason]['count'] <= self::SECURITY_WINDOW_LIMIT;
+    }
+
+    private static function replaceSecurityState(string $path, string $serialized): bool
+    {
+        // .lock内でのみ使う一時ファイル。前回の強制終了で残っていても状態としては読まない。
+        $tempPath = $path . '.tmp';
+        if ((is_file($tempPath) || is_link($tempPath)) && !@unlink($tempPath)) {
+            return false;
+        }
+        $file = @fopen($tempPath, 'xb');
+        if ($file === false) {
+            return false;
+        }
+        try {
+            $written = @fwrite($file, $serialized) === strlen($serialized) && @fflush($file);
+        } finally {
+            $closed = @fclose($file);
+        }
+        if (!$written || !$closed || !@rename($tempPath, $path)) {
+            @unlink($tempPath);
+            return false;
+        }
+        return true;
     }
 
     private static function writeEntry(

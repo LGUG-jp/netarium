@@ -99,14 +99,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // A live SELECT cursor otherwise retains a read lock/snapshot through verify.
             $stmt->closeCursor();
 
-            $valid =
-                is_array($user) &&
-                (int)$user['is_active'] === 1 &&
-                \Netarium\Services\Auth\PasswordHashing::verify(
+            if (is_array($user) && (int)$user['is_active'] === 1) {
+                $valid = \Netarium\Services\Auth\PasswordHashing::verify(
                     $password,
                     (string)$user['password_hash'],
                     $config['allow_legacy_bcrypt']
                 );
+            } else {
+                \Netarium\Services\Auth\PasswordHashing::verifyDummy($password);
+                $valid = false;
+            }
             if (!$valid) {
                 $db->exec('BEGIN IMMEDIATE');
                 try {

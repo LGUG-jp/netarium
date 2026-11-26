@@ -1,5 +1,5 @@
 import { DEFAULT_DEVICE_HEIGHT, DEFAULT_DEVICE_WIDTH } from '../core/constants.js';
-import { routeTopologyLinks } from './link-router.js';
+import { getTopologyLinkKey, routeTopologyLinks } from './link-router.js';
 import { buildManualLinkRoute } from './manual-link-route.js';
 
 /** 保存座標を変えず、現在の機器中心から手動・自動の描画経路を一括解決する。 */
@@ -31,7 +31,7 @@ export function resolveTopologyLinkRoutes(links, placements) {
         };
         try {
             const route = buildManualLinkRoute(start, end, link.manual_route);
-            if (route) fixedRoutes.set(Number(link.id), route);
+            if (route) fixedRoutes.set(getTopologyLinkKey(link), route);
         } catch {
             // 壊れた手動経路だけを既存autoへ戻し、他リンクの描画は継続する。
         }

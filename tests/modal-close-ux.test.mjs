@@ -155,7 +155,9 @@ test('機器一括編集は未適用の入力を閉鎖拒否で保持し、破�
     const dom = setup(t, ['templates/modals/account.php', 'templates/modals/ledger.php']);
     const saved = { ...appState };
     t.after(() => { Object.assign(appState, saved); ledgerSelectedDeviceIds.clear(); });
-    appState.devices = [normalizeDevice({ id: 901, name: '架空閉鎖試験', facility: '元施設', resource_revision: 1 })];
+    appState.devices = [normalizeDevice({ id: 901, name: '架空閉鎖試験', floor_id: 10, facility: '元施設', resource_revision: 1 })];
+    appState.buildings = [{ id: 1, name: '試験棟' }];
+    appState.floors = [{ id: 10, building_id: 1, name: '1F' }, { id: 20, building_id: 1, name: '2F' }];
     appState.views = []; appState.placements = []; appState.links = [];
     appState.resourceConflicts = { devices: new Map(), views: new Map() };
     appState.isPinging = false; appState.authExpired = false;
@@ -163,19 +165,21 @@ test('機器一括編集は未適用の入力を閉鎖拒否で保持し、破�
     ledgerSelectedDeviceIds.add(901);
     for (const close of [closeLedgerBulkEdit, () => dom.get('ledger-bulk-edit-overlay').click(), escape]) {
         await openLedgerBulkEdit();
-        const opt = dom.get('ledger-bulk-change-facility');
-        const value = dom.get('ledger-bulk-value-facility');
-        opt.checked = true; value.value = '未適用施設';
+        const opt = dom.get('ledger-bulk-change-floor_id');
+        const value = dom.get('ledger-bulk-value-floor_id');
+        opt.checked = true; value.value = '20';
         window.confirm = () => false;
         await close();
         assert.equal(dom.get('ledger-bulk-edit-overlay').hidden, false);
         assert.equal(opt.checked, true);
-        assert.equal(value.value, '未適用施設');
+        assert.equal(value.value, '20');
         assert.equal(appState.devices[0].facility, '元施設');
+        assert.equal(appState.devices[0].floor_id, 10);
         window.confirm = () => true;
         await close();
         assert.equal(dom.get('ledger-bulk-edit-overlay').hidden, true);
         assert.equal(appState.devices[0].facility, '元施設');
+        assert.equal(appState.devices[0].floor_id, 10);
         assert.equal(getTopModalContainer(), null);
     }
 });

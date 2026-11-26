@@ -95,29 +95,11 @@
                 <span id="p-summary-placement" class="panel-group-summary-text"></span>
             </summary>
             <div class="panel-group-body">
-                <label for="p-facility" class="form-label">
-                    施設名
+                <label for="p-floor-id" class="form-label">
+                    設置フロア
                 </label>
-                <input
-                    id="p-facility"
-                    type="text"
-                    data-max-length="100"
-                    autocomplete="off"
-                    placeholder="例: 本庁舎"
-                >
-                <div id="p-facility-error" class="form-error" hidden></div>
-
-                <label for="p-floor" class="form-label">
-                    フロア
-                </label>
-                <input
-                    id="p-floor"
-                    type="text"
-                    data-max-length="50"
-                    autocomplete="off"
-                    placeholder="例: 2F"
-                >
-                <div id="p-floor-error" class="form-error" hidden></div>
+                <select id="p-floor-id" name="floor_id"></select>
+                <div id="p-floor-id-error" class="form-error" hidden></div>
 
                 <label for="p-location" class="form-label">
                     設置場所
@@ -156,11 +138,7 @@
                         配置なし
                     </div>
 
-                    <button
-                        id="p-manage-placements-btn"
-                        class="btn btn-secondary btn-sm admin-only"
-                        type="button"
-                    >
+                    <button id="p-manage-placements-btn" class="btn btn-secondary btn-sm admin-only" type="button">
                         表示するビューを選択
                     </button>
                 </section>
@@ -426,38 +404,21 @@
         </details>
 
         <!-- 固定動線: アクションボタン群 -->
-        <div class="panel-actions">
-            <button
-                id="p-apply-btn"
-                type="button"
-                class="btn btn-primary btn-sm admin-only"
-            >
-                適用
-            </button>
-            <button
-                id="p-revert-btn"
-                type="button"
-                class="btn btn-secondary btn-sm admin-only"
-            >
-                変更を取り消す
-            </button>
-            <button id="p-reload-conflict-btn" type="button" class="btn btn-secondary btn-sm admin-only" hidden>
-                競合した機器を再読込
-            </button>
-            <button
-                id="p-delete-btn"
-                type="button"
-                class="btn btn-secondary btn-sm admin-only"
-            >
-                このビューから外す
-            </button>
-            <button
-                id="p-delete-complete-btn"
-                type="button"
-                class="btn btn-danger btn-secondary btn-sm admin-only"
-            >
+        <button id="p-reload-conflict-btn" type="button" class="btn btn-secondary btn-sm admin-only" hidden>
+            競合した機器を再読込
+        </button>
+        <div class="panel-actions device-panel-footer">
+            <button id="p-delete-complete-btn" type="button" class="btn btn-danger btn-secondary btn-sm admin-only">
                 機器を完全削除
             </button>
+            <div class="panel-action-group panel-action-group-apply">
+                <button id="p-revert-btn" type="button" class="btn btn-secondary btn-sm admin-only">
+                    変更を取り消す
+                </button>
+                <button id="p-apply-btn" type="button" class="btn btn-primary btn-sm admin-only">
+                    適用
+                </button>
+            </div>
         </div>
     </aside>
 

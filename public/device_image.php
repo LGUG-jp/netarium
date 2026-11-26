@@ -12,6 +12,9 @@ use Netarium\Core\ApiException;
 use Netarium\Core\OperationGate;
 
 requirePageAuthentication();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET') {
     http_response_code(405);
@@ -112,8 +115,9 @@ try {
 
         $thumbName = 'thumb_320_' . $storedName;
         $thumbPath = $thumbDir . DIRECTORY_SEPARATOR . $thumbName;
+        $hasValidThumb = is_file($thumbPath) && is_readable($thumbPath) && (int)@filesize($thumbPath) > 0;
 
-        if (!is_file($thumbPath)) {
+        if (!$hasValidThumb) {
             $srcImage = $mimeType === 'image/jpeg' ? @imagecreatefromjpeg($fileRealPath) : @imagecreatefrompng($fileRealPath);
             if ($srcImage instanceof \GdImage) {
                 $origW = imagesx($srcImage);
@@ -139,18 +143,30 @@ try {
                     unset($thumbImage);
                 }
 
-                if ($mimeType === 'image/jpeg') {
-                    imagejpeg($srcImage, $thumbPath, 85);
-                } else {
-                    imagealphablending($srcImage, false);
-                    imagesavealpha($srcImage, true);
-                    imagepng($srcImage, $thumbPath, 8);
+                $tmpPath = $thumbPath . '.tmp.' . bin2hex(random_bytes(8));
+                try {
+                    if ($mimeType === 'image/jpeg') {
+                        $written = @imagejpeg($srcImage, $tmpPath, 85);
+                    } else {
+                        imagealphablending($srcImage, false);
+                        imagesavealpha($srcImage, true);
+                        $written = @imagepng($srcImage, $tmpPath, 8);
+                    }
+                    clearstatcache(true, $tmpPath);
+                    if ($written && is_file($tmpPath) && (int)@filesize($tmpPath) > 0) {
+                        @rename($tmpPath, $thumbPath);
+                    }
+                } finally {
+                    if (is_file($tmpPath)) {
+                        @unlink($tmpPath);
+                    }
+                    unset($srcImage);
                 }
-                unset($srcImage);
             }
         }
 
-        if (is_file($thumbPath) && is_readable($thumbPath)) {
+        clearstatcache(true, $thumbPath);
+        if (is_file($thumbPath) && is_readable($thumbPath) && (int)@filesize($thumbPath) > 0) {
             $servePath = $thumbPath;
         }
     }

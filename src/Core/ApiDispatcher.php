@@ -27,6 +27,7 @@ final class ApiDispatcher
             'reset_user_password' => \Netarium\Actions\Auth\ResetUserPasswordAction::class,
             'change_own_password' => \Netarium\Actions\Auth\ChangeOwnPasswordAction::class,
             'data_quality' => \Netarium\Actions\Quality\DataQualityAction::class,
+            'set_quality_not_applicable' => \Netarium\Actions\Quality\SetQualityNotApplicableAction::class,
             'export_devices_csv' => \Netarium\Actions\Csv\ExportDevicesCsvAction::class,
             'download_devices_csv_template' => \Netarium\Actions\Csv\DownloadDevicesCsvTemplateAction::class,
             'preview_devices_csv_import' => \Netarium\Actions\Csv\PreviewDevicesCsvImportAction::class,
@@ -37,6 +38,11 @@ final class ApiDispatcher
             'load' => \Netarium\Actions\Topology\LoadAction::class,
             'save' => \Netarium\Actions\Topology\SaveAction::class,
             'save_resources' => \Netarium\Actions\Topology\SaveResourcesAction::class,
+            'save_connections' => \Netarium\Actions\Topology\SaveConnectionsAction::class,
+            'copy_port_vlan' => \Netarium\Actions\Topology\CopyPortVlanAction::class,
+            'complete_legacy_link_vlan' => \Netarium\Actions\Topology\CompleteLegacyLinkVlanAction::class,
+            'resolve_legacy_link_conflict' => \Netarium\Actions\Topology\ResolveLegacyLinkConflictAction::class,
+            'building_hierarchy' => \Netarium\Actions\Topology\BuildingHierarchyAction::class,
             'list_link_systems' => \Netarium\Actions\Topology\ListLinkSystemsAction::class,
             'create_link_system' => \Netarium\Actions\Topology\CreateLinkSystemAction::class,
             'update_link_system' => \Netarium\Actions\Topology\UpdateLinkSystemAction::class,
@@ -78,8 +84,13 @@ final class ApiDispatcher
             'restore_user',
             'reset_user_password',
             'data_quality',
+            'set_quality_not_applicable',
             'save',
             'save_resources',
+            'save_connections',
+            'copy_port_vlan',
+            'complete_legacy_link_vlan',
+            'resolve_legacy_link_conflict',
             'create_link_system',
             'update_link_system',
             'delete_link_system',
@@ -107,6 +118,7 @@ final class ApiDispatcher
 
         $sharedOperationActions = [
             'data_quality',
+            'set_quality_not_applicable',
             'export_devices_csv',
             'download_devices_csv_template',
             'preview_devices_csv_import',
@@ -116,6 +128,11 @@ final class ApiDispatcher
             'load',
             'save',
             'save_resources',
+            'save_connections',
+            'copy_port_vlan',
+            'complete_legacy_link_vlan',
+            'resolve_legacy_link_conflict',
+            'building_hierarchy',
             'list_link_systems',
             'create_link_system',
             'update_link_system',
@@ -141,8 +158,13 @@ final class ApiDispatcher
             'restore_user' => 'restore_user',
             'reset_user_password' => 'reset_user_password',
             'change_own_password' => 'change_own_password',
+            'set_quality_not_applicable' => 'quality.set_not_applicable',
             'save' => 'topology.save',
             'save_resources' => 'topology.save_resources',
+            'save_connections' => 'topology.save_connections',
+            'copy_port_vlan' => 'topology.copy_port_vlan',
+            'complete_legacy_link_vlan' => 'topology.complete_legacy_link_vlan',
+            'resolve_legacy_link_conflict' => 'topology.resolve_legacy_link_conflict',
             'create_link_system' => 'link_system.create',
             'update_link_system' => 'link_system.update',
             'delete_link_system' => 'link_system.delete',
@@ -171,7 +193,7 @@ final class ApiDispatcher
 
         $operationGate = null;
         try {
-            requireApiAuthentication(!$imageUpload && ($_GET['action'] ?? '') === 'change_own_password');
+            requireApiSession();
 
             $requestMethod = strtoupper($_SERVER['REQUEST_METHOD'] ?? '');
 
@@ -193,12 +215,24 @@ final class ApiDispatcher
             }
 
             $action = $_GET['action'] ?? '';
+            // User refresh also opens SQLite. Reject competing operations before that access.
+            if (is_string($action) && isset($actionMap[$action])) {
+                if ($action === 'commit_backup_restore') {
+                    $operationGate = new OperationGate((string)$config['operation_lock_file']);
+                    $operationGate->acquireExclusive();
+                } elseif (in_array($action, $sharedOperationActions, true)) {
+                    $operationGate = new OperationGate((string)$config['operation_lock_file']);
+                    $operationGate->acquireShared();
+                }
+            }
+
+            requireApiAuthentication(!$imageUpload && $action === 'change_own_password');
 
             if (!isset($actionMap[$action])) {
                 throw new ApiException('不明なactionです', 404);
             }
 
-            if (in_array($action, $adminActions, true)) {
+            if (in_array($action, $adminActions, true) || ($action === 'building_hierarchy' && $requestMethod !== 'GET')) {
                 requireAdminApiRole();
             }
 
@@ -208,14 +242,9 @@ final class ApiDispatcher
 
             $db = Database::open($config['db_file']);
 
-            $operationGate = new OperationGate((string)$config['operation_lock_file']);
-
-            if ($action === 'commit_backup_restore') {
-                $operationGate->acquireExclusive();
-            } elseif (in_array($action, $sharedOperationActions, true)) {
-                $operationGate->acquireShared();
+            if ($action === 'building_hierarchy' && $requestMethod === 'POST') {
+                AuditLog::begin($config, 'building_hierarchy.mutate', currentUserId(), $db);
             }
-
             if (isset($auditedActionMap[$action])) {
                 AuditLog::begin(
                     $config,
@@ -231,16 +260,13 @@ final class ApiDispatcher
             $handler->handle($db, $config);
 
         } catch (ApiException $e) {
-            if ($operationGate instanceof OperationGate) {
-                $operationGate->release();
-            }
-
             if (isset($db) && $db instanceof PDO && $db->inTransaction()) {
                 $db->rollBack();
             }
             if (AuditLog::id() !== null && !AuditLog::isFinished()) {
                 AuditLog::finish('failure', [], $e->getHttpStatus(), $e->getHttpStatus() === 429 ? ['rate_limited'] : []);
             }
+            $operationGate?->release();
 
             $payload = [
                 'ok' => false,
@@ -256,10 +282,6 @@ final class ApiDispatcher
 
             Response::json($payload, $e->getHttpStatus());
         } catch (Throwable $e) {
-            if ($operationGate instanceof OperationGate) {
-                $operationGate->release();
-            }
-
             if (isset($db) && $db instanceof PDO && $db->inTransaction()) {
                 $db->rollBack();
             }
@@ -276,6 +298,8 @@ final class ApiDispatcher
             if (AuditLog::id() !== null && !AuditLog::isFinished()) {
                 AuditLog::finish('failure', [], $errorStatus);
             }
+            $operationGate?->release();
+
             $response = [
                 'ok' => false,
                 'error' => $isBusy

@@ -6,6 +6,7 @@ import { registerModalOpen, registerModalClose } from '../core/modal-focus.js';
 import { isCurrentUserAdmin, requireAdminUiAction } from '../ui/access-control.js';
 import { render } from '../canvas/renderer.js';
 import { updateLengthFeedback } from '../ui/length-feedback.js';
+import { runResourceMutation } from '../core/save-queue.js';
 
 let selected = null;
 let lastSelectedId = null;
@@ -142,7 +143,9 @@ function renderList() {
 function acceptSystems(data) {
     if (!Array.isArray(data.link_systems)) throw new Error('接続系統の応答が不完全です。更新してください');
     appState.linkSystems = data.link_systems;
-    if (Number.isSafeInteger(data.revision) && data.revision > 0) appState.dataRevision = data.revision;
+    if (Number.isSafeInteger(data.revision) && data.revision > Number(appState.dataRevision || 0)) {
+        appState.dataRevision = data.revision;
+    }
     eventBus.emit('link-systems:changed');
     render();
 }
@@ -209,10 +212,14 @@ async function mutate(action, deleting = false) {
     syncControls();
     renderList();
     try {
-        const data = await apiFetch(action, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        const data = await runResourceMutation(async () => {
+            if (appState.authExpired) throw new Error('セッションが切れました。再ログインしてください。');
+            const response = await apiFetch(action, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            acceptSystems(response);
+            return response;
         });
-        acceptSystems(data);
         const selectedId = selected?.id ?? data.created_id;
         selectSystem(deleting ? null : appState.linkSystems.find(row => Number(row.id) === Number(selectedId)) || null);
         setStatus('');

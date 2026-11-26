@@ -11,7 +11,7 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
         'templates/modals/placement_manager.php'
     ] });
     const ledgerOverlay = dom.add('div', 'ledger-overlay');
-    const { appState, normalizeDevice, normalizeView, normalizeLink } = await import('../public/js/core/state.js');
+    const { appState, getCurrentLinks, normalizeDevice, normalizeView, normalizeLink } = await import('../public/js/core/state.js');
     const panels = await import('../public/js/ui/property-panel.js');
     const manager = await import('../public/js/modals/placement-modal.js');
     const ledger = await import('../public/js/modals/ledger-modal.js');
@@ -22,20 +22,38 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
     let requests = [];
     let confirmations = [];
     globalThis.confirm = message => window.confirm(message);
-    globalThis.fetch = async (_url, options) => {
+    globalThis.fetch = async (url, options) => {
         const payload = JSON.parse(options.body);
         requests.push(payload);
+        if (url.includes('action=save_connections')) {
+            const devicePorts = [];
+            const links = payload.links.map(({ id, expected_revision, link }) => {
+                const { from_port_name, to_port_name, ...fields } = link;
+                for (const [side, name] of [['from', from_port_name], ['to', to_port_name]]) {
+                    if (name == null) continue;
+                    const deviceId = fields[`${side}_id`];
+                    const portId = 100 + deviceId;
+                    devicePorts.push({ id: portId, device_id: deviceId, name, memo: '', resource_revision: 1 });
+                    fields[`${side}_port_id`] = portId;
+                }
+                return { ...fields, id, resource_revision: expected_revision + 1 };
+            });
+            return new Response(JSON.stringify({
+                ok: true, revision: 2, id_maps: { links: {}, device_ports: {} },
+                links, device_ports: devicePorts, deleted_link_ids: [], deleted_device_port_ids: [],
+                removed_view_link_routes: [], views: []
+            }));
+        }
         return new Response(JSON.stringify({
             ok: true, revision: 2, id_maps: {
                 devices: Object.fromEntries(payload.devices.map(row => [row.id, row.id])),
                 views: Object.fromEntries(payload.views.map(row => [row.id, row.id])),
-                placements: Object.fromEntries(payload.views.flatMap(row => row.placements.map(item => [item.id, item.id]))),
-                links: Object.fromEntries(payload.views.flatMap(row => row.links.map(item => [item.id, item.id])))
+                placements: Object.fromEntries(payload.views.flatMap(row => row.placements.map(item => [item.id, item.id])))
             },
             devices: payload.devices.map(row => ({ ...row.device, resource_revision: 2 })),
             views: payload.views.map(row => ({ ...row.view, resource_revision: 2 })),
             placements: payload.views.flatMap(row => row.placements),
-            links: payload.views.flatMap(row => row.links), canvas_notes: [],
+            view_link_routes: payload.views.flatMap(row => row.view_link_routes), canvas_notes: [],
             deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: payload.views.map(row => row.id)
         }));
     };
@@ -69,8 +87,14 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
                 { id: 33, device_id: 1, view_id: 11, x: 0, y: 0 },
                 { id: 34, device_id: 3, view_id: 11, x: 200, y: 0 }
             ],
-            links: [normalizeLink({ id: 20, view_id: 10, from_id: 1, to_id: 2, label: '試験配線', from_port: 'P1', to_port: 'P2' }),
-                normalizeLink({ id: 21, view_id: 11, from_id: 1, to_id: 3 })],
+            links: [normalizeLink({ id: 20, from_id: 1, to_id: 2, label: '試験配線', from_port_id: 51, to_port_id: 52, resource_revision: 1 }),
+                normalizeLink({ id: 21, from_id: 1, to_id: 3, resource_revision: 1 })],
+            devicePorts: [{ id: 51, device_id: 1, name: 'P1', memo: '', resource_revision: 1 },
+                { id: 52, device_id: 2, name: 'P2', memo: '', resource_revision: 1 }],
+            viewLinkRoutes: [
+                { view_id: 10, device_a_id: 1, device_b_id: 2, manual_route: [{ x: 100, y: 50 }] },
+                { view_id: 11, device_a_id: 1, device_b_id: 3, manual_route: [{ x: 120, y: 60 }] }
+            ],
             currentViewId: 10, currentSvg: null, deviceLayer: null, floorPlanLayer: null,
             canvas: null, linkSystems: [], canvasNotes: [], floorPlans: [], deviceImages: [], rackMounts: [],
             selectedPlacementIds: new Set([30, 31, 32]),
@@ -84,7 +108,7 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
     }
     async function edit(kind) {
         if (kind === 'link') {
-            assert.equal(await panels.openLinkPanel(appState.links[0]), true);
+            assert.equal(await panels.openLinkPanel(getCurrentLinks().find(row => row.id === 20)), true);
             for (const [id, value] of [['lp-label', '入力中のラベル'], ['lp-from-port', '入力中P1'],
                 ['lp-to-port', '入力中P2'], ['lp-memo', '入力中の配線備考']]) {
                 dom.get(id).value = value;
@@ -127,7 +151,10 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
             await added.dispatch('change');
         }
     }
-    const stateSnapshot = () => structuredClone({ devices: appState.devices, placements: appState.placements, links: appState.links });
+    const stateSnapshot = () => structuredClone({
+        devices: appState.devices, placements: appState.placements, links: appState.links,
+        devicePorts: appState.devicePorts, viewLinkRoutes: appState.viewLinkRoutes
+    });
     const assertUnchanged = before => {
         assert.deepEqual(stateSnapshot(), before);
         assert.deepEqual(resource.buildResourceSave(), { devices: [], views: [] });
@@ -171,7 +198,7 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
     });
 
     for (const kind of ['link', 'device']) {
-        await t.test(`${kind}の適用保存が400なら配置と配線を削除しない`, async () => {
+        await t.test(`${kind}の適用保存が400なら配置解除せず経路を保持する`, async () => {
             reset(); await edit(kind); await prepareRemoval(1, 10, { addView: true });
             const before = stateSnapshot();
             const successFetch = globalThis.fetch;
@@ -186,12 +213,11 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
                 assert.equal(await applying, false);
                 assert.deepEqual(appState.placements, before.placements);
                 assert.deepEqual(appState.links.map(row => row.id), before.links.map(row => row.id));
+                assert.deepEqual(appState.viewLinkRoutes, before.viewLinkRoutes);
                 assert.equal(dom.get('placement-manager-overlay').hidden, false);
                 assert.ok(requests.length > 0);
-                for (const view of requests.flatMap(row => row.views).filter(row => row.id === 10)) {
-                    assert.ok(view.placements.some(row => row.device_id === 1));
-                    assert.ok(view.links.some(row => row.id === 20));
-                }
+                assert.equal(requests[0][kind === 'link' ? 'links' : 'devices'][0].operation, 'update');
+                assert.deepEqual(requests.flatMap(row => row.views ?? []), []);
             } finally {
                 globalThis.fetch = successFetch;
                 queue.clearPendingSave();
@@ -208,14 +234,22 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
             assert.deepEqual([...appState.selectedPlacementIds], [30, 31]);
             const saved = requests.at(-1).views.find(row => row.id === 10);
             assert.deepEqual(saved.placements.map(row => row.device_id), [1, 2]);
-            assert.equal(saved.links[0].memo, '', '未適用入力を配置解除の保存へ混ぜない');
+            assert.deepEqual(saved.view_link_routes, appState.viewLinkRoutes.filter(row => row.view_id === 10));
+            assert.equal(Object.hasOwn(saved, 'links'), false);
+            assert.deepEqual(requests.flatMap(row => row.links ?? []), [], '未適用入力で共通接続を保存しない');
+            assert.equal(appState.links.find(row => row.id === 20).memo, '');
             assert.deepEqual(requests.flatMap(row => row.devices), []);
             assert.equal(kind === 'link' ? panels.applyLinkPanel() : panels.applyPanel(), true);
             await queue.flushSaveQueue({ silent: true });
             if (kind === 'link') {
-                const link = requests.at(-1).views.find(row => row.id === 10).links[0];
-                assert.deepEqual([link.label, link.from_port, link.to_port, link.memo],
+                const request = requests.at(-1);
+                assert.equal(Object.hasOwn(request, 'views'), false);
+                const [{ operation, id, expected_revision, link }] = request.links;
+                assert.deepEqual([operation, id, expected_revision], ['update', 20, 1]);
+                assert.deepEqual([link.label, link.from_port_name, link.to_port_name, link.memo],
                     ['入力中のラベル', '入力中P1', '入力中P2', '入力中の配線備考']);
+                const displayed = getCurrentLinks().find(row => row.id === 20);
+                assert.deepEqual([displayed.from_port, displayed.to_port, displayed.resource_revision], ['入力中P1', '入力中P2', 2]);
             } else {
                 assert.equal(requests.at(-1).devices[0].device.memo, '入力中の機器備考');
             }
@@ -223,12 +257,15 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
 
         await t.test(`同じ機器の別ビュー配置だけを解除しても現在の${kind}入力を保持する`, async () => {
             reset(); await edit(kind); await prepareRemoval(1, 11);
+            const before = stateSnapshot();
             assert.equal(await manager.applyPlacementManager(), true);
             await queue.flushSaveQueue({ silent: true });
             assertDraft(kind);
             assert.equal(dom.get('unsaved-changes-overlay'), null);
-            assert.equal(appState.links.some(row => row.id === 20), true);
-            assert.equal(appState.links.some(row => row.id === 21), false);
+            assert.deepEqual(appState.links, before.links);
+            assert.deepEqual(appState.viewLinkRoutes, before.viewLinkRoutes);
+            assert.deepEqual(requests.at(-1).views[0].view_link_routes, before.viewLinkRoutes.filter(row => row.view_id === 11));
+            assert.deepEqual(getCurrentLinks().map(row => row.id), [20, 21]);
             assert.deepEqual([...appState.selectedPlacementIds], [30, 31, 32]);
         });
 
@@ -251,7 +288,7 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
                         await setImmediate();
                         assert.ok(dom.get('unsaved-changes-overlay'), '関連パネルを閉じる前に三択を開く');
                         assertDraft(kind); assertUnchanged(before);
-                        assert.match(confirmations[0], /削除される接続: 1件/);
+                        assert.match(confirmations[0], /共通接続と手動経路は保持/);
                         await dom.get(`unsaved-changes-${choice}`).dispatch('click');
                         assert.equal(await applying, choice !== 'cancel');
                         await queue.flushSaveQueue({ silent: true });
@@ -263,15 +300,20 @@ test('表示ビューの配置解除は関連する詳細入力だけを事前�
                         assert.equal(kind === 'link' ? appState.editingLinkId : appState.editingDeviceId, null);
                         assert.equal(appState.placements.some(row => row.device_id === deviceId && row.view_id === 10), false);
                         assert.equal(appState.placements.some(row => row.device_id === deviceId && row.view_id === 12), true);
-                        assert.equal(appState.links.some(row => row.id === 20), false);
-                        assert.equal(appState.links.some(row => row.id === 21), true, '別ビューの配線は保持');
+                        assert.deepEqual(appState.links.map(row => row.id), [20, 21]);
+                        assert.deepEqual(appState.viewLinkRoutes.toSorted((a, b) => a.view_id - b.view_id), before.viewLinkRoutes);
+                        assert.equal(getCurrentLinks().some(row => row.id === 20), false);
                         assert.deepEqual([...appState.selectedPlacementIds], [30, 31, 32].filter(id => id !== deviceId + 29));
-                        const savedView = requests.flatMap(row => row.views).filter(row => row.id === 10).at(-1);
-                        assert.deepEqual(savedView.links, []);
+                        const savedView = requests.flatMap(row => row.views ?? []).filter(row => row.id === 10).at(-1);
+                        assert.equal(Object.hasOwn(savedView, 'links'), false);
+                        assert.deepEqual(savedView.view_link_routes, before.viewLinkRoutes.filter(row => row.view_id === 10));
                         const savedDrafts = kind === 'link'
-                            ? requests.flatMap(row => row.views).flatMap(row => row.links).filter(row => row.id === 20)
-                            : requests.flatMap(row => row.devices).map(row => row.device).filter(row => row.id === 1);
+                            ? requests.flatMap(row => row.links ?? []).filter(row => row.id === 20).map(row => row.link)
+                            : requests.flatMap(row => row.devices ?? []).map(row => row.device).filter(row => row.id === 1);
                         assert.equal(savedDrafts.some(row => row.memo === (kind === 'link' ? '入力中の配線備考' : '入力中の機器備考')), choice === 'save');
+                        if (kind === 'link') {
+                            assert.equal(appState.links.find(row => row.id === 20).memo, choice === 'save' ? '入力中の配線備考' : '');
+                        }
                     } finally {
                         await dom.get('unsaved-changes-cancel')?.dispatch('click');
                         await applying;

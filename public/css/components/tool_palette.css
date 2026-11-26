@@ -88,6 +88,19 @@
     white-space: nowrap;
 }
 
+.palette-nav-legacy-badge {
+    align-self: stretch;
+    margin-inline: -4px;
+    padding: 1px 2px;
+    border-radius: var(--radius-xs);
+    background-color: var(--warning-soft);
+    color: var(--warning-text);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
 .palette-btn:hover:not(:disabled) {
     background-color: var(--primary-soft);
     color: var(--primary-hover);
@@ -440,6 +453,15 @@
     min-width: 0;
 }
 
+#placement-floor-filter:not([hidden]) {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: 44px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
 .placement-scope-toggle {
     display: flex;
     gap: 4px;
@@ -783,6 +805,80 @@ body.placement-mode #canvas {
     display: none !important;
 }
 
+.workspace-nav-legacy {
+    margin-block-end: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.workspace-nav-legacy summary {
+    min-block-size: 24px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.workspace-nav-legacy-guide {
+    margin: 0 0 var(--space-1);
+}
+
+.workspace-nav-legacy-vlans h3 {
+    margin-block: var(--space-2) var(--space-1);
+    font-size: inherit;
+}
+
+.workspace-nav-legacy-vlans li p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.workspace-nav-legacy ul {
+    margin: 0;
+    padding-inline-start: var(--space-4);
+}
+
+.workspace-nav-legacy li + li {
+    margin-block-start: var(--space-2);
+}
+
+.workspace-nav-legacy-detail-label {
+    color: var(--primary);
+    text-decoration: underline;
+}
+
+.workspace-nav-legacy-body {
+    margin-block: var(--space-1);
+    padding-inline-start: var(--space-2);
+    border-inline-start: 1px solid var(--border-light);
+    white-space: pre-wrap;
+}
+
+.workspace-nav-legacy-body p {
+    margin: 0 0 var(--space-1);
+}
+
+.workspace-nav-legacy-coordinates {
+    display: block;
+}
+
+.workspace-nav-legacy-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    margin-block: var(--space-1);
+}
+
+.workspace-nav-legacy-actions > button {
+    min-block-size: 24px;
+}
+
+.workspace-nav-legacy button[aria-disabled="true"] {
+    opacity: .6;
+    cursor: not-allowed;
+}
+
 .workspace-nav-tools {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -912,6 +1008,39 @@ body.placement-mode #canvas {
 #wiring-controls {
     width: var(--palette-panel-width);
     padding: var(--space-2) var(--space-3);
+    overflow-y: auto;
+}
+
+.wiring-target-section {
+    display: grid;
+    flex-shrink: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+    margin: var(--space-2) 0;
+    overflow-wrap: anywhere;
+}
+
+#wiring-target-query,
+#wiring-target-device {
+    margin: 0;
+}
+
+#wiring-target-ports:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+}
+
+#wiring-target-ports input {
+    inline-size: 100%;
+    min-inline-size: 0;
+}
+
+#wiring-existing > summary {
+    cursor: pointer;
+    min-block-size: 24px;
+    color: var(--text-muted);
+    font-size: 13px;
 }
 
 #wiring-controls .wiring-header {
@@ -959,9 +1088,8 @@ body.placement-mode #canvas {
 
 .wiring-source-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: var(--space-2);
-    min-height: 2.6em;
 }
 
 .wiring-source-icon {
@@ -1030,9 +1158,10 @@ body.placement-mode #canvas {
 }
 
 #wiring-reselect-source {
-    align-self: flex-start;
-    max-width: 100%;
-    margin-top: var(--space-2);
+    flex-shrink: 0;
+    min-block-size: 24px;
+    padding-inline: var(--space-2);
+    font-size: 12px;
 }
 
 @media (max-width: 360px) {
@@ -1044,7 +1173,7 @@ body.placement-mode #canvas {
         display: none;
     }
 
-    .wiring-controls-content p {
+    .wiring-controls-content p:not(:empty) {
         min-height: 2.8em;
     }
 }

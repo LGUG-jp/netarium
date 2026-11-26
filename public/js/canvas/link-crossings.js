@@ -1,6 +1,7 @@
 import {
     buildSvgPathData,
-    calculateLinkLabelPosition
+    calculateLinkLabelPosition,
+    compareTopologyLinkKeys
 } from './link-router.js';
 
 const EPSILON = 0.000001;
@@ -11,7 +12,7 @@ const LARGE_MAP_CANDIDATES = 8;
 const LARGE_MAP_INDEX_VISITS = 32;
 const LARGE_MAP_SPANS = 64;
 
-function measureRoute(id, route) {
+function measureRoute(key, order, route) {
     if (!Array.isArray(route) || route.length < 2) return null;
     const points = route.map(point => ({ x: Number(point?.x), y: Number(point?.y) }));
     if (points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
@@ -23,13 +24,13 @@ function measureRoute(id, route) {
         const size = Math.hypot(b.x - a.x, b.y - a.y);
         if (size < EPSILON) continue;
         segments.push({
-            id, a, b, length: size, offset: length, index: segments.length,
+            key, order, a, b, length: size, offset: length, index: segments.length,
             minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x),
             minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y)
         });
         length += size;
     }
-    return { id, points, segments, length, crossingSpans: [] };
+    return { key, points, segments, length, crossingSpans: [] };
 }
 
 // 平衡な境界ボックス木で、長い斜線を細かなセルへ展開せずに探索する。
@@ -37,10 +38,10 @@ function buildIndex(segments) {
     if (!segments.length) return null;
     const node = {
         minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity,
-        minId: Infinity
+        minOrder: Infinity
     };
     for (const segment of segments) {
-        node.minId = Math.min(node.minId, segment.id);
+        node.minOrder = Math.min(node.minOrder, segment.order);
         node.minX = Math.min(node.minX, segment.minX);
         node.minY = Math.min(node.minY, segment.minY);
         node.maxX = Math.max(node.maxX, segment.maxX);
@@ -52,10 +53,10 @@ function buildIndex(segments) {
     }
     if (node.maxX - node.minX >= node.maxY - node.minY) {
         segments.sort((a, b) => (a.minX + a.maxX) - (b.minX + b.maxX) ||
-            a.id - b.id || a.offset - b.offset);
+            a.order - b.order || a.offset - b.offset);
     } else {
         segments.sort((a, b) => (a.minY + a.maxY) - (b.minY + b.maxY) ||
-            a.id - b.id || a.offset - b.offset);
+            a.order - b.order || a.offset - b.offset);
     }
     const middle = Math.floor(segments.length / 2);
     node.left = buildIndex(segments.slice(0, middle));
@@ -70,11 +71,11 @@ function overlaps(a, b) {
 
 function visitCandidates(node, segment, budget, visit) {
     if (!node || budget.candidates <= 0 || budget.nodes <= 0 ||
-        node.minId >= segment.id || !overlaps(node, segment)) return;
+        node.minOrder >= segment.order || !overlaps(node, segment)) return;
     budget.nodes--;
     if (node.segments) {
         for (const other of node.segments) {
-            if (other.id >= segment.id || !overlaps(segment, other)) continue;
+            if (other.order >= segment.order || !overlaps(segment, other)) continue;
             visit(other);
             if (--budget.candidates <= 0) break;
         }
@@ -245,7 +246,7 @@ function collectCrossingSpans(routes) {
                 if (large && route.crossingSpans.length >= LARGE_MAP_SPANS) return;
                 const hit = crossing(segment, other);
                 if (!hit) return;
-                const otherRoute = routes.get(other.id);
+                const otherRoute = routes.get(other.key);
                 // 経路端点で別の経路に接する場合は、交差ではなく接続とみなす。
                 if (hit.otherDistance <= EPSILON ||
                     hit.otherDistance >= otherRoute.length - EPSILON) return;
@@ -265,23 +266,21 @@ function collectCrossingSpans(routes) {
 }
 
 /**
- * 表示用の幾何形状。低ID側は元の線、高ID側はbridgeなら山、gapなら切れ目で交差する。
+ * 表示用の幾何形状。描画キー順の後方をbridgeなら山、gapなら切れ目で交差させる。
  * 元の経路とクリック判定用の完全経路は変更しない。
  * 500経路超では区間あたり候補8件・一致する検索ノード32件までとし、
  * 経路あたりの交差候補を64件に制限する。
  */
 export function createLinkDisplayMap(routeMap, mode = 'bridge') {
     const routes = new Map();
-    for (const [id, route] of [...routeMap].sort((a, b) => Number(a[0]) - Number(b[0]))) {
-        const numericId = Number(id);
-        if (!Number.isFinite(numericId)) continue;
-        const measured = measureRoute(numericId, route);
-        if (measured) routes.set(numericId, measured);
+    for (const [key, route] of [...routeMap].sort((a, b) => compareTopologyLinkKeys(a[0], b[0]))) {
+        const measured = measureRoute(key, routes.size, route);
+        if (measured) routes.set(key, measured);
     }
     collectCrossingSpans(routes);
     const displayMap = new Map();
     for (const route of routes.values()) {
-        displayMap.set(route.id, {
+        displayMap.set(route.key, {
             pathData: visiblePath(route, mode),
             labelPosition: labelPosition(route)
         });

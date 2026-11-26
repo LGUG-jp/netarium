@@ -25,7 +25,7 @@ if (typeof window !== 'undefined') {
 }
 
 // 保守拒否は元PHP入口の直接応答だけを信頼する。静的契約の直接GETは対象外。
-function isMaintenanceRejection(res, data, url) {
+export function isMaintenanceRejection(res, data, url) {
     if (res.status !== 404 || res.redirected !== false ||
         !/^application\/json(?:\s*;|$)/i.test(res.headers.get('Content-Type') || '') ||
         !data || typeof data !== 'object' || Array.isArray(data)) return false;
@@ -40,6 +40,14 @@ function isMaintenanceRejection(res, data, url) {
     } catch (_) {
         return false;
     }
+}
+
+function authExpiredError(data) {
+    handleAuthExpired();
+    const error = new Error('ログインの有効期限が切れました');
+    error.status = 401;
+    if (data) error.data = data;
+    return error;
 }
 
 /**
@@ -73,6 +81,7 @@ export async function apiFetch(action, options = {}) {
         body: options.body,
         credentials: 'same-origin'
     });
+    if (res.status === 401) throw authExpiredError();
 
     let text;
     try {
@@ -121,13 +130,7 @@ export async function apiFetch(action, options = {}) {
         throw new Error('APIの応答形式が不正です。保存状態を確認してください');
     }
 
-    if (res.status === 401 || data.login_required === true) {
-        handleAuthExpired();
-        const error = new Error('ログインの有効期限が切れました');
-        error.status = 401;
-        error.data = data;
-        throw error;
-    }
+    if (data.login_required === true) throw authExpiredError(data);
 
     if (!res.ok || data.ok === false) {
         const error = new Error(

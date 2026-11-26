@@ -37,6 +37,7 @@ function getArg(name, defaultValue) {
 }
 
 const targetCommit = getArg('--commit', 'HEAD');
+const publicValidation = args.includes('--public-validation');
 const outDir = path.resolve(getArg('--out-dir', path.join(REPO_ROOT, '../tmp/netarium-public-candidate')));
 const manifestDir = path.resolve(getArg('--manifest-dir', path.join(REPO_ROOT, 'docs/release-candidate')));
 if (manifestDir === outDir || manifestDir.startsWith(outDir + path.sep)) {
@@ -138,20 +139,23 @@ try {
 }
 console.log(`Source Commit SHA: ${sourceSha}`);
 
-// 公開候補の履歴に属する識別子はPrivate情報。外部upstreamのSHAはこの集合に含めない。
-let privateAncestry;
-try {
-    const options = { cwd: REPO_ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 };
-    if (execFileSync('git', ['rev-parse', '--is-shallow-repository'], options).trim() !== 'false') {
-        throw new Error('履歴が不完全です');
+// Public CI の履歴は既に公開済みであり、Private SHA の根拠にしない。
+// Private からの抽出では引き続き完全な祖先一覧を要求する。
+let privateAncestry = null;
+if (!publicValidation) {
+    try {
+        const options = { cwd: REPO_ROOT, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 };
+        if (execFileSync('git', ['rev-parse', '--is-shallow-repository'], options).trim() !== 'false') {
+            throw new Error('履歴が不完全です');
+        }
+        const hashes = execFileSync('git', ['rev-list', sourceSha], options).trim().split(/\r?\n/);
+        if (!hashes.length || hashes.some(hash => !/^[a-f0-9]{40}$/.test(hash))) throw new Error('履歴が不正です');
+        privateAncestry = new Set(hashes);
+        if (!privateAncestry.has(sourceSha)) throw new Error('元commitが履歴にありません');
+    } catch {
+        console.error('[ERROR] Private祖先commitの完全な一覧を取得できませんでした');
+        process.exit(1);
     }
-    const hashes = execFileSync('git', ['rev-list', sourceSha], options).trim().split(/\r?\n/);
-    if (!hashes.length || hashes.some(hash => !/^[a-f0-9]{40}$/.test(hash))) throw new Error('履歴が不正です');
-    privateAncestry = new Set(hashes);
-    if (!privateAncestry.has(sourceSha)) throw new Error('元commitが履歴にありません');
-} catch {
-    console.error('[ERROR] Private祖先commitの完全な一覧を取得できませんでした');
-    process.exit(1);
 }
 
 // -------------------------------------------------------------
@@ -395,9 +399,15 @@ function removeDocSections(content, shouldRemove) {
 // URL・コード・明示アンカーは本文置換から分離する。色コードもIssue番号と区別する。
 const privateNumber = /(?<![\w&])(?:(?:Issue|PR|Pull Request)\s*)?#\d+(?![\da-fA-F])\b/g;
 const commitToken = /\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]+\b/gi;
-function externalCommitIds(content) {
-    return new Set([...content.matchAll(/https:\/\/github\.com(?::\d+)?\/(?!LGUG-jp\/netarium(?:-dev)?(?:\/|$))[^/\s)]+\/[^/\s)]+\/commit\/([0-9a-f]{40})\b/gi)]
+function externalCommitIds(content, relPath) {
+    const ids = new Set([...content.matchAll(/https:\/\/github\.com(?::\d+)?\/(?!LGUG-jp\/netarium(?:-dev)?(?:\/|$))[^/\s)]+\/[^/\s)]+\/commit\/([0-9a-f]{40})\b/gi)]
         .map(match => match[1].toLowerCase()));
+    if (relPath === 'tests/README.md') {
+        // 公開配布正本 LGUG-jp/netarium の実資材試験に使う peeled tag SHA だけを保持する。
+        ids.add('6802576c3e54ffc82aae6f2b88a0c81ba72e120e'); // v1.2.0
+        ids.add('c7638baa9abf384d628579790ffdca1c969db361'); // v1.5.2
+    }
+    return ids;
 }
 const removedDocAnchors = new Map();
 function publicProse(text) {
@@ -532,7 +542,7 @@ function transformDocContent(content, relPath) {
     c = c.split(/(`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`|\]\([^)]+\)|<[^>\n]+>)/g)
         .map((part, index) => index % 2 ? part : publicProse(part)).join('');
     c = summarizePublicDoc(c, relPath);
-    const externalIds = externalCommitIds(c);
+    const externalIds = externalCommitIds(c, relPath);
     c = c.replace(commitToken, token => externalIds.has(token.toLowerCase()) ? token : '対象変更');
     const retainedAnchors = documentAnchors(c);
     removedDocAnchors.set(relPath, new Set([...documentAnchors(content)].filter(anchor => !retainedAnchors.has(anchor))));
@@ -579,7 +589,7 @@ function documentAnchors(content) {
 const anchorIndex = new Map([...markdownDocs].map(([rel, content]) => [rel, documentAnchors(content)]));
 
 for (const [rel, content] of markdownDocs) {
-    const externalIds = externalCommitIds(content);
+    const externalIds = externalCommitIds(content, rel);
     const prose = content.replace(/\]\([^)]+\)/g, '').replace(/<[^>\n]+>/g, '');
     privateNumber.lastIndex = 0;
     if (privateNumber.test(prose)) privateReferences.push(`${rel}: Private Issue/PR番号`);
@@ -692,7 +702,7 @@ for (const rel of publicFiles) {
         secretViolations++;
     }
     if (content.toLowerCase().includes(sourceSha)
-        || [...content.matchAll(/(?<![a-f0-9])[a-f0-9]{40}(?![a-f0-9])/gi)].some(match => privateAncestry.has(match[0].toLowerCase()))
+        || (privateAncestry && [...content.matchAll(/(?<![a-f0-9])[a-f0-9]{40}(?![a-f0-9])/gi)].some(match => privateAncestry.has(match[0].toLowerCase())))
         || /github\.com(?::\d+)?\/LGUG-jp\/netarium-dev\/(?:issues|pull|commit)\//i.test(content)) {
         console.error(`[FAIL] Private参照が検出されました: ${rel} (fail-closed 中断)`);
         secretViolations++;

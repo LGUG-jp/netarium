@@ -82,13 +82,15 @@ function Get-LifecycleSite {
 }
 
 function Get-LifecycleInventory {
-    param([string]$Root)
+    param([string]$Root, [string]$ExcludeFile)
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return @() }
     $entries = @(
         Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction Stop | ForEach-Object {
             $item = $_
+            $relative = $item.FullName.Substring($Root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+            if (-not $item.PSIsContainer -and $relative -ceq $ExcludeFile) { return }
             [pscustomobject]@{
-                RelativePath = $item.FullName.Substring($Root.TrimEnd('\', '/').Length + 1).Replace('\', '/')
+                RelativePath = $relative
                 IsDirectory = [bool]$item.PSIsContainer
                 Length = if ($item.PSIsContainer) { $null } else { [int64]$item.Length }
                 Sha256 = if ($item.PSIsContainer) { $null } else {
@@ -101,16 +103,23 @@ function Get-LifecycleInventory {
 }
 
 function Test-LifecycleSecurityState {
-    param([string]$Path, [object]$PriorState = $null)
+    # Keep the optional reasons in sync with AuditLog::SECURITY_EVENTS.
+    param([string]$Path, [object]$PriorState = $null, [string[]]$AdditionalKeys = @())
     try {
         $file = Get-Item -LiteralPath $Path -ErrorAction Stop
         if ($file.Length -gt 4096) { return $false }
-        $state = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-        $keys = @('authentication_required', 'password_change_required', 'insufficient_role', 'invalid_csrf', 'logout')
-        if (@($state.PSObject.Properties).Count -ne $keys.Count) { return $false }
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
+        if (-not $raw -or -not $raw.TrimStart().StartsWith('{')) { return $false }
+        $state = $raw | ConvertFrom-Json -ErrorAction Stop
+        $requiredKeys = @('authentication_required', 'password_change_required', 'insufficient_role', 'invalid_csrf', 'logout')
+        $allowedKeys = $requiredKeys + $AdditionalKeys
+        $keys = @($state.PSObject.Properties.Name)
+        foreach ($key in $requiredKeys) {
+            if ($keys -cnotcontains $key) { return $false }
+        }
         $window = [math]::Floor(([DateTime]::UtcNow - [DateTime]'1970-01-01').TotalSeconds / 60)
         foreach ($key in $keys) {
-            if ($state.PSObject.Properties.Name -cnotcontains $key) { return $false }
+            if ($allowedKeys -cnotcontains $key) { return $false }
             $value = $state.$key
             if (@($value.PSObject.Properties).Count -ne 2 -or
                 $value.PSObject.Properties.Name -cnotcontains 'window' -or
@@ -119,7 +128,11 @@ function Test-LifecycleSecurityState {
                 ($value.count -isnot [long] -and $value.count -isnot [int]) -or
                 $value.window -lt 0 -or $value.window -gt $window -or
                 $value.count -lt 0 -or $value.count -gt 11) { return $false }
-            if ($null -ne $PriorState) {
+        }
+        if ($null -ne $PriorState) {
+            foreach ($key in @($PriorState.PSObject.Properties.Name)) {
+                if ($keys -cnotcontains $key) { return $false }
+                $value = $state.$key
                 $prior = $PriorState.$key
                 if ($value.window -lt $prior.window -or
                     ($value.window -eq $prior.window -and $value.count -lt $prior.count) -or
@@ -430,7 +443,7 @@ function Get-LifecycleSnapshot {
         }
     }
     $config = @(Get-LifecycleInventory -Root (Join-Path $root 'config'))
-    $data = @(Get-LifecycleInventory -Root (Join-Path $root 'data'))
+    $data = @(Get-LifecycleInventory -Root (Join-Path $root 'data') -ExcludeFile 'logs/audit/.security-window.tmp')
     $dbItems = @($data | Where-Object { $_.RelativePath -like 'db/*' } | ForEach-Object {
         [pscustomobject]@{
             RelativePath = $_.RelativePath.Substring(3)

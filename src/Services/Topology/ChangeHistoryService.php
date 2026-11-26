@@ -76,6 +76,7 @@ final class ChangeHistoryService
         'additional_ips' => '追加IPv4',
         'facility' => '施設',
         'floor' => 'フロア',
+        'floor_id' => '設置フロアID',
         'location' => '設置場所',
         'manufacturer' => 'メーカー',
         'model' => '型番',
@@ -95,7 +96,9 @@ final class ChangeHistoryService
         'view_type' => '種別',
         'facility' => '施設',
         'floor' => 'フロア',
+        'floor_id' => '所属フロアID',
         'sort_order' => '表示順',
+        'show_connections' => '接続表示',
         'memo' => '備考',
     ];
 
@@ -157,13 +160,22 @@ final class ChangeHistoryService
             $linkSystems[(int)$row['id']] = (string)$row['name'];
         }
 
+        // 名称は各スナップショットに固定し、所属の比較には引き続き生の floor_id を使う。
+        $floorLabels = [];
+        foreach ($this->db->query(
+            'SELECT f.id, f.name AS floor_name, b.name AS building_name
+             FROM floors f JOIN buildings b ON b.id = f.building_id'
+        )->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $floorLabels[(int)$row['id']] = $row['id'] . '（' . $row['building_name'] . ' / ' . $row['floor_name'] . '）';
+        }
+
         $devices = [];
         if ($deviceIds !== []) {
             $where = $deviceIds === null
                 ? ''
                 : ' WHERE id IN (' . implode(',', array_map('intval', $deviceIds)) . ')';
             $rawDevices = $this->db->query(
-                'SELECT id, name, type, ip, facility, floor, location, manufacturer, model,
+                'SELECT id, name, type, ip, facility, floor, floor_id, location, manufacturer, model,
                         asset_number, serial_number, mac_address, department, maintenance_vendor,
                         install_date, maintenance_expiry, management_scheme, management_port, memo
                  FROM devices' . $where . ' ORDER BY id'
@@ -188,6 +200,8 @@ final class ChangeHistoryService
                     'additional_ips' => $additional,
                     'facility' => (string)$row['facility'],
                     'floor' => (string)$row['floor'],
+                    'floor_id' => $row['floor_id'],
+                    'floor_label' => $floorLabels[(int)$row['floor_id']] ?? null,
                     'location' => (string)$row['location'],
                     'manufacturer' => (string)$row['manufacturer'],
                     'model' => (string)$row['model'],
@@ -205,10 +219,31 @@ final class ChangeHistoryService
                 ];
             }
         }
+        if ($devices !== []) {
+            $deviceList = implode(',', array_keys($devices));
+            $portWhere = $deviceIds === null ? '' : " WHERE device_id IN ({$deviceList})";
+            foreach ($this->db->query('SELECT id, device_id, name, memo, vlan FROM device_ports' . $portWhere . ' ORDER BY id', PDO::FETCH_ASSOC) as $row) {
+                $devices[$row['device_id']]['ports'][$row['id']] = $row;
+            }
+            $linkWhere = $deviceIds === null ? '' : " WHERE l.from_id IN ({$deviceList}) OR l.to_id IN ({$deviceList})";
+            foreach ($this->db->query(
+                "SELECT l.id, l.from_id, l.to_id, l.from_port_id, l.to_port_id, l.system_id, l.label, l.memo,
+                        COALESCE(p1.name, '') AS from_port, COALESCE(p2.name, '') AS to_port
+                 FROM links l LEFT JOIN device_ports p1 ON l.from_port_id = p1.id
+                 LEFT JOIN device_ports p2 ON l.to_port_id = p2.id" . $linkWhere . ' ORDER BY l.id',
+                PDO::FETCH_ASSOC
+            ) as $row) {
+                foreach ([$row['from_id'], $row['to_id']] as $endpoint) {
+                    if (isset($devices[$endpoint])) {
+                        $devices[$endpoint]['links'][$row['id']] = $row;
+                    }
+                }
+            }
+        }
 
         $views = [];
         $placementsByView = [];
-        $linksByView = [];
+        $routesByView = [];
         $rackSettings = [];
         $rackMounts = [];
         $rackShelves = [];
@@ -220,7 +255,7 @@ final class ChangeHistoryService
                 ? ''
                 : ' WHERE id IN (' . implode(',', array_map('intval', $viewIds)) . ')';
             foreach ($this->db->query(
-                'SELECT id, name, facility, floor, view_type, sort_order, memo FROM views' . $viewWhere . ' ORDER BY id'
+                'SELECT id, name, facility, floor, floor_id, view_type, sort_order, memo, show_connections FROM views' . $viewWhere . ' ORDER BY id'
             )->fetchAll(PDO::FETCH_ASSOC) as $row) {
                 $id = (int)$row['id'];
                 $views[$id] = [
@@ -228,8 +263,11 @@ final class ChangeHistoryService
                     'name' => (string)$row['name'],
                     'facility' => (string)$row['facility'],
                     'floor' => (string)$row['floor'],
+                    'floor_id' => $row['floor_id'],
+                    'floor_label' => $floorLabels[(int)$row['floor_id']] ?? null,
                     'view_type' => (string)$row['view_type'],
                     'sort_order' => (int)$row['sort_order'],
+                    'show_connections' => (int)$row['show_connections'],
                     'memo' => (string)$row['memo'],
                 ];
             }
@@ -252,23 +290,15 @@ final class ChangeHistoryService
             }
 
             foreach ($this->db->query(
-                'SELECT id, view_id, from_id, to_id, system_id, label, from_port, to_port, vlan, memo, route_mode, manual_route
-                 FROM links' . $subViewWhere . ' ORDER BY view_id, id'
-            )->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $vId = (int)$row['view_id'];
-                $manualRoute = json_decode((string)$row['manual_route'], true);
-                $linksByView[$vId][(int)$row['id']] = [
-                    'id' => (int)$row['id'],
-                    'from_id' => (int)$row['from_id'],
-                    'to_id' => (int)$row['to_id'],
-                    'system_id' => $row['system_id'] !== null ? (int)$row['system_id'] : null,
-                    'label' => (string)$row['label'],
-                    'from_port' => (string)$row['from_port'],
-                    'to_port' => (string)$row['to_port'],
-                    'vlan' => (string)$row['vlan'],
-                    'memo' => (string)$row['memo'],
-                    'route_mode' => (string)$row['route_mode'],
-                    'manual_route' => is_array($manualRoute) ? $manualRoute : [],
+                'SELECT view_id, device_a_id, device_b_id, manual_route FROM view_link_routes'
+                . $subViewWhere . ' ORDER BY view_id, device_a_id, device_b_id',
+                PDO::FETCH_ASSOC
+            ) as $row) {
+                $a = (int)$row['device_a_id'];
+                $b = (int)$row['device_b_id'];
+                $routesByView[(int)$row['view_id']]["{$a}:{$b}"] = [
+                    'device_a_id' => $a, 'device_b_id' => $b,
+                    'manual_route' => json_decode($row['manual_route'], true, 512, JSON_THROW_ON_ERROR),
                 ];
             }
 
@@ -325,7 +355,7 @@ final class ChangeHistoryService
             'devices' => $devices,
             'views' => $views,
             'placements_by_view' => $placementsByView,
-            'links_by_view' => $linksByView,
+            'routes_by_view' => $routesByView,
             'rack_settings' => $rackSettings,
             'rack_mounts' => $rackMounts,
             'rack_shelves' => $rackShelves,
@@ -955,7 +985,7 @@ final class ChangeHistoryService
         foreach ($candidateDeviceIds as $deviceId) {
             $bDev = $before['devices'][$deviceId] ?? null;
             $aDev = $after['devices'][$deviceId] ?? null;
-            $entry = $this->buildDeviceEntry($deviceId, $bDev, $aDev, $before, $viewMeta, $source);
+            $entry = $this->buildDeviceEntry($deviceId, $bDev, $aDev, $before, $viewMeta, $deviceNames, $linkSystems, $source);
             if ($entry !== null) {
                 $entries[] = $entry;
             }
@@ -979,7 +1009,6 @@ final class ChangeHistoryService
                 $afterResidency,
                 $deviceNames,
                 $viewMeta,
-                $linkSystems,
                 $deletedDeviceIds,
                 $deletedViewIds,
                 $source
@@ -998,9 +1027,15 @@ final class ChangeHistoryService
         ?array $aDev,
         array $before,
         array $viewMeta,
+        array $deviceNames,
+        array $linkSystems,
         string $source
     ): ?array {
         $csvPrefix = $source === 'csv_import' ? 'CSV取込で' : '';
+        $connectionItems = $this->diffDeviceConnections($bDev, $aDev, $deviceNames, $linkSystems);
+        [$portItems, $omittedPorts] = $this->boundSubcollectionItems($connectionItems['ports'], 'ポート');
+        [$linkItems, $omittedLinks] = $this->boundSubcollectionItems($connectionItems['links'], '共通接続');
+        $omittedConnections = $omittedPorts + $omittedLinks;
 
         if ($bDev === null && $aDev !== null) {
             $items = [];
@@ -1012,12 +1047,12 @@ final class ChangeHistoryService
                 $items[] = [
                     'label' => $label,
                     'before' => '—',
-                    'after' => $this->formatDeviceFieldValue($field, $raw),
+                    'after' => $this->formatDeviceFieldValue($field, $raw, $aDev['floor_label']),
                 ];
             }
             $typeLabel = self::DEVICE_TYPE_LABELS[$aDev['type']] ?? $aDev['type'];
             $summary = $csvPrefix . '機器を作成（' . $typeLabel . ($aDev['ip'] !== '' ? ' / ' . $aDev['ip'] : '') . '）';
-            return $this->finalizeEntry('device', $deviceId, $aDev['name'], 'create', $summary, $items, $source);
+            return $this->finalizeEntry('device', $deviceId, $aDev['name'], 'create', $summary, [...$items, ...$portItems, ...$linkItems], $source, '', $omittedConnections);
         }
 
         if ($bDev !== null && $aDev === null) {
@@ -1029,7 +1064,7 @@ final class ChangeHistoryService
                 }
                 $items[] = [
                     'label' => $label,
-                    'before' => $this->formatDeviceFieldValue($field, $raw),
+                    'before' => $this->formatDeviceFieldValue($field, $raw, $bDev['floor_label']),
                     'after' => '—（削除）',
                 ];
             }
@@ -1044,7 +1079,7 @@ final class ChangeHistoryService
             $typeLabel = self::DEVICE_TYPE_LABELS[$bDev['type']] ?? $bDev['type'];
             $impactNote = $cascadeImpacts['view_count'] > 0 ? " / 関連{$cascadeImpacts['view_count']}ビューから除去" : '';
             $summary = "機器を削除（{$typeLabel}" . ($bDev['ip'] !== '' ? ' / ' . $bDev['ip'] : '') . "{$impactNote}）";
-            return $this->finalizeEntry('device', $deviceId, $bDev['name'], 'delete', $summary, $items, $source);
+            return $this->finalizeEntry('device', $deviceId, $bDev['name'], 'delete', $summary, [...$items, ...$portItems, ...$linkItems], $source, '', $omittedConnections);
         }
 
         if ($bDev === null || $aDev === null) {
@@ -1056,8 +1091,8 @@ final class ChangeHistoryService
             if ($bDev[$field] === $aDev[$field]) {
                 continue;
             }
-            $beforeFormatted = $this->formatDeviceFieldValue($field, $bDev[$field]);
-            $afterFormatted = $this->formatDeviceFieldValue($field, $aDev[$field]);
+            $beforeFormatted = $this->formatDeviceFieldValue($field, $bDev[$field], $bDev['floor_label']);
+            $afterFormatted = $this->formatDeviceFieldValue($field, $aDev[$field], $aDev['floor_label']);
             if ($beforeFormatted === $afterFormatted) {
                 $afterFormatted .= '（全文更新）';
             }
@@ -1068,16 +1103,50 @@ final class ChangeHistoryService
             ];
         }
 
-        if ($changedItems === []) {
+        $labels = array_column($changedItems, 'label');
+        if ($portItems !== []) { $labels[] = 'ポート'; }
+        if ($linkItems !== []) { $labels[] = '共通接続'; }
+        if ($labels === []) {
             return null;
         }
-
-        $labels = array_column($changedItems, 'label');
         $head = implode('・', array_slice($labels, 0, 3));
         $rest = count($labels) > 3 ? ' ほか' . (count($labels) - 3) . '項目' : '';
         $summary = $csvPrefix . $head . $rest . 'を変更';
 
-        return $this->finalizeEntry('device', $deviceId, $aDev['name'], 'update', $summary, $changedItems, $source);
+        return $this->finalizeEntry('device', $deviceId, $aDev['name'], 'update', $summary, [...$changedItems, ...$portItems, ...$linkItems], $source, '', $omittedConnections);
+    }
+
+    private function diffDeviceConnections(?array $before, ?array $after, array $deviceNames, array $linkSystems): array
+    {
+        $diff = ['ports' => [], 'links' => []];
+        foreach ($diff as $kind => $_) {
+            $beforeRows = $before[$kind] ?? [];
+            $afterRows = $after[$kind] ?? [];
+            foreach ($beforeRows + $afterRows as $id => $row) {
+                $b = $beforeRows[$id] ?? null;
+                $a = $afterRows[$id] ?? null;
+                if ($b === $a) {
+                    continue;
+                }
+                $label = $kind === 'ports'
+                    ? "ポート: {$row['name']} (ID: {$id})"
+                    : "共通接続: " . $this->formatDevicePair($row['from_id'], $row['to_id'], $deviceNames) . " (ID: {$id})";
+                $beforeState = 'なし';
+                $afterState = 'なし';
+                if ($kind === 'ports') {
+                    if ($b !== null) { $beforeState = $this->formatPortState($b); }
+                    if ($a !== null) { $afterState = $this->formatPortState($a); }
+                } else {
+                    if ($b !== null) { $beforeState = $this->formatLinkState($b, $deviceNames, $linkSystems); }
+                    if ($a !== null) { $afterState = $this->formatLinkState($a, $deviceNames, $linkSystems); }
+                }
+                if (self::truncateText($beforeState, self::MAX_VALUE_CHARS) === self::truncateText($afterState, self::MAX_VALUE_CHARS)) {
+                    $afterState = self::truncateText($afterState, self::MAX_VALUE_CHARS - 10) . '（内容更新）';
+                }
+                $diff[$kind][] = ['label' => $label, 'before' => $beforeState, 'after' => $afterState];
+            }
+        }
+        return $diff;
     }
 
     private function describeDeletedDeviceViewImpacts(int $deviceId, array $before, array $viewMeta): array
@@ -1088,10 +1157,10 @@ final class ChangeHistoryService
                 $byView[$vId]['placements'] = ($byView[$vId]['placements'] ?? 0) + 1;
             }
         }
-        foreach ($before['links_by_view'] as $vId => $links) {
-            foreach ($links as $link) {
-                if ($link['from_id'] === $deviceId || $link['to_id'] === $deviceId) {
-                    $byView[$vId]['links'] = ($byView[$vId]['links'] ?? 0) + 1;
+        foreach ($before['routes_by_view'] as $vId => $routes) {
+            foreach ($routes as $route) {
+                if ($route['device_a_id'] === $deviceId || $route['device_b_id'] === $deviceId) {
+                    $byView[$vId]['routes'] = ($byView[$vId]['routes'] ?? 0) + 1;
                 }
             }
         }
@@ -1118,8 +1187,8 @@ final class ChangeHistoryService
             if (!empty($info['placements'])) {
                 $sub[] = "配置{$info['placements']}件";
             }
-            if (!empty($info['links'])) {
-                $sub[] = "接続{$info['links']}件";
+            if (!empty($info['routes'])) {
+                $sub[] = "手動経路{$info['routes']}件";
             }
             if (!empty($info['rack'])) {
                 $sub[] = $info['rack'];
@@ -1144,7 +1213,6 @@ final class ChangeHistoryService
         array $afterResidency,
         array $deviceNames,
         array $viewMeta,
-        array $linkSystems,
         array $deletedDeviceIds,
         array $deletedViewIds,
         string $source
@@ -1169,8 +1237,8 @@ final class ChangeHistoryService
             if ($bView[$field] === $aView[$field]) {
                 continue;
             }
-            $bVal = $this->formatViewFieldValue($field, $bView[$field]);
-            $aVal = $this->formatViewFieldValue($field, $aView[$field]);
+            $bVal = $this->formatViewFieldValue($field, $bView[$field], $bView['floor_label']);
+            $aVal = $this->formatViewFieldValue($field, $aView[$field], $aView['floor_label']);
             if ($bVal === $aVal) {
                 $aVal .= '（全文更新）';
             }
@@ -1213,17 +1281,15 @@ final class ChangeHistoryService
             $omittedTotal += $omitted;
         }
 
-        // 3. 接続 (topology / floor)
-        $linkDiff = $this->diffLinks(
-            $before['links_by_view'][$viewId] ?? [],
-            $after['links_by_view'][$viewId] ?? [],
+        $routeDiff = $this->diffViewRoutes(
+            $before['routes_by_view'][$viewId] ?? [],
+            $after['routes_by_view'][$viewId] ?? [],
             $deviceNames,
-            $linkSystems,
             $deletedDeviceIds
         );
-        if ($linkDiff['summary'] !== '') {
-            $summaryParts[] = $linkDiff['summary'];
-            [$bounded, $omitted] = $this->boundSubcollectionItems($linkDiff['items'], '接続');
+        if ($routeDiff['summary'] !== '') {
+            $summaryParts[] = $routeDiff['summary'];
+            [$bounded, $omitted] = $this->boundSubcollectionItems($routeDiff['items'], '手動経路');
             array_push($items, ...$bounded);
             $omittedTotal += $omitted;
         }
@@ -1305,7 +1371,7 @@ final class ChangeHistoryService
             $items[] = [
                 'label' => $label,
                 'before' => '—',
-                'after' => $this->formatViewFieldValue($field, $raw),
+                'after' => $this->formatViewFieldValue($field, $raw, $aView['floor_label']),
             ];
         }
 
@@ -1331,15 +1397,15 @@ final class ChangeHistoryService
             }
         } else {
             $pCount = count($after['placements_by_view'][$viewId] ?? []);
-            $lCount = count($after['links_by_view'][$viewId] ?? []);
+            $routeCount = count($after['routes_by_view'][$viewId] ?? []);
             $rCount = count(array_filter($after['floor_racks'], static fn(array $r): bool => $r['floor_view_id'] === $viewId));
             if ($pCount > 0) {
                 $items[] = ['label' => '機器配置', 'before' => '0件', 'after' => "{$pCount}件"];
                 $extraSummary[] = "配置{$pCount}件";
             }
-            if ($lCount > 0) {
-                $items[] = ['label' => '接続', 'before' => '0件', 'after' => "{$lCount}件"];
-                $extraSummary[] = "接続{$lCount}件";
+            if ($routeCount > 0) {
+                $items[] = ['label' => '手動経路', 'before' => '0件', 'after' => "{$routeCount}件"];
+                $extraSummary[] = "手動経路{$routeCount}件";
             }
             if ($rCount > 0) {
                 $items[] = ['label' => 'ラック配置', 'before' => '0件', 'after' => "{$rCount}件"];
@@ -1370,7 +1436,7 @@ final class ChangeHistoryService
             }
             $items[] = [
                 'label' => $label,
-                'before' => $this->formatViewFieldValue($field, $raw),
+                'before' => $this->formatViewFieldValue($field, $raw, $bView['floor_label']),
                 'after' => '—（削除）',
             ];
         }
@@ -1404,15 +1470,15 @@ final class ChangeHistoryService
             }
         } else {
             $pCount = count($before['placements_by_view'][$viewId] ?? []);
-            $lCount = count($before['links_by_view'][$viewId] ?? []);
+            $routeCount = count($before['routes_by_view'][$viewId] ?? []);
             $rCount = count(array_filter($before['floor_racks'], static fn(array $r): bool => $r['floor_view_id'] === $viewId));
             if ($pCount > 0) {
                 $items[] = ['label' => '機器配置', 'before' => "{$pCount}件", 'after' => '—（削除）'];
                 $extraSummary[] = "配置{$pCount}件";
             }
-            if ($lCount > 0) {
-                $items[] = ['label' => '接続', 'before' => "{$lCount}件", 'after' => '—（削除）'];
-                $extraSummary[] = "接続{$lCount}件";
+            if ($routeCount > 0) {
+                $items[] = ['label' => '手動経路', 'before' => "{$routeCount}件", 'after' => '—（削除）'];
+                $extraSummary[] = "手動経路{$routeCount}件";
             }
             if ($rCount > 0) {
                 $items[] = ['label' => 'ラック配置', 'before' => "{$rCount}件", 'after' => '—（削除）'];
@@ -1492,97 +1558,24 @@ final class ChangeHistoryService
         ];
     }
 
-    private function diffLinks(
-        array $beforeLinks,
-        array $afterLinks,
-        array $deviceNames,
-        array $linkSystems,
-        array $deletedDeviceIds
-    ): array {
-        $matchedPairs = [];
-        $unmatchedBefore = $beforeLinks;
-        $unmatchedAfter = $afterLinks;
-
-        foreach ($beforeLinks as $id => $bLink) {
-            if (isset($afterLinks[$id])) {
-                $matchedPairs[] = [$bLink, $afterLinks[$id]];
-                unset($unmatchedBefore[$id], $unmatchedAfter[$id]);
-            }
-        }
-
-        // 全体保存等でIDが振り直された場合も、同一ビュー内の端点ペアで論理照合する
-        if ($unmatchedBefore !== [] && $unmatchedAfter !== []) {
-            $beforeByEndpoints = [];
-            foreach ($unmatchedBefore as $id => $bLink) {
-                $pairKey = min($bLink['from_id'], $bLink['to_id']) . ':' . max($bLink['from_id'], $bLink['to_id']);
-                $beforeByEndpoints[$pairKey] = $id;
-            }
-            foreach ($unmatchedAfter as $aId => $aLink) {
-                $pairKey = min($aLink['from_id'], $aLink['to_id']) . ':' . max($aLink['from_id'], $aLink['to_id']);
-                if (isset($beforeByEndpoints[$pairKey])) {
-                    $bId = $beforeByEndpoints[$pairKey];
-                    $matchedPairs[] = [$unmatchedBefore[$bId], $aLink];
-                    unset($unmatchedBefore[$bId], $unmatchedAfter[$aId], $beforeByEndpoints[$pairKey]);
-                }
-            }
-        }
-
+    private function diffViewRoutes(array $before, array $after, array $deviceNames, array $deletedDeviceIds): array
+    {
         $items = [];
-        $added = 0;
-        $updated = 0;
-        $removed = 0;
-        $cascadeRemoved = 0;
-
-        foreach ($unmatchedAfter as $aLink) {
-            $added++;
-            $items[] = [
-                'label' => '接続: ' . $this->formatLinkPair($aLink, $deviceNames),
-                'before' => 'なし',
-                'after' => $this->formatLinkState($aLink, $deviceNames, $linkSystems),
-            ];
-        }
-
-        foreach ($matchedPairs as [$bLink, $aLink]) {
-            if ($this->canonicalLinkComparable($bLink) === $this->canonicalLinkComparable($aLink)) {
+        foreach ($before + $after as $key => $row) {
+            $b = $before[$key]['manual_route'] ?? null;
+            $a = $after[$key]['manual_route'] ?? null;
+            if ($b === $a) {
                 continue;
             }
-            $updated++;
-            $bState = $this->formatLinkState($bLink, $deviceNames, $linkSystems);
-            $aState = $this->formatLinkState($aLink, $deviceNames, $linkSystems);
-            if ($bState === $aState) {
-                $aState .= $bLink['manual_route'] !== $aLink['manual_route'] ? '（経路座標更新）' : '（内容更新）';
-            }
+            $cascade = isset($deletedDeviceIds[$row['device_a_id']]) || isset($deletedDeviceIds[$row['device_b_id']]);
             $items[] = [
-                'label' => '接続: ' . $this->formatLinkPair($aLink, $deviceNames),
-                'before' => $bState,
-                'after' => $aState,
+                'label' => '手動経路: ' . $this->formatDevicePair($row['device_a_id'], $row['device_b_id'], $deviceNames),
+                'before' => $b === null ? 'なし' : count($b) . '点',
+                'after' => $a === null ? ($cascade ? '機器削除により削除' : 'なし')
+                    : count($a) . '点' . ($b !== null && count($a) === count($b) ? '（経路座標更新）' : ''),
             ];
         }
-
-        foreach ($unmatchedBefore as $bLink) {
-            $isCascade = isset($deletedDeviceIds[$bLink['from_id']]) || isset($deletedDeviceIds[$bLink['to_id']]);
-            if ($isCascade) {
-                $cascadeRemoved++;
-            } else {
-                $removed++;
-            }
-            $items[] = [
-                'label' => '接続: ' . $this->formatLinkPair($bLink, $deviceNames),
-                'before' => $this->formatLinkState($bLink, $deviceNames, $linkSystems),
-                'after' => $isCascade ? '機器削除により削除' : 'なし',
-            ];
-        }
-
-        $parts = [];
-        if ($added > 0) { $parts[] = "接続追加{$added}件"; }
-        if ($updated > 0) { $parts[] = "接続変更{$updated}件"; }
-        if ($removed > 0) { $parts[] = "接続削除{$removed}件"; }
-        if ($cascadeRemoved > 0) { $parts[] = "機器削除に伴う接続削除{$cascadeRemoved}件"; }
-
-        return [
-            'items' => $items,
-            'summary' => implode('・', $parts),
-        ];
+        return ['items' => $items, 'summary' => $items === [] ? '' : '手動経路' . count($items) . '件を変更'];
     }
 
     private function buildRackResidency(array $mounts, array $shelves, array $shelfDevices): array
@@ -1948,8 +1941,11 @@ final class ChangeHistoryService
         ];
     }
 
-    private function formatDeviceFieldValue(string $field, mixed $value): string
+    private function formatDeviceFieldValue(string $field, mixed $value, ?string $floorLabel): string
     {
+        if ($field === 'floor_id') {
+            return $floorLabel ?? ($value === null || $value === '' ? '未設定' : (string)$value);
+        }
         if ($field === 'type') {
             $str = (string)$value;
             return self::DEVICE_TYPE_LABELS[$str] ?? ($str !== '' ? $str : '—');
@@ -1970,14 +1966,20 @@ final class ChangeHistoryService
         return $str === '' ? '—' : self::truncateText($str, self::MAX_VALUE_CHARS);
     }
 
-    private function formatViewFieldValue(string $field, mixed $value): string
+    private function formatViewFieldValue(string $field, mixed $value, ?string $floorLabel): string
     {
+        if ($field === 'floor_id') {
+            return $floorLabel ?? ($value === null || $value === '' ? '未設定' : (string)$value);
+        }
         if ($field === 'view_type') {
             $str = (string)$value;
             return self::VIEW_TYPE_LABELS[$str] ?? ($str !== '' ? $str : '—');
         }
         if ($field === 'sort_order') {
             return (string)(int)$value;
+        }
+        if ($field === 'show_connections') {
+            return $value === 1 ? '表示' : '非表示';
         }
         $str = trim((string)$value);
         return $str === '' ? '—' : self::truncateText($str, self::MAX_VALUE_CHARS);
@@ -1989,27 +1991,17 @@ final class ChangeHistoryService
         return $clean !== '' ? self::truncateText($clean, 60) . " (ID: {$id})" : "ID: {$id}";
     }
 
-    private function canonicalLinkComparable(array $link): array
+    private function formatDevicePair(int $fromId, int $toId, array $deviceNames): string
     {
-        return [
-            'from_id' => $link['from_id'],
-            'to_id' => $link['to_id'],
-            'system_id' => $link['system_id'],
-            'label' => $link['label'],
-            'from_port' => $link['from_port'],
-            'to_port' => $link['to_port'],
-            'vlan' => $link['vlan'],
-            'memo' => $link['memo'],
-            'route_mode' => $link['route_mode'],
-            'manual_route' => $link['manual_route'],
-        ];
+        $from = $deviceNames[$fromId] ?? "ID:{$fromId}";
+        $to = $deviceNames[$toId] ?? "ID:{$toId}";
+        return self::truncateText($from, 40) . ' ↔ ' . self::truncateText($to, 40);
     }
 
-    private function formatLinkPair(array $link, array $deviceNames): string
+    private function formatPortState(array $port): string
     {
-        $from = $deviceNames[$link['from_id']] ?? "ID:{$link['from_id']}";
-        $to = $deviceNames[$link['to_id']] ?? "ID:{$link['to_id']}";
-        return self::truncateText($from, 40) . ' ↔ ' . self::truncateText($to, 40);
+        return $port['name'] . ($port['vlan'] !== '' ? ' / VLAN:' . $port['vlan'] : '')
+            . ($port['memo'] !== '' ? ' / 備考:' . $port['memo'] : '');
     }
 
     private function formatLinkState(array $link, array $deviceNames, array $linkSystems): string
@@ -2025,13 +2017,6 @@ final class ChangeHistoryService
         }
         if ($link['label'] !== '') {
             $parts[] = "ラベル:{$link['label']}";
-        }
-        if ($link['vlan'] !== '') {
-            $parts[] = "VLAN:{$link['vlan']}";
-        }
-        if ($link['route_mode'] === 'manual') {
-            $pts = count($link['manual_route']);
-            $parts[] = "手動経路({$pts}点)";
         }
         if ($link['memo'] !== '') {
             $parts[] = '備考:' . self::truncateText($link['memo'], 30);

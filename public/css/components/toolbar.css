@@ -50,15 +50,15 @@
         color var(--transition-fast);
 }
 
-#toolbar button:hover:not(:disabled),
-.toolbar-btn:hover:not(:disabled) {
+#toolbar button:hover:not(:disabled):not([aria-disabled="true"]),
+.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]) {
     background-color: var(--primary-soft);
     border-color: var(--primary);
     color: var(--primary-hover);
 }
 
-#toolbar button:active:not(:disabled),
-.toolbar-btn:active:not(:disabled) {
+#toolbar button:active:not(:disabled):not([aria-disabled="true"]),
+.toolbar-btn:active:not(:disabled):not([aria-disabled="true"]) {
     background-color: var(--primary-active);
     color: #ffffff;
 }
@@ -229,29 +229,95 @@
     font-size: 13px;
 }
 
+.view-search-summary.visually-hidden {
+    clip-path: inset(50%);
+}
+
 .view-search-option {
-    padding: 8px 10px;
+    position: relative;
+    padding: 3px 8px;
     cursor: pointer;
-    min-height: 44px;
+    min-height: 28px;
     box-sizing: border-box;
     text-align: left;
     border-left: 3px solid transparent;
 }
 
 .view-search-option strong,
-.view-search-option span {
+.view-search-option .view-search-detail {
     display: block;
     white-space: normal;
     overflow-wrap: anywhere;
 }
 
-.view-search-option strong { font-size: 14px; line-height: 1.5; }
-.view-search-option span { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-.view-search-option[aria-selected="true"] { border-left-color: var(--primary); }
-.view-search-option[aria-selected="true"] strong::after { content: "（現在）"; }
+.view-search-option strong {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 14px;
+    line-height: 1.5;
+}
+.view-search-option .view-search-detail {
+    padding-left: 18px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+.view-search-option[aria-selected="true"] {
+    border-left-color: var(--primary);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 6px;
+    align-items: center;
+}
+.view-search-option[aria-selected="true"] > .view-search-detail { grid-column: 1 / -1; }
+.view-search-current {
+    color: var(--primary);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
 .view-search-option:hover,
 .view-search-option.active { background: var(--primary-soft); }
 .view-search-option.active { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+.view-search-option strong { position: relative; padding-left: 18px; }
+.view-search-view:not(.view-search-single-floor) > strong,
+.view-search-view .view-search-detail { padding-left: 24px; }
+.view-search-view:not(.view-search-single-floor) .view-search-type-icon {
+    position: absolute;
+    left: 0;
+    top: 1px;
+}
+.view-search-single-floor .view-search-type-icon {
+    vertical-align: middle;
+    margin-inline-end: 4px;
+}
+.view-search-view[aria-level="3"] > strong { margin-inline-start: 18px; }
+.view-search-floor-empty {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.view-search-empty-note {
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+}
+.view-search-option .view-search-disclosure {
+    position: absolute;
+    top: 3px;
+    color: var(--text-main);
+    font-size: 14px;
+    line-height: 1.5;
+}
+@media (pointer: coarse) {
+    .view-search-option { min-height: 44px; padding-top: 10px; padding-bottom: 10px; }
+    .view-search-option .view-search-disclosure { top: 10px; }
+}
+.view-search-building > strong { font-weight: 800; }
+.view-search-floor > strong { font-weight: 700; }
+.view-search-unclassified { border-top: 1px solid var(--border-strong); }
 
 /* 検索エリア */
 .device-search {
@@ -288,6 +354,25 @@
     align-items: center;
     gap: 4px;
     flex-shrink: 0;
+}
+
+#placement-history-inline {
+    display: flex;
+    gap: 4px;
+}
+
+#placement-history-compact {
+    position: relative;
+}
+
+#toolbar #placement-history-trigger[aria-disabled="true"] {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+#toolbar #placement-history-trigger[aria-expanded="true"] {
+    background-color: var(--primary-soft);
+    border-color: var(--primary);
 }
 
 .toolbar-btn-icon {
@@ -362,6 +447,10 @@
     color: var(--text-main);
     background-color: #ffffff;
     box-shadow: var(--shadow-lg);
+}
+
+#placement-history-menu {
+    width: max-content;
 }
 
 #toolbar-manage-menu .toolbar-menu-popup {
@@ -444,9 +533,18 @@
     padding: 0;
 }
 
-/* レスポンシブ縮退 (画面幅が狭い場合はラベル省略しアイコン中心へ) */
+/* 操作履歴をまとめても幅が足りないときは、ツールバーボタンをアイコンだけにする。 */
+@media (max-width: 1366px) {
+    .toolbar-btn-label {
+        display: none;
+    }
+
+    #toolbar .toolbar-btn {
+        padding: 0 8px;
+    }
+}
+
 @media (max-width: 1150px) {
-    .toolbar-btn-label,
     .toolbar-version {
         display: none;
     }
@@ -454,23 +552,34 @@
     .toolbar-brand-logo {
         width: 24px;
     }
+}
+
+@media (max-width: 900px) {
+    #toolbar {
+        gap: 4px;
+        padding-inline: var(--space-2);
+    }
+
+    #toolbar .sep {
+        margin-inline: 0;
+    }
 
     #toolbar .toolbar-btn {
-        padding: 0 8px;
+        padding: 0 6px;
     }
-}
-/* 画面幅狭小時の調整 (1280px / 1366px / モバイル) */
-@media (max-width: 900px) {
+
     .zoom-controls {
         display: none;
     }
 
     #toolbar .view-switcher {
         flex: 0 1 180px;
+        min-width: 95px;
     }
 
     .device-search {
         flex: 0 1 180px;
+        min-width: 110px;
     }
 }
 
@@ -508,7 +617,15 @@
         margin-left: auto;
     }
 
-    #toolbar .toolbar-btn {
-        padding: 0 6px;
+    #toolbar .toolbar-btn-caret {
+        display: none;
+    }
+
+    #placement-history-compact {
+        position: static;
+    }
+
+    #placement-history-menu {
+        right: var(--space-2);
     }
 }

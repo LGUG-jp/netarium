@@ -11,7 +11,7 @@
 .print-dialog .placement-manager-footer { justify-content: flex-end; flex-wrap: wrap; }
 .print-workspace {
     display: grid;
-    grid-template-columns: 360px minmax(0, 1fr);
+    grid-template-columns: 392px minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
@@ -19,7 +19,7 @@
 .print-settings-body, .print-preview-body { overflow: auto; min-height: 0; min-width: 0; }
 .print-settings-body { padding: var(--space-3); font-size: 13px; border-right: 1px solid var(--border-light); }
 .print-settings-body .form-support { font-size: 12px; }
-.print-settings-body .btn-sm { font-size: 13px; padding: 4px 8px; }
+.print-settings-body .btn-sm { font-size: 12px; padding: 4px 8px; }
 .print-preview-body { padding: var(--space-4); }
 .print-field {
     margin: var(--space-3) 0;
@@ -32,17 +32,19 @@
 .print-choice {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    min-height: 40px;
-    padding: var(--space-2);
+    gap: 6px;
+    min-height: 36px;
+    padding: 6px var(--space-2);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 700;
     cursor: pointer;
     background: var(--bg-panel);
 }
 .print-choice:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
 .print-choice:has(input:disabled) { color: var(--text-muted); background: var(--bg-toolbar-hover); cursor: default; }
-.print-choice input { width: 18px; height: 18px; flex-shrink: 0; margin: 0; accent-color: var(--primary); }
+.print-choice input { width: 16px; height: 16px; flex-shrink: 0; margin: 0; accent-color: var(--primary); }
 .print-choice span { min-width: 0; }
 .print-choice strong { display: block; }
 .print-bulk-actions, .print-orientation-options, .print-preview-heading { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
@@ -96,6 +98,7 @@
     line-height: 1.2;
     overflow: hidden;
 }
+.print-device.print-rack { border-style: dashed; background: #f8fafc; }
 .print-device-icon { display: block; width: 36px; height: 36px; flex-shrink: 0; }
 .print-device-name { width: 100%; font-size: 12px; font-weight: 700; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .print-device-ip, .print-device-type { max-width: 100%; font-size: 10px; color: #666666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

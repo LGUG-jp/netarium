@@ -5,10 +5,11 @@ export function createIpDuplicateNotice({ getRecord, field = 'segment_id', canEd
     const root = document.createElement('div');
     root.className = 'ip-duplicate-notice form-support';
     root.setAttribute('aria-live', 'polite');
-    let lastIp = getRecord()?.ip || '';
+    let lastIp;
     const refresh = (changedIp = false) => {
         const record = getRecord();
         if (!record) return;
+        lastIp = record.ip || '';
         const candidates = segmentCandidates(record.ip, appState.ipSegments || []);
         if (changedIp) record[field] = candidates.length === 1 ? Number(candidates[0].id) : null;
         const valid = ipv4Number(record.ip) !== null;
@@ -27,9 +28,9 @@ export function createIpDuplicateNotice({ getRecord, field = 'segment_id', canEd
         ipInput._ipSegmentListener = () => {
             if (!canEdit()) return;
             const record = getRecord();
+            if (!record) return;
             const ip = ipInput.value.trim();
             if (lastIp === ip) { refresh(); return; }
-            lastIp = ip;
             record.ip = ip;
             delete record.ip_conflicts_confirmed;
             refresh(true);

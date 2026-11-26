@@ -27,6 +27,7 @@ class OperationGateTest extends TestCase
                 $this->assertTrue(false, 'Shared operations must be rejected during restore');
             } catch (ApiException $e) {
                 $this->assertSame(409, $e->getHttpStatus());
+                $this->assertSame('operation_busy', $e->getDetails()['reason']);
             }
 
             $restoreGate->release();
@@ -37,6 +38,7 @@ class OperationGateTest extends TestCase
                 $this->assertTrue(false, 'Restore must be rejected while a shared operation is active');
             } catch (ApiException $e) {
                 $this->assertSame(409, $e->getHttpStatus());
+                $this->assertSame('operation_busy', $e->getDetails()['reason']);
             }
         } finally {
             $restoreGate->release();

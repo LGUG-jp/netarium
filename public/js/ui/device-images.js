@@ -5,9 +5,15 @@
 import { appState } from '../core/state.js';
 import { isCurrentUserAdmin } from './access-control.js';
 import { showToast, showStatusMessage } from './toast.js';
-import { getDeviceImageBlockReason, uploadDeviceImage } from '../core/device-image-api.js';
+import {
+    deleteDeviceImageRequest,
+    getDeviceImageBlockReason,
+    updateDeviceImagesRequest,
+    uploadDeviceImage
+} from '../core/device-image-api.js';
 import { eventBus } from '../core/event-bus.js';
 import { setInputError } from './field-errors.js';
+import { registerModalClose, registerModalOpen } from '../core/modal-focus.js';
 
 const captionDrafts = new Map();
 const captionKey = (deviceId, imageId) => `${deviceId}:${imageId}`;
@@ -39,19 +45,51 @@ export function bindDeviceImageCaptionInput(input, { deviceId, imageId, errorId,
     validate();
     return error;
 }
-import { handleAuthExpired } from '../core/api-client.js';
-function getCsrfToken() {
-    return window.APP_CONFIG?.csrfToken || '';
-}
-import { registerModalClose, registerModalOpen } from '../core/modal-focus.js';
 
 let pendingReplaceImageId = null;
 let zoomImages = [];
 let zoomImageIndex = 0;
+
+function syncPanelImageBlockState() {
+    if (typeof document === 'undefined' || appState.editingDeviceId == null) return;
+    const listContainer = document.getElementById('p-device-images-list');
+    const dirtyWarning = document.getElementById('p-device-images-dirty-warning');
+    const addBtn = document.getElementById('p-device-image-add-btn');
+    if (!listContainer && !dirtyWarning && !addBtn) return;
+
+    const images = (appState.deviceImages || []).filter(img => Number(img.device_id) === Number(appState.editingDeviceId));
+    const blockReason = getDeviceImageBlockReason(appState.editingDeviceId);
+    const hasDirty = Boolean(blockReason);
+    const isAdmin = isCurrentUserAdmin();
+
+    if (dirtyWarning) {
+        dirtyWarning.hidden = !hasDirty;
+        dirtyWarning.textContent = blockReason;
+    }
+
+    if (addBtn) {
+        addBtn.disabled = !isAdmin || hasDirty || images.length >= 3;
+        if (images.length >= 3) {
+            addBtn.title = '画像は最大3枚までです（満杯時は差替えを行ってください）';
+        } else if (hasDirty) {
+            addBtn.title = blockReason;
+        } else {
+            addBtn.removeAttribute('title');
+        }
+    }
+
+    if (listContainer) {
+        for (const el of listContainer.querySelectorAll('.device-image-caption-input, .device-image-actions button')) {
+            el.disabled = !isAdmin || hasDirty;
+        }
+    }
+}
+
 eventBus.on('resources:saved', () => renderDeviceImages(appState.editingDeviceId));
 eventBus.on('device-images:changed', deviceId => {
     if (Number(deviceId) === Number(appState.editingDeviceId)) renderDeviceImages(deviceId);
 });
+eventBus.on('save-state:changed', syncPanelImageBlockState);
 
 /**
  * 機器画像一覧の描画
@@ -259,18 +297,18 @@ export function triggerDeviceImageUpload(replaceImageId = null) {
  * 画像アップロードAPI呼び出し
  */
 export async function uploadDeviceImageFile(file, replaceImageId = null) {
-    if (!file || appState.editingDeviceId === null) return;
-    if (appState.authExpired) return;
+    if (!file || appState.editingDeviceId === null) return false;
+    if (appState.authExpired) return false;
 
     const deviceId = Number(appState.editingDeviceId);
     try {
         await uploadDeviceImage(deviceId, file, replaceImageId);
-        renderDeviceImages(deviceId);
         showStatusMessage(replaceImageId ? '画像を差替えました' : '画像を登録しました', 'success');
-
+        return true;
     } catch (err) {
         if (err.status !== 401 && !appState.authExpired) showToast(err.message, 'error');
         // 409や不整合の疑いがある場合は画面状態の照合を推奨
+        return false;
     }
 }
 
@@ -279,39 +317,16 @@ export async function uploadDeviceImageFile(file, replaceImageId = null) {
  */
 export async function deleteDeviceImage(deviceId, imageId) {
     if (!window.confirm('この画像を削除しますか？（この操作は即時確定されます）')) {
-        return;
+        return false;
     }
 
     try {
-        const csrfToken = getCsrfToken();
-        const response = await fetch('api.php?action=delete_device_image', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-            },
-            body: JSON.stringify({
-                device_id: deviceId,
-                image_id: imageId,
-                revision: appState.dataRevision,
-                csrf_token: csrfToken
-            }),
-        });
-
-        if (response.status === 401) { handleAuthExpired(); return; }
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-            throw new Error(data.error || '画像の削除に失敗しました');
-        }
-
-        appState.dataRevision = Number(data.revision);
-        replaceDeviceImagesInState(deviceId, data.images);
-        renderDeviceImages(deviceId);
+        await deleteDeviceImageRequest(deviceId, imageId);
         showStatusMessage('画像を削除しました', 'success');
-
+        return true;
     } catch (err) {
-        showToast(err.message, 'error');
+        if (err.status !== 401 && !appState.authExpired) showToast(err.message, 'error');
+        return false;
     }
 }
 
@@ -320,35 +335,21 @@ export async function deleteDeviceImage(deviceId, imageId) {
  */
 export async function reorderDeviceImages(deviceId, newImages) {
     try {
-        const csrfToken = getCsrfToken();
-        const response = await fetch('api.php?action=update_device_images', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-            },
-            body: JSON.stringify({
-                device_id: deviceId,
-                revision: appState.dataRevision,
-                images: newImages.map(img => ({ id: Number(img.id), caption: img.caption || '' })),
-                csrf_token: csrfToken
-            }),
+        await updateDeviceImagesRequest(deviceId, () => {
+            const currentById = new Map(
+                (appState.deviceImages || [])
+                    .filter(img => Number(img.device_id) === Number(deviceId))
+                    .map(img => [Number(img.id), img])
+            );
+            return newImages.map(img => {
+                const id = Number(img.id);
+                return { id, caption: currentById.get(id)?.caption ?? img.caption ?? '' };
+            });
         });
-
-        if (response.status === 401) { handleAuthExpired(); return; }
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-            throw new Error(data.error || '画像順序の更新に失敗しました');
-        }
-
-        appState.dataRevision = Number(data.revision);
-        replaceDeviceImagesInState(deviceId, data.images);
-        renderDeviceImages(deviceId);
-        eventBus.emit('device-images:changed', deviceId);
-
+        return true;
     } catch (err) {
-        showToast(err.message, 'error');
+        if (err.status !== 401 && !appState.authExpired) showToast(err.message, 'error');
+        return false;
     }
 }
 
@@ -357,46 +358,30 @@ export async function reorderDeviceImages(deviceId, newImages) {
  */
 export async function updateImageCaption(deviceId, imageId, newCaption) {
     if (captionError(newCaption)) return false;
-    const images = (appState.deviceImages || [])
-        .filter(img => Number(img.device_id) === Number(deviceId))
-        .sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
-
-    const updated = images.map(img => ({
-        id: Number(img.id),
-        caption: Number(img.id) === imageId ? newCaption : (img.caption || '')
-    }));
 
     try {
-        const csrfToken = getCsrfToken();
-        const response = await fetch('api.php?action=update_device_images', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest',
-                ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+        await updateDeviceImagesRequest(
+            deviceId,
+            () => {
+                const images = (appState.deviceImages || [])
+                    .filter(img => Number(img.device_id) === Number(deviceId))
+                    .sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
+                return images.map(img => ({
+                    id: Number(img.id),
+                    caption: Number(img.id) === Number(imageId) ? newCaption : (img.caption || '')
+                }));
             },
-            body: JSON.stringify({
-                device_id: deviceId,
-                revision: appState.dataRevision,
-                images: updated,
-                csrf_token: csrfToken
-            }),
-        });
-
-        if (response.status === 401) { handleAuthExpired(); return; }
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-            throw new Error(data.error || '画像説明の更新に失敗しました');
-        }
-
-        appState.dataRevision = Number(data.revision);
-        const key = captionKey(deviceId, imageId);
-        if (captionDrafts.get(key)?.trim() === newCaption) captionDrafts.delete(key);
-        replaceDeviceImagesInState(deviceId, data.images);
-        eventBus.emit('device-images:changed', deviceId);
-
+            {
+                beforeEmit: () => {
+                    const key = captionKey(deviceId, imageId);
+                    if (captionDrafts.get(key)?.trim() === newCaption) captionDrafts.delete(key);
+                }
+            }
+        );
+        return true;
     } catch (err) {
-        showToast(err.message, 'error');
+        if (err.status !== 401 && !appState.authExpired) showToast(err.message, 'error');
+        return false;
     }
 }
 
@@ -463,17 +448,6 @@ export function closeDeviceImageZoom() {
     zoomImages = [];
     zoomImageIndex = 0;
     registerModalClose('device-image-zoom');
-}
-
-/**
- * state内の対象機器画像を置換
- */
-function replaceDeviceImagesInState(deviceId, newDeviceImages) {
-    if (!Array.isArray(appState.deviceImages)) {
-        appState.deviceImages = [];
-    }
-    const otherImages = appState.deviceImages.filter(img => Number(img.device_id) !== Number(deviceId));
-    appState.deviceImages = [...otherImages, ...(newDeviceImages || [])];
 }
 
 // ファイル選択入力のイベント初期化

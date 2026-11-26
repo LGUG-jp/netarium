@@ -1359,7 +1359,7 @@ function routeDenseTopologyLinks(links, placementByDeviceId, fixedRoutes, rectBy
         const toCount = endpointCounts.get(toId) || 0;
         endpointCounts.set(toId, toCount + 1);
         // 手動リンクも接続順に数え、後続autoのlane割当を変えない。
-        const linkId = Number(link.id);
+        const linkId = getTopologyLinkKey(link);
         if (fixedRoutes?.has(linkId)) {
             routes.set(linkId, fixedRoutes.get(linkId));
             continue;
@@ -1393,9 +1393,19 @@ function routeDenseTopologyLinks(links, placementByDeviceId, fixedRoutes, rectBy
                 }
             }
         }
-        routes.set(Number(link.id), route);
+        routes.set(linkId, route);
     }
     return routes;
+}
+
+export function getTopologyLinkKey(link) {
+    return link.display_key ?? Number(link.id);
+}
+
+export function compareTopologyLinkKeys(a, b) {
+    if (typeof a === 'number') return typeof b === 'number' ? a - b : -1;
+    if (typeof b === 'number') return 1;
+    return a < b ? -1 : Number(a > b);
 }
 
 /**
@@ -1403,8 +1413,8 @@ function routeDenseTopologyLinks(links, placementByDeviceId, fixedRoutes, rectBy
  *
  * @param {Array} links
  * @param {Array} placements
- * @param {Map<number, Array<{x: number, y: number}>> | null} fixedRoutes 手動経路
- * @returns {Map<number, Array<{x: number, y: number}>>}
+ * @param {Map<number|string, Array<{x: number, y: number}>> | null} fixedRoutes 手動経路
+ * @returns {Map<number|string, Array<{x: number, y: number}>>}
  */
 export function routeTopologyLinks(links, placements, fixedRoutes = null) {
     const routeMap = new Map();
@@ -1424,8 +1434,7 @@ export function routeTopologyLinks(links, placements, fixedRoutes = null) {
             if (!link || link.from_id == null || link.to_id == null) return false;
             return placementByDeviceId.has(Number(link.from_id)) && placementByDeviceId.has(Number(link.to_id));
         })
-        .slice()
-        .sort((a, b) => Number(a.id) - Number(b.id));
+        .sort((a, b) => compareTopologyLinkKeys(getTopologyLinkKey(a), getTopologyLinkKey(b)));
 
     const obstacles = [...placementByDeviceId.values()].map(getPlacementRect)
         .sort((a, b) => a.deviceId - b.deviceId);
@@ -1457,13 +1466,13 @@ export function routeTopologyLinks(links, placements, fixedRoutes = null) {
     const committedIndex = new RouteSpatialIndex();
 
     for (const link of sortedLinks) {
-        const linkId = Number(link.id);
+        const linkId = getTopologyLinkKey(link);
         if (fixedRoutes?.has(linkId)) {
             const route = fixedRoutes.get(linkId);
             const fromRect = rectByDeviceId.get(Number(link.from_id));
             const toRect = rectByDeviceId.get(Number(link.to_id));
             routeMap.set(linkId, route);
-            // ID順で確定し、後続autoが手動経路との重複・交差を評価する。
+            // 描画キー順で確定し、後続autoが手動経路との重複・交差を評価する。
             const segments = getVisibleSegments(getNormalizedSegments(route, linkId), fromRect, toRect);
             for (const segment of segments) indexRouteSegment(committedIndex, segment);
             continue;

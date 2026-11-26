@@ -121,6 +121,18 @@ export function discardDeviceDrafts(scope) {
     notify();
 }
 
+export function discardDeviceDraftsForIds(ids) {
+    const targetIds = (ids || []).map(Number).filter(id => Number.isSafeInteger(id));
+    if (!targetIds.length) return;
+    let changedAny = false;
+    for (const drafts of scopes.values()) {
+        for (const id of targetIds) {
+            if (drafts.delete(id)) changedAny = true;
+        }
+    }
+    if (changedAny) notify();
+}
+
 eventBus.on('resources:ids-remapped', maps => {
     for (const drafts of scopes.values()) {
         const entries = [...drafts.entries()];

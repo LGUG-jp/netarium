@@ -1,16 +1,19 @@
 import { DEFAULT_DEVICE_HEIGHT, DEFAULT_DEVICE_WIDTH, DEVICE_TYPES } from '../core/constants.js';
-import { getLinkSystem, LINK_SYSTEM_COLORS } from '../core/link-systems.js';
+import { getLinkColorKey, LINK_SYSTEM_COLORS } from '../core/link-systems.js';
+import { getViewLinkRoutingPlacements, linkGroupLabel, resolveViewLinkGroups } from '../core/connection-data.js';
 import { resolveTopologyLinkRoutes } from './link-route-resolver.js';
 import { createLinkDisplayMap } from './link-crossings.js';
 import { rackDisplaySlot, rackFaces, rackOccupiedFaces } from '../core/rack-layout.js';
 import { RACK_NOTE_REGIONS, getRackNoteRegion } from '../core/canvas-note-data.js';
 import { getFloorPlanBounds } from './floor-plan-geometry.js';
+import { viewHierarchyPath } from '../core/building-hierarchy.js';
 
 const systemColors = new Map(LINK_SYSTEM_COLORS.map(entry => [entry.key, entry.color]));
 
 export function createPrintSettings() {
     return {
         range: 'all', deviceTypes: Object.fromEntries(Object.keys(DEVICE_TYPES).map(type => [type, true])),
+        rack: true,
         links: true, floorPlan: true, notes: true,
         deviceName: true, deviceType: true, ip: true, labels: true, title: true,
         orientation: 'auto'
@@ -143,18 +146,18 @@ export function buildRackPrintLayout(view, devices, rackSettings = [], rackMount
         bounds: { x: 0, y: 0, width: faceWidth * 2 + gap + 32, height: top + totalU * rowHeight + 16 } };
 }
 
-function printTitle(view, options, date, location = '') {
+function printTitle(view, hierarchy, options, date, location = '') {
     const pad = number => String(number).padStart(2, '0');
     return options.title ? {
-        name: String(view.name || ''), location: [view.facility, view.floor, location].filter(Boolean).join(' / '),
+        name: String(view.name || ''), location: [viewHierarchyPath(view, hierarchy), location].filter(Boolean).join(' / '),
         time: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
     } : null;
 }
 
 /** 通常stateと保存キューには触れず、画面で使う情報だけを独立snapshotへ投影する。 */
-export function buildPrintModel({ view, devices, placements, links, linkSystems = [], notes, floorPlan, viewport,
+export function buildPrintModel({ view, devices, placements, links, viewLinkRoutes = [], linkSystems = [], notes, floorPlan, viewport,
     rackSettings = [], rackMounts = [], rackShelves = [], rackShelfDevices = [], views = [], floorRackPlacements = [],
-    crossingStyle = 'bridge', printedAt = new Date() }, settings) {
+    buildings = [], floors = [], crossingStyle = 'bridge', printedAt = new Date() }, settings) {
     const options = { ...settings, deviceTypes: { ...settings.deviceTypes } };
     const printNotes = options.notes ? notes.filter(note => Number(note.view_id) === Number(view.id)).map(note => ({
         id: Number(note.id), text: String(note.text ?? ''), x: Number(note.x), y: Number(note.y),
@@ -183,10 +186,11 @@ export function buildPrintModel({ view, devices, placements, links, linkSystems 
         const orientation = options.orientation === 'auto' ?
             (bounds.width >= bounds.height ? 'landscape' : 'portrait') : options.orientation;
         return { settings: options, bounds, orientation, rack, nodes: [], wires: [], notes: rackNotes, floorPlan: null,
-            title: printTitle(view, options, printedAt, rack.location), empty: false };
+            title: printTitle(view, { buildings, floors }, options, printedAt, rack.location), empty: false };
     }
     const viewPlacements = placements.filter(item => Number(item.view_id) === Number(view.id));
-    const viewLinks = links.filter(item => Number(item.view_id) === Number(view.id));
+    const linkData = { devices, placements, links, viewLinkRoutes, views, floorRackPlacements, rackMounts, rackShelves, rackShelfDevices };
+    const viewLinks = options.links ? resolveViewLinkGroups(view, linkData) : [];
     const deviceById = new Map(devices.map(device => [Number(device.id), device]));
     const systemMap = new Map(linkSystems.map(system => [Number(system.id), system]));
     const nodes = [];
@@ -204,35 +208,37 @@ export function buildPrintModel({ view, devices, placements, links, linkSystems 
             ...printDeviceBounds(placement, Boolean(ip)) });
         included.add(Number(device.id));
     }
-    if (view.view_type === 'floor') {
+    if (view.view_type === 'floor' && options.rack !== false) {
         for (const placement of floorRackPlacements.filter(row => Number(row.floor_view_id) === Number(view.id))) {
             const rack = views.find(row => Number(row.id) === Number(placement.rack_view_id) && row.view_type === 'rack');
             if (!rack) continue;
             nodes.push({ rackViewId: Number(rack.id), icon: 'assets/icons/toolbar/rack.svg',
                 name: String(rack.name || ''), ip: '', showDeviceType: false,
                 x: Number(placement.x), y: Number(placement.y), width: DEFAULT_DEVICE_WIDTH, height: DEFAULT_DEVICE_HEIGHT });
+            included.add(-Number(rack.id));
         }
     }
 
     // 通常画面と同じ障害物・全リンクで経路を解決してからfilterする。
     // フィルタの切替で手動経路や自動経路の形が変わることを避ける。
-    const routes = options.links ? resolveTopologyLinkRoutes(viewLinks, viewPlacements) : new Map();
-    const printableLinks = options.links ? viewLinks.filter(link =>
-        included.has(Number(link.from_id)) && included.has(Number(link.to_id)) && routes.has(Number(link.id))) : [];
-    const printRoutes = new Map(printableLinks.map(link => [Number(link.id), routes.get(Number(link.id))]));
+    const routes = viewLinks.length ?
+        resolveTopologyLinkRoutes(viewLinks, getViewLinkRoutingPlacements(view, linkData, viewPlacements)) : new Map();
+    const printableLinks = viewLinks.filter(link =>
+        included.has(link.from_id) && included.has(link.to_id) && routes.has(link.display_key));
+    const printRoutes = new Map(printableLinks.map(link => [link.display_key, routes.get(link.display_key)]));
     const display = createLinkDisplayMap(printRoutes, crossingStyle);
     const wires = [];
     for (const link of printableLinks) {
-        const linkId = Number(link.id);
-        const route = printRoutes.get(linkId);
-        const disp = display.get(linkId);
+        const key = link.display_key;
+        const route = printRoutes.get(key);
+        const disp = display.get(key);
         if (!route || !disp) continue;
         wires.push({
-            id: linkId, points: route.map(point => ({ ...point })),
+            displayKey: key, points: route.map(point => ({ ...point })),
             pathData: disp.pathData,
-            color: systemColors.get(getLinkSystem(link.system_id, systemMap)?.color_key) || '#334155',
+            color: systemColors.get(getLinkColorKey(link, systemMap)) || '#334155',
             labelPosition: { ...disp.labelPosition },
-            label: options.labels ? String(link.label || '') : ''
+            label: options.labels || link.link_ids.length > 1 ? linkGroupLabel(link) : ''
         });
     }
     const plan = options.floorPlan && view.view_type === 'floor' && floorPlan?.image_url &&
@@ -265,7 +271,7 @@ export function buildPrintModel({ view, devices, placements, links, linkSystems 
     };
     const orientation = options.orientation === 'auto' ?
         (bounds.width >= bounds.height ? 'landscape' : 'portrait') : options.orientation;
-    const title = printTitle(view, options, printedAt);
+    const title = printTitle(view, { buildings, floors }, options, printedAt);
     return { settings: options, bounds, orientation, nodes, wires, notes: printNotes, floorPlan: plan, title,
         empty: !nodes.length && !wires.length && !printNotes.length && !plan };
 }

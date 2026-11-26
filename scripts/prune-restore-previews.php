@@ -12,11 +12,14 @@ use Netarium\Core\Config;
 use Netarium\Services\Backup\RestoreWorkspace;
 
 $workspace = null;
+$operationGate = null;
 try {
     $config = Config::create();
     $options = getopt('', ['storage-dir:']);
     if (isset($options['storage-dir']) && is_string($options['storage-dir']) && trim($options['storage-dir']) !== '') {
-        $config['backup_restore_directory'] = rtrim(trim($options['storage-dir']), '\\/') . DIRECTORY_SEPARATOR . 'temp' . DIRECTORY_SEPARATOR . 'backup-restore';
+        $storageDir = rtrim(trim($options['storage-dir']), '\\/');
+        $config['backup_restore_directory'] = $storageDir . DIRECTORY_SEPARATOR . 'temp' . DIRECTORY_SEPARATOR . 'backup-restore';
+        $config['operation_lock_file'] = $storageDir . DIRECTORY_SEPARATOR . 'temp' . DIRECTORY_SEPARATOR . 'operation.lock';
     }
     $operationGate = new \Netarium\Core\OperationGate((string)$config['operation_lock_file']);
     $operationGate->acquireShared();
@@ -32,5 +35,6 @@ try {
     $exitCode = 1;
 } finally {
     $workspace?->release();
+    $operationGate?->release();
 }
 exit($exitCode);

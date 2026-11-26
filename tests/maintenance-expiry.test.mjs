@@ -16,13 +16,17 @@ test('期限5区分は今日・暦年境界を含め相互排他的、不正値�
     for (const [value, expected] of cases) assert.equal(classifyMaintenanceExpiry(value, today), expected, String(value));
     const devices = cases.map(([maintenance_expiry]) => ({ maintenance_expiry }));
     const before = structuredClone(devices);
-    assert.deepEqual(aggregateMaintenanceExpiry(devices, today), {
-        expired: 1, within1Year: 2, within2Years: 2, beyond2Years: 1, unset: 4
+    const { fiscalYears, ...periods } = aggregateMaintenanceExpiry(devices, today);
+    assert.deepEqual(periods, {
+        expired: 1, within1Year: 2, within2Years: 2, beyond2Years: 1, unset: 4, invalid: 3
     });
+    assert.equal(fiscalYears.reduce((total, period) => total + period.count, 0), 5);
     assert.deepEqual(devices, before);
-    assert.deepEqual(aggregateMaintenanceExpiry([], today), {
-        expired: 0, within1Year: 0, within2Years: 0, beyond2Years: 0, unset: 0
+    const { fiscalYears: emptyYears, ...emptyPeriods } = aggregateMaintenanceExpiry([], today);
+    assert.deepEqual(emptyPeriods, {
+        expired: 0, within1Year: 0, within2Years: 0, beyond2Years: 0, unset: 0, invalid: 0
     });
+    assert.ok(emptyYears.every(period => period.count === 0));
 });
 
 test('年月のみは月末期限、うるう日基準の暦年加算は対象年の2月末へ丸める', () => {

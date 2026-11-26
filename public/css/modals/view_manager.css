@@ -78,10 +78,14 @@
 
 .view-manager-toolbar {
     justify-content: flex-start;
+    flex-wrap: wrap;
 }
 
+.hierarchy-create-buttons,
+.view-create-group { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.view-create-group { min-width: 0; padding-left: 10px; border-left: 1px solid var(--border-light); }
 .view-create-buttons,
-.view-create-compact { display: flex; align-items: center; gap: 8px; }
+.view-create-compact { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .view-create-compact { display: none; }
 .view-manager-toolbar .btn,
 .view-manager-toolbar #vm-new-type { box-sizing: border-box; height: 36px; min-height: 36px; padding: 4px 10px; font-size: 13px; line-height: 1.3; margin: 0; }
@@ -128,8 +132,21 @@
     overflow-x: hidden;
 }
 
+.view-manager-editor-header,
+.view-manager-editor-tools {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+.view-manager-editor-header { margin-bottom: 12px; }
+.view-manager-editor-header h3 { margin: 0; font-size: 16px; }
+.view-manager-editor-tools { margin-left: auto; justify-content: flex-end; }
+.view-manager-editor-tools .btn { margin: 0; }
+
 .view-manager-form #vm-memo {
-    min-height: clamp(100px, 16dvh, 180px);
+    min-height: clamp(50px, 8dvh, 90px);
     resize: vertical;
 }
 
@@ -182,6 +199,8 @@
 
 .view-manager-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: max-content;
     align-content: start;
     gap: 4px;
     flex: 1 1 auto;
@@ -190,13 +209,55 @@
     overflow-x: hidden;
     overscroll-behavior: contain;
     margin-top: 6px;
+    padding: 2px;
+    scroll-padding-block: 2px;
 }
+
+.hierarchy-editor { min-width: 0; min-height: 0; overflow-y: auto; }
+.hierarchy-editor .view-manager-form { overflow: visible; }
+.hierarchy-editor .view-manager-form label { font-weight: 700; }
+.hierarchy-editor .view-manager-form input,
+.hierarchy-editor .view-manager-form select { font-weight: 400; }
+.view-manager-form .view-manager-checkbox,
+.hierarchy-editor .view-manager-form .hierarchy-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-block-size: 44px;
+}
+.view-manager-form .view-manager-checkbox input,
+.hierarchy-editor .hierarchy-checkbox input {
+    width: 1rem;
+    flex-shrink: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--primary);
+}
+.hierarchy-attach-toggle { align-self: flex-start; }
+.hierarchy-attach-panel:not([hidden]) { margin-top: 8px; }
+.hierarchy-attach-results { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.hierarchy-attach-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border-light); }
+.hierarchy-attach-details { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
+.hierarchy-attach-details span { color: var(--text-muted); font-size: 12px; }
+.hierarchy-attach-row .btn { flex-shrink: 0; margin: 0; min-height: 28px; }
+.view-manager-form[hidden], .hierarchy-editor[hidden] { display: none; }
+.view-manager-list-item[role="treeitem"] { flex-shrink: 0; min-height: 32px; overflow-wrap: anywhere; }
+/* base.css uses !important for the global outward focus ring. Keep this
+   tree's keyboard ring inside the row and distinct from its blue selection. */
+.view-manager-list-item:focus-visible {
+    outline: 2px dashed var(--primary) !important;
+    outline-offset: -5px !important;
+}
+
 
 .view-manager-list-item {
     display: grid;
     gap: 2px;
     width: 100%;
     min-width: 0;
+    box-sizing: border-box;
+    margin: 0;
     overflow-wrap: anywhere;
     padding: 8px 10px;
     border: 1px solid rgba(148, 163, 184, 0.36);
@@ -210,6 +271,9 @@
     color: var(--text-muted);
     font-size: 12px;
 }
+.view-manager-list-item.view-manager-view { display: flex; align-items: center; gap: 6px; }
+.view-manager-type-icon { flex: 0 0 16px; }
+.view-manager-list-item .view-manager-view-name { min-width: 0; color: inherit; font-size: inherit; }
 
 .view-manager-list-item:hover:not(:disabled) {
     background: var(--neutral-bg-hover);
@@ -218,7 +282,6 @@
 .view-manager-list-item.selected {
     border-color: var(--primary);
     background: var(--primary-soft);
-    box-shadow: inset 3px 0 var(--primary);
 }
 
 .view-manager-floor-plan-actions {
@@ -248,10 +311,15 @@
 
 .view-manager-form-actions {
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-    margin-top: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-light);
 }
+.view-manager-form-actions .btn { box-sizing: border-box; min-height: 36px; margin: 0; padding: 4px 10px; font-size: 13px; line-height: 1.3; }
+.view-manager-form-actions > .btn-primary { margin-left: auto; }
 
 
 .required {

@@ -27,7 +27,7 @@ test('別ラック移設は表示条件を確認してから両ラックを保�
         writes.push(JSON.parse(options.body));
         return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {}, devices: [],
             views: appState.views.map(view => ({ ...view, resource_revision: view.resource_revision + 1 })),
-            placements: [], links: [], canvas_notes: [], rack_settings: appState.rackSettings,
+            placements: [], view_link_routes: [], canvas_notes: [], rack_settings: appState.rackSettings,
             rack_mounts: appState.rackMounts, rack_shelves: appState.rackShelves, rack_shelf_devices: appState.rackShelfDevices,
             affected_view_ids: writes.at(-1).views.map(view => view.id), deleted_device_ids: [], deleted_view_ids: []
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });

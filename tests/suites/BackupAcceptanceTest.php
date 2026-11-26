@@ -97,12 +97,14 @@ final class BackupAcceptanceTest extends TestCase
                 }
             }
 
-            // リンクとメモ
-            $insertLink = $db->prepare("INSERT INTO links (id, from_id, to_id, view_id, system_id, vlan) VALUES (?, ?, ?, 1, 1, '100')");
+            // リンク、端点ポートとメモ
+            $insertPort = $db->prepare("INSERT INTO device_ports (id, device_id, name, vlan) VALUES (?, ?, 'uplink', '100')");
+            $insertLink = $db->prepare('INSERT INTO links (id, from_id, to_id, from_port_id, system_id) VALUES (?, ?, ?, ?, 1)');
             for ($linkId = 1; $linkId <= 100; $linkId++) {
                 $from = $linkId;
                 $to = $linkId + 1;
-                $insertLink->execute([$linkId, $from, $to]);
+                $insertPort->execute([$linkId, $from]);
+                $insertLink->execute([$linkId, $from, $to, $linkId]);
             }
             $db->exec("INSERT INTO canvas_notes (id, view_id, text) VALUES (1, 1, '受入試験用大規模構成メモ')");
             $db->commit();
@@ -175,6 +177,7 @@ final class BackupAcceptanceTest extends TestCase
             $this->assertSame(1200, (int)$db->query('SELECT COUNT(*) FROM device_images')->fetchColumn());
             $this->assertSame(10, (int)$db->query('SELECT COUNT(*) FROM view_floor_plans')->fetchColumn());
             $this->assertSame(100, (int)$db->query('SELECT COUNT(*) FROM links')->fetchColumn());
+            $this->assertSame(100, (int)$db->query("SELECT COUNT(*) FROM device_ports WHERE vlan = '100'")->fetchColumn());
             $this->assertSame(1, (int)$db->query('SELECT COUNT(*) FROM canvas_notes')->fetchColumn());
             $this->assertSame(1, (int)$db->query('SELECT COUNT(*) FROM link_systems')->fetchColumn());
 
@@ -360,7 +363,7 @@ final class BackupAcceptanceTest extends TestCase
                 'views' => $current['views'],
                 'devices' => $current['devices'],
                 'placements' => $current['placements'],
-                'links' => $current['links'],
+                'view_link_routes' => $current['view_link_routes'],
                 'canvas_notes' => $current['canvas_notes'],
             ])->assertOk();
             // コミット試行 -> 409 Conflict

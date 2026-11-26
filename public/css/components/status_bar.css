@@ -7,7 +7,7 @@
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 500;
+    z-index: 1001; /* ワークスペースの左右パネルより前、モーダルより後ろ。 */
     width: 100%;
     height: var(--status-bar-height);
     min-height: var(--status-bar-height);
@@ -56,12 +56,6 @@
     outline: 2px solid var(--primary) !important;
     outline-offset: -2px !important;
     box-shadow: none !important;
-}
-
-/* Pingや処理中の状態は、台帳を開いていてもフッターで確認できる。 */
-body.busy .status-bar,
-body.has-ping-results .status-bar {
-    z-index: 4000;
 }
 
 #busy-label:empty,

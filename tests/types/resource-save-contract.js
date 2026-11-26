@@ -62,8 +62,12 @@ for (const operation of payload.views) {
     operation.view.view_type = 'rak';
     // @ts-expect-error ラック設定は非ラックでは欠落し、未設定では null。
     operation.rack_settings.total_u;
-    // @ts-expect-error 接続系統 ID は数値または null。
-    operation.links[0].system_id = '1';
+    // @ts-expect-error 共通接続はビュー保存 DTO に含めない。
+    operation.links;
+    // @ts-expect-error ビューの接続表示設定は 0 または 1。
+    operation.view.show_connections = true;
+    // @ts-expect-error 経路の座標には数値が必要。
+    operation.view_link_routes[0].manual_route[0].x = '1';
 }
 /** @type {number} */
 const mapped = mappedResourceId({ '-1': 10 }, -1);

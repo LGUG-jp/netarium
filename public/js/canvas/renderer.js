@@ -6,14 +6,12 @@ import {
     DEFAULT_DEVICE_HEIGHT,
     DEFAULT_DEVICE_WIDTH,
     DEFAULT_VIEW_SCALE,
-    DEVICE_TYPES,
-    LINK_ROUTE_MODES
+    DEVICE_TYPES
 } from '../core/constants.js';
 
 import { appState } from '../core/state.js';
-import { endLinkMode, resetLinkCreationState } from '../core/link-mode.js';
+import { endLinkMode, handleLinkCreationClick } from '../core/link-mode.js';
 import { getDeviceStatusLabel, getDeviceStatusDescription } from '../core/device-monitoring.js';
-import { requireAdminUiAction } from '../ui/access-control.js';
 import {
     clampNumber
 } from '../core/utils.js';
@@ -28,20 +26,18 @@ import {
     revealCanvasLinkRoute
 } from './pan-zoom.js';
 import {
-    allocateLocalId,
     getCurrentFloorPlan,
     getCurrentCanvasNotes,
-    getCurrentLinks,
+    getCurrentLinkGroups,
     getCurrentPlacements,
     getCurrentView,
-    getDeviceForPlacement,
     getPlacementForDeviceInCurrentView,
     normalizeStatus
 } from '../core/state.js';
+import { getViewLinkRoutingPlacements, linkGroupLabel } from '../core/connection-data.js';
 import {
     buildSvgPathData,
     calculateLinkLabelPosition,
-    calculateLinkRoute,
     createTopologyLinkPath,
     getLinkRouteEndpoints
 } from './link-router.js';
@@ -59,12 +55,10 @@ import {
     showToast
 } from '../ui/toast.js';
 import {
-    markDirty
-} from '../ui/status-bar.js';
-import { hasResourceConflict, scheduleSave } from '../core/save-queue.js';
-import {
     closeLinkPanel,
     closePanel,
+    hasUnappliedPanelChanges,
+    openLinkGroup,
     openLinkPanel,
     openPanel
 } from '../ui/property-panel.js';
@@ -75,41 +69,49 @@ import {
 import { renderCanvasNotes, createCanvasNote, finishCanvasNotes } from './canvas-notes.js';
 import { renderRackView } from './rack-view.js';
 import { renderFloorRacks, getCurrentFloorRackPlacements, clearFloorRackSelection } from './floor-racks.js';
-import { syncSelectedPlacementClasses } from './selection.js';
+import { replaceSelectedPlacementIds, syncSelectedPlacementClasses } from './selection.js';
 
 function isDeviceDetailSelectionMode() {
     return !appState.linkMode && !appState.noteMode && appState.selectedCanvasNoteId == null &&
         !isPlacementModeActive() && !appState.floorPlanAdjustMode && !appState.isRangeSelecting &&
-        !appState.canvas?.classList.contains('panning') && appState.editingLinkId == null;
+        !appState.canvas?.classList.contains('panning') && !hasLinkSelection();
 }
 
+const hasLinkSelection = () => appState.editingLinkGroupKey != null || appState.editingLinkId != null;
+
 // 現在ビューの有効な端点だけを使い、無向の1ホップを描画ごとに求める。
-function getConnectionHighlight() {
+function getConnectionHighlight(deviceIndex) {
     if (!getConnectionHighlightEnabled() || appState.selectedPlacementIds.size !== 1 ||
         appState.linkMode || appState.noteMode || appState.isRangeSelecting ||
-        appState.editingLinkId != null) return null;
+        hasLinkSelection()) return null;
     const placements = getCurrentPlacements();
     const selectedId = Number(appState.selectedPlacementIds.values().next().value);
     const source = placements.find(row => Number(row.id) === selectedId);
-    if (!source || !getDeviceForPlacement(source)) return null;
-    const deviceIds = new Set(appState.devices.map(device => Number(device.id)));
+    if (!source) return null;
+    const sourceId = Number(source.device_id);
+    const deviceIds = deviceIndex ?? new Set(appState.devices.map(device => Number(device.id)));
+    if (Number.isNaN(sourceId) || !deviceIds.has(sourceId)) return null;
     const placedIds = new Set(placements
         .filter(row => deviceIds.has(Number(row.device_id)))
         .map(row => Number(row.device_id)));
-    const sourceId = Number(source.device_id);
     const relatedIds = new Set([sourceId]);
-    const linkIds = new Set();
-    for (const link of getCurrentLinks()) {
+    const linkKeys = new Set();
+    for (const link of getCurrentLinkGroups()) {
+        // ラック端点は機器の隣接判定に含めず、線と本数バッジを通常表示のままにする。
+        if (link.rack_projected) {
+            linkKeys.add(link.display_key);
+            continue;
+        }
         const from = Number(link.from_id);
         const to = Number(link.to_id);
         if (!placedIds.has(from) || !placedIds.has(to)) continue;
         if (from === sourceId || to === sourceId) {
             relatedIds.add(from);
             relatedIds.add(to);
-            linkIds.add(Number(link.id));
+            linkKeys.add(link.display_key);
         }
     }
-    return { sourceId, relatedIds, linkIds };
+    return { sourceId, relatedIds, linkKeys };
 }
 
 function applyDeviceConnectionHighlight(element, deviceId, highlight) {
@@ -123,9 +125,9 @@ export function syncConnectionHighlight(highlight = getConnectionHighlight()) {
     appState.deviceLayer?.querySelectorAll('.device').forEach(element => {
         applyDeviceConnectionHighlight(element, Number(element.dataset.deviceId), highlight);
     });
-    appState.currentSvg?.querySelectorAll('.link-group').forEach(element => {
+    appState.currentSvg?.querySelectorAll('.link-group, .link-count-badge').forEach(element => {
         element.classList.toggle('connection-dimmed',
-            Boolean(highlight && !highlight.linkIds.has(Number(element.dataset.id))));
+            Boolean(highlight && !highlight.linkKeys.has(element.dataset.displayKey)));
     });
 }
 
@@ -159,16 +161,19 @@ export function render({ revealLinkId = null } = {}) {
     appState.deviceLayer.replaceChildren();
 
     eventBus.emit('canvas:render-floor-plan');
-    const connectionHighlight = getConnectionHighlight();
+    const devicesById = new Map();
+    for (const device of appState.devices) {
+        const id = Number(device.id);
+        // 以前の検索と同じく NaN は照合せず、同じ ID なら先頭を使う。
+        if (!Number.isNaN(id) && !devicesById.has(id)) devicesById.set(id, device);
+    }
+    const connectionHighlight = getConnectionHighlight(devicesById);
     renderLinks({ revealLinkId, connectionHighlight });
     renderCanvasNotes();
 
     getCurrentPlacements().forEach(
         placement => {
-            const device =
-                getDeviceForPlacement(
-                    placement
-                );
+            const device = devicesById.get(Number(placement.device_id));
 
             if (!device) {
                 return;
@@ -210,16 +215,17 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
     appState.currentSvg.replaceChildren();
     syncConnectionHighlight(connectionHighlight);
 
-    const currentLinks = getCurrentLinks();
+    const currentLinks = getCurrentLinkGroups();
     const systemMap = new Map(appState.linkSystems.map(system => [Number(system.id), system]));
-    const currentPlacements = getCurrentPlacements();
-    const routeMap = resolveTopologyLinkRoutes(currentLinks, currentPlacements);
+    const routingPlacements = getViewLinkRoutingPlacements(getCurrentView(), appState, getCurrentPlacements());
+    const routeMap = resolveTopologyLinkRoutes(currentLinks, routingPlacements);
     const preview = getLinkRoutePreview();
-    if (preview && routeMap.has(preview.linkId)) {
-        routeMap.set(preview.linkId, preview.points);
+    if (preview && routeMap.has(preview.key)) {
+        routeMap.set(preview.key, preview.points);
     }
     if (revealLinkId !== null) {
-        revealCanvasLinkRoute(routeMap.get(revealLinkId));
+        const key = currentLinks.find(group => group.link_ids.includes(Number(revealLinkId)))?.display_key;
+        revealCanvasLinkRoute(routeMap.get(key));
     }
     if (routeMap.size === 0) {
         return;
@@ -236,6 +242,7 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
     const activePath = createTopologyLinkPath('link-foreground-path', 'M 0 0');
     foreground.appendChild(halo);
     foreground.appendChild(activePath);
+    let badges = null;
     let selectedForeground = null;
     let hoveredId = null;
     const showForeground = active => {
@@ -249,7 +256,8 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
     };
 
     currentLinks.forEach(link => {
-        const route = routeMap.get(Number(link.id));
+        const key = link.display_key;
+        const route = routeMap.get(key);
 
         if (!route || route.length < 2) {
             return;
@@ -268,7 +276,7 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
             return;
         }
 
-        const display = displayMap.get(Number(link.id));
+        const display = displayMap.get(key);
         const labelPosition = display?.labelPosition ??
             calculateLinkLabelPosition(route);
 
@@ -279,11 +287,12 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
             );
 
         group.classList.add('link-group');
-        group.dataset.id = String(link.id);
+        group.dataset.displayKey = key;
         group.classList.toggle('connection-dimmed',
-            Boolean(connectionHighlight && !connectionHighlight.linkIds.has(Number(link.id))));
-        const color = getLinkColor(link, systemMap);
-        const selected = Number(link.id) === Number(appState.editingLinkId);
+            Boolean(connectionHighlight && !connectionHighlight.linkKeys.has(key)));
+        const selected = appState.editingLinkId != null ? link.link_ids.includes(Number(appState.editingLinkId)) :
+            key === appState.editingLinkGroupKey;
+        const color = selected ? 'var(--primary)' : getLinkColor(link, systemMap);
         const active = { pathData: display?.pathData || pathData, color, selected };
 
         if (selected) {
@@ -301,14 +310,6 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
             return;
         }
 
-        hitPath.addEventListener(
-            'click',
-            event => {
-                event.stopPropagation();
-                onLinkClick(link);
-            }
-        );
-
         const path =
             createTopologyLinkPath(
                 'topology-link',
@@ -320,28 +321,30 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
         }
         path.style.stroke = color;
 
-        path.addEventListener(
-            'click',
-            event => {
-                event.stopPropagation();
-                onLinkClick(link);
-            }
-        );
+        const select = event => {
+            event.stopPropagation();
+            return onLinkGroupClick(link);
+        };
+        hitPath.addEventListener('click', select);
+        path.addEventListener('click', select);
 
         group.appendChild(hitPath);
         group.appendChild(path);
-        group.addEventListener('pointerenter', () => {
-            hoveredId = Number(link.id);
+        const enter = () => {
+            hoveredId = key;
             showForeground(active);
-        });
-        group.addEventListener('pointerleave', () => {
-            if (hoveredId !== Number(link.id)) return;
+        };
+        const leave = () => {
+            if (hoveredId !== key) return;
             hoveredId = null;
             showForeground(selectedForeground);
-        });
+        };
+        group.addEventListener('pointerenter', enter);
+        group.addEventListener('pointerleave', leave);
 
+        const label = linkGroupLabel(link);
         if (
-            link.label &&
+            label &&
             labelPosition
         ) {
             const text =
@@ -388,16 +391,42 @@ export function renderLinks({ revealLinkId = null, connectionHighlight = getConn
                 );
             }
 
-            text.textContent =
-                link.label;
-
-            group.appendChild(text);
+            text.textContent = label;
+            if (link.link_ids.length > 1) {
+                badges ??= document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                const badge = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                const background = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                const vertical = labelPosition.orientation === 'vertical';
+                const width = label.length * 8 + 10;
+                const x = labelPosition.x + (vertical ? width / 2 : 0);
+                const y = labelPosition.y - (vertical ? 0 : 6);
+                background.setAttribute('x', String(x - width / 2));
+                background.setAttribute('y', String(y - 9));
+                background.setAttribute('width', String(width));
+                background.setAttribute('height', '18');
+                background.setAttribute('rx', '4');
+                text.setAttribute('x', String(x));
+                text.setAttribute('y', String(y));
+                text.classList.add('link-label-count');
+                badge.classList.add('link-count-badge');
+                badge.dataset.displayKey = key;
+                badge.classList.toggle('connection-dimmed',
+                    Boolean(connectionHighlight && !connectionHighlight.linkKeys.has(key)));
+                badge.addEventListener('click', select);
+                badge.addEventListener('pointerenter', enter);
+                badge.addEventListener('pointerleave', leave);
+                badge.append(background, text);
+                badges.appendChild(badge);
+            } else {
+                group.appendChild(text);
+            }
         }
 
         appState.currentSvg.appendChild(group);
     });
     showForeground(selectedForeground);
     appState.currentSvg.appendChild(foreground);
+    if (badges) appState.currentSvg.appendChild(badges);
     renderLinkRouteEditor(appState.currentSvg, routeMap);
 }
 
@@ -430,13 +459,11 @@ export function createDeviceElement(
         el.classList.add('selected');
     }
 
-    if (
-        appState.linkMode &&
-        Number(appState.linkSourceId) ===
-        Number(device.id)
-    ) {
-        el.classList.add('link-source');
-    }
+    const isLinkSource = appState.linkMode && Number(appState.linkSourceId) === Number(device.id);
+    const isLegacyTarget = appState.linkMode && appState.legacyLinkCreation != null &&
+        Number(appState.linkTargetId) === Number(device.id);
+    if (isLinkSource) el.classList.add('link-source');
+    if (isLegacyTarget) el.classList.add('link-target');
 
     el.dataset.id = String(device.id);
     el.dataset.deviceId =
@@ -526,8 +553,9 @@ export function createDeviceElement(
     if (appState.linkMode) {
         el.tabIndex = 0;
         el.setAttribute('role', 'button');
-        el.setAttribute('aria-label', `${device.name || '(名称未設定)'}${device.ip ? ` ${device.ip}` : ''} / ${statusDescription}`);
-        el.setAttribute('aria-pressed', String(Number(appState.linkSourceId) === Number(device.id)));
+        const endpoint = isLinkSource ? '接続元 / ' : isLegacyTarget ? '接続先 / ' : '';
+        el.setAttribute('aria-label', `${endpoint}${device.name || '(名称未設定)'}${device.ip ? ` ${device.ip}` : ''} / ${statusDescription}`);
+        el.setAttribute('aria-pressed', String(isLinkSource || isLegacyTarget));
         el.addEventListener('keydown', async event => {
             if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
@@ -585,6 +613,7 @@ export async function onPlacementClick(
     }
 
     finishCanvasNotes('selection');
+    const hadLinkSelection = hasLinkSelection();
     if (!await openPanel(device)) {
         return;
     }
@@ -618,10 +647,7 @@ export async function onPlacementClick(
     }
     // 全再描画でクリック元を破棄すると、続くネイティブdblclickが届かない。
     syncSelectedPlacementClasses();
-    renderLinks();
-    appState.deviceLayer?.querySelectorAll('.floor-rack.selected').forEach(element => {
-        element.classList.remove('selected');
-    });
+    if (hadLinkSelection) renderLinks();
     eventBus.emit('canvas:selection-changed');
 }
 
@@ -629,111 +655,22 @@ export async function onPlacementClick(
 /**
  * リンク作成モード中のクリック処理
  */
-
-/**
- * リンク作成モード中のクリック処理
- */
 export function handleLinkModeClick(device) {
-    if (!appState.linkMode || !requireAdminUiAction() || appState.authExpired ||
-        hasResourceConflict('views', appState.currentViewId)) return;
-    if (appState.currentViewId === null) {
-        showToast(
-            '表示中のビューがありません',
-            'warning'
-        );
-        return;
-    }
-    const placed = getCurrentPlacements();
-    if (!placed.some(row => Number(row.device_id) === Number(device.id)) ||
-        (appState.linkSourceId != null && !placed.some(row => Number(row.device_id) === Number(appState.linkSourceId)))) {
-        showToast('このビューの接続元と接続先を選択してください', 'warning');
-        return;
-    }
-
-    if (appState.linkSourceId === null) {
-        appState.linkSourceId = Number(device.id);
-        appState.linkSourceConnected = false;
-        eventBus.emit('wiring:render');
-
-
-        render();
-        return;
-    }
-
-    if (
-        Number(appState.linkSourceId) ===
-        Number(device.id)
-    ) {
-        showToast(
-            '同一機器同士は接続できません',
-            'warning'
-        );
-        return;
-    }
-
-    const exists =
-        getCurrentLinks().some(link => {
-            const a =
-                Number(link.from_id);
-
-            const b =
-                Number(link.to_id);
-
-            return (
-                (
-                    a === Number(appState.linkSourceId) &&
-                    b === Number(device.id)
-                ) ||
-                (
-                    a === Number(device.id) &&
-                    b === Number(appState.linkSourceId)
-                )
-            );
-        });
-
-    if (exists) {
-        showToast(
-            'このビューには同じ接続が既に存在します',
-            'warning'
-        );
-
-        if (!appState.linkSourceFixed) resetLinkCreationState();
-        eventBus.emit('wiring:render');
-        render();
-        return;
-    }
-
-    appState.links.push({
-        id: allocateLocalId('links'),
-        view_id: Number(appState.currentViewId),
-        from_id: Number(appState.linkSourceId),
-        to_id: Number(device.id),
-        route_mode: 'auto',
-        manual_route: [],
-        label: '',
-        from_port: '',
-        to_port: '',
-        vlan: '',
-        memo: ''
-    });
-
-    markDirty();
-    scheduleSave({ immediate: true, silent: true });
-
-    if (appState.linkSourceFixed) appState.linkSourceConnected = true;
-    else resetLinkCreationState();
-    eventBus.emit('wiring:render');
-    render();
+    if (handleLinkCreationClick(device)) render();
 }
 
 
 /**
  * リンククリック
  */
+async function onLinkGroupClick(group) {
+    finishCanvasNotes('selection');
+    if (!await openLinkGroup(group)) return;
+    appState.selectedPlacementIds.clear();
+    clearFloorRackSelection();
+    render();
+}
 
-/**
- * リンククリック
- */
 export async function onLinkClick(link, { reveal = false } = {}) {
     finishCanvasNotes('selection');
     if (!await openLinkPanel(link)) {
@@ -741,6 +678,7 @@ export async function onLinkClick(link, { reveal = false } = {}) {
     }
 
     appState.selectedPlacementIds.clear();
+    clearFloorRackSelection();
     render({ revealLinkId: reveal ? Number(link.id) : null });
 }
 
@@ -772,6 +710,7 @@ export async function onCanvasClick(event) {
             '.floor-rack, ' +
             '.device, ' +
             '.link-group, ' +
+            '.link-count-badge, ' +
             '.link-route-editor, ' +
             '.canvas-note, ' +
             'button, ' +
@@ -799,7 +738,13 @@ export async function onCanvasClick(event) {
         return;
     }
 
+    const clearsOnlyDeviceSelection =
+        appState.selectedPlacementIds.size > 0 && !hasLinkSelection() && !hasUnappliedPanelChanges();
     if (!await closePanel() || !await closeLinkPanel()) {
+        return;
+    }
+    if (clearsOnlyDeviceSelection) {
+        replaceSelectedPlacementIds([]);
         return;
     }
     appState.selectedPlacementIds.clear();

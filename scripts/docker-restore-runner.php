@@ -147,6 +147,9 @@ foreach ($targets as $key => $info) {
         @chmod($info['parent'], 0700);
     }
     if (!mkdir($container, 0700, true)) {
+        foreach ($placements as $placement) {
+            removeDirectoryRecursive($placement['container']);
+        }
         removeDirectoryRecursive($workRoot);
         $gate->release();
         fwrite(STDERR, "Cannot create sibling staging directory: {$container}\n");
@@ -155,6 +158,9 @@ foreach ($targets as $key => $info) {
     // Move extracted payload to sibling staging `new`
     if (!rename($info['source'], $new)) {
         removeDirectoryRecursive($container);
+        foreach ($placements as $placement) {
+            removeDirectoryRecursive($placement['container']);
+        }
         removeDirectoryRecursive($workRoot);
         $gate->release();
         fwrite(STDERR, "Cannot move payload to sibling staging: {$new}\n");

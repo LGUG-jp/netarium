@@ -49,7 +49,7 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
     }
     const response = (shelves, mounts = [], revision = 2) => new Response(JSON.stringify({
         ok: true, revision, id_maps: {}, devices: [], views: [{ ...appState.views[0], resource_revision: revision }],
-        placements: [], links: [], canvas_notes: [], rack_settings: [{ view_id: 1, total_u: 6, location: '' }],
+        placements: [], view_link_routes: [], canvas_notes: [], rack_settings: [{ view_id: 1, total_u: 6, location: '' }],
         rack_mounts: mounts, rack_shelves: shelves, rack_shelf_devices: [],
         affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: []
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -62,13 +62,13 @@ test('棚板の保存完了・削除と旧両面搭載の編集境界', async t 
         globalThis.fetch = async () => new Promise(resolve => { release = () => resolve(response([{ ...shelfRow, name: '更新棚板' }])); });
         shelf.openShelfDialog({ viewId: 1, shelfId: 1 });
         dom.get('rack-shelf-name').value = '更新棚板';
-        await document.querySelector('.rack-mount-form').dispatch('submit'); await setImmediate();
+        const submitting = document.querySelector('.rack-mount-form').dispatch('submit'); await setImmediate();
         try {
             assert.equal(queue.isSaveInFlight(), true);
             eventBus.emit('canvas:render-complete');
             assert.equal(dom.get('palette-shelf-btn').disabled, true);
         } finally {
-            release(); await queue.flushSaveQueue({ silent: true });
+            release(); await submitting; await queue.flushSaveQueue({ silent: true });
         }
         assert.equal(queue.isSaveInFlight(), false);
         assert.equal(dom.get('palette-shelf-btn').disabled, false);

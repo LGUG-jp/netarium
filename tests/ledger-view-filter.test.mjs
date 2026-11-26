@@ -63,7 +63,7 @@ class LedgerElement extends WorkspaceElement {
     }
 }
 
-const filterIds = ['ledger-search', 'ledger-view-filter', 'ledger-facility-filter', 'ledger-floor-filter', 'ledger-status-filter', 'ledger-type-filter', 'ledger-ip-presence-filter', 'ledger-placement-filter', 'ledger-maintenance-expiry-filter'];
+const filterIds = ['ledger-search', 'ledger-view-filter', 'ledger-building-filter', 'ledger-floor-filter', 'ledger-status-filter', 'ledger-type-filter', 'ledger-ip-presence-filter', 'ledger-placement-filter', 'ledger-maintenance-expiry-filter'];
 
 test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件遷移を保つ', async t => {
     const keys = ['window', 'document', 'fetch', 'confirm', 'localStorage', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'HTMLButtonElement'];
@@ -116,6 +116,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     globalThis.window = {
         APP_CONFIG: { user: { isAdmin: true }, csrfToken: 'test-only-token' },
         addEventListener() {}, requestAnimationFrame: callback => callback(),
+        innerWidth: 1200, innerHeight: 800,
         getComputedStyle: () => ({ display: 'block', visibility: 'visible' }), clearTimeout,
         setTimeout(callback, delay) { const timer = setTimeout(callback, delay); timer.unref(); return timer; }
     };
@@ -138,12 +139,14 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     const seed = () => {
         // 機器順はID順/名称順ではなく、配置順も意図的に異なる。
         appState.devices = [
-            { id: 30, name: '対象 Z', type: 'switch', facility: '施設A', floor: '1F', ip: '192.0.2.30' },
-            { id: 10, name: '対象 A', type: 'router', facility: '施設A', floor: '1F' },
-            { id: 20, name: '対象 M', type: 'switch', facility: '施設B', floor: '2F' },
-            { id: 40, name: '対象 Other', type: 'switch', facility: '施設A', floor: '1F' },
-            { id: 50, name: '対象 Unplaced', type: 'switch', facility: '施設A', floor: '1F' }
+            { id: 30, name: '対象 Z', type: 'switch', floor_id: 11, facility: '旧施設', floor: '旧フロア', ip: '192.0.2.30' },
+            { id: 10, name: '対象 A', type: 'router', floor_id: 11 },
+            { id: 20, name: '対象 M', type: 'switch', floor_id: 21 },
+            { id: 40, name: '対象 Other', type: 'switch', floor_id: 11 },
+            { id: 50, name: '対象 Unplaced', type: 'switch', floor_id: 11 }
         ].map(device => normalizeDevice({ ...device, resource_revision: 1 }));
+        appState.buildings = [{ id: 1, name: '施設A' }, { id: 2, name: '施設B' }];
+        appState.floors = [{ id: 11, building_id: 1, name: '1F' }, { id: 21, building_id: 2, name: '2F' }];
         appState.views = [{ id: 7, name: '同名ビュー', view_type: 'topology' }, { id: 8, name: '同名ビュー', view_type: 'topology' }, { id: 9, name: '空ビュー', view_type: 'topology' }];
         appState.placements = [
             { id: 1, view_id: 7, device_id: 20, x: 0, y: 0 },
@@ -184,6 +187,28 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         await checkbox.dispatch('change');
     };
     cleanup = () => { drafts.discardDeviceDrafts(); queue.clearPendingSave(); };
+    await t.test('同名フロアは建物パスとIDで区別し未設定も絞れ、旧文字列では検索しない', () => {
+        seed();
+        appState.floors[1].name = '1F';
+        appState.devices[4].floor_id = null;
+        ledger.openLedgerWithFilters({ floorId: 21 });
+        assert.deepEqual(visibleIds(), [20]);
+        assert.deepEqual(get('ledger-floor-filter').options.map(option => option.textContent), ['未設定', '施設A / 1F', '施設B / 1F']);
+        ledger.openLedgerWithFilters({ buildingId: 1 });
+        assert.deepEqual(visibleIds(), [30, 10, 40]);
+        ledger.openLedgerWithFilters({ floorId: 'unset' });
+        assert.deepEqual(visibleIds(), [50]);
+        ledger.openLedgerWithFilters({ buildingId: 'unset' });
+        assert.deepEqual(visibleIds(), [50]);
+        ledger.openLedgerWithFilters({ keyword: '施設B / 1F' });
+        assert.deepEqual(visibleIds(), [20]);
+        for (const keyword of ['旧施設', '旧フロア']) {
+            ledger.openLedgerWithFilters({ keyword });
+            assert.deepEqual(visibleIds(), []);
+        }
+        assert.equal(appState.devices[0].facility, '旧施設');
+        assert.equal(appState.devices[0].floor, '旧フロア');
+    });
     await t.test('PC種別の台帳検索・種別フィルタはIP空欄の機器も対象にする', () => {
         seed();
         appState.devices[1].type = 'pc';
@@ -215,8 +240,8 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         appState.devices[0].status = 'green'; appState.devices[1].status = 'red';
         const cases = [
             ['ledger-view-filter', [7, 8], [30, 10, 20, 40]],
-            ['ledger-facility-filter', ['施設A', '施設B'], [30, 10, 20, 40, 50]],
-            ['ledger-floor-filter', ['1F', '2F'], [30, 10, 20, 40, 50]],
+            ['ledger-building-filter', ['1', '2'], [30, 10, 20, 40, 50]],
+            ['ledger-floor-filter', ['11', '21'], [30, 10, 20, 40, 50]],
             ['ledger-status-filter', ['green', 'red'], [30, 10]],
             ['ledger-type-filter', ['switch', 'router'], [30, 10, 20, 40, 50]],
             ['ledger-ip-presence-filter', ['registered', 'empty'], [30, 10, 20, 40, 50]],
@@ -232,13 +257,13 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     await t.test('全項目と検索はANDし、0件でも全値とチップを保持する', () => {
         seed();
         ledger.openLedgerWithFilters({
-            viewId: [7, 8], facility: ['施設A', '施設B'], floor: ['1F', '2F'],
+            viewId: [7, 8], buildingId: ['1', '2'], floorId: ['11', '21'],
             status: ['unknown', 'green'], type: ['switch', 'router'],
             ipPresence: ['registered', 'empty'], placement: ['placed', 'unplaced'], maintenanceExpiry: 'unset'
         });
         get('ledger-search').value = '対象'; ledger.renderLedgerTable();
         assert.deepEqual(visibleIds(), [30, 10, 20, 40]);
-        chooseValues('ledger-facility-filter', ['施設B']); chooseValues('ledger-type-filter', ['switch']);
+        chooseValues('ledger-building-filter', ['2']); chooseValues('ledger-type-filter', ['switch']);
         ledger.renderLedgerTable(); assert.deepEqual(visibleIds(), [20]);
         const before = ledger.getLedgerFilterValues();
         get('ledger-search').value = '存在しない検索'; ledger.renderLedgerTable();
@@ -250,8 +275,8 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     await t.test('各項目の1値チップと検索だけを解除でき、全解除は全値を消す', async () => {
         const cases = [
             ['viewIds', 'viewId', [7, 8], 'ledger-view-filter'],
-            ['facility', 'facility', ['施設A', '施設B'], 'ledger-facility-filter'],
-            ['floor', 'floor', ['1F', '2F'], 'ledger-floor-filter'],
+            ['buildingIds', 'buildingId', ['1', '2'], 'ledger-building-filter'],
+            ['floorIds', 'floorId', ['11', '21'], 'ledger-floor-filter'],
             ['status', 'status', ['unknown', 'green'], 'ledger-status-filter'],
             ['type', 'type', ['switch', 'router'], 'ledger-type-filter'],
             ['ipPresence', 'ipPresence', ['registered', 'empty'], 'ledger-ip-presence-filter'],
@@ -269,7 +294,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
             assert.deepEqual(get(id).selectedOptions.map(option => option.value), [String(values[1])]);
             ledger.resetLedgerFilters();
             assert.deepEqual(ledger.getLedgerFilterValues(), {
-                viewIds: [], keyword: '', facility: [], floor: [], status: [], type: [], ipPresence: [], placement: [], maintenanceExpiry: []
+                viewIds: [], keyword: '', buildingIds: [], floorIds: [], status: [], type: [], ipPresence: [], placement: [], maintenanceExpiry: []
             });
             assert.deepEqual(visibleIds(), [30, 10, 20, 40, 50]);
         }
@@ -316,7 +341,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
 
     await t.test('期限のORとビュー・施設・種別・検索のANDを保ち、期限チップと全解除を統合する', () => withExpiryReference(async () => {
         seedExpiry();
-        ledger.openLedgerWithFilters({ maintenanceExpiry: ['expired', 'within1Year'], viewId: 7, facility: '施設A', type: 'switch', keyword: '対象' });
+        ledger.openLedgerWithFilters({ maintenanceExpiry: ['expired', 'within1Year'], viewId: 7, buildingId: '1', type: 'switch', keyword: '対象' });
         assert.deepEqual(visibleIds(), [30]);
         await removeChip('maintenanceExpiry', 'within1Year');
         assert.deepEqual(visibleIds(), []);
@@ -367,6 +392,77 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         assert.deepEqual(presetWrites, [[ledger.LEDGER_COLUMN_PRESET_KEY, 'monitoring']]);
     }));
 
+    const currentFiscalRange = {
+        label: '2026年度（2026/04〜2027/03）', start: '2026-10-23', end: '2027-03-31'
+    };
+
+    await t.test('年度台帳は当日から年度末までを含み、年月を月末として安定順で表示する', () => withExpiryReference(async () => {
+        seedExpiry();
+        appState.devices[0].maintenance_expiry = '2027-04-01';
+        appState.devices.push(
+            normalizeDevice({ id: 100, name: '年度末の月精度', maintenance_expiry: '2027-03' }),
+            normalizeDevice({ id: 110, name: '年度末の日精度', maintenance_expiry: '2027-03-31' })
+        );
+        const original = structuredClone(appState.devices);
+
+        ledger.openDashboardLedger({ maintenanceRange: currentFiscalRange });
+        assert.deepEqual(visibleIds(), [80, 70, 90, 100, 110]);
+        assert.equal(presetSelect.value, 'maintenance');
+        assert.deepEqual(ledger.getLedgerFilterValues().maintenanceExpiry, []);
+        const chip = get('ledger-active-filter-list').children[0];
+        assert.equal(chip.querySelector('button').getAttribute('aria-label'),
+            '保守期限: 2026年度（2026/04〜2027/03） の条件を解除');
+        assert.equal(get('ledger-filter-reset-btn').disabled, false);
+        get('ledger-search').value = '年度末';
+        ledger.renderLedgerTable();
+        assert.deepEqual(visibleIds(), [100, 110]);
+
+        ledger.openDashboardLedger({ maintenanceRange: { label: '以降', start: '2027-04-01', end: null } });
+        assert.deepEqual(visibleIds(), [30, 20, 40]);
+        assert.deepEqual(appState.devices, original);
+        ledger.resetLedgerFilters();
+    }));
+
+    await t.test('年度条件はチップ・全解除・保守期限ピッカー・閉じる操作や通常入口に残らない', () => withExpiryReference(async () => {
+        seedExpiry();
+        const allIds = appState.devices.map(device => device.id);
+        const openRange = () => ledger.openDashboardLedger({ maintenanceRange: currentFiscalRange });
+        const assertRangeCleared = () => {
+            assert.equal(ledger.getLedgerActiveFilterItems().some(item => item.key === 'maintenanceRange'), false);
+        };
+        storage.set(ledger.LEDGER_COLUMN_PRESET_KEY, 'asset');
+
+        openRange();
+        await removeChip('maintenanceRange', currentFiscalRange.label);
+        assert.deepEqual(visibleIds(), allIds);
+        assert.equal(presetSelect.value, 'asset');
+        openRange();
+        ledger.resetLedgerFilters();
+        assertRangeCleared();
+        assert.deepEqual(visibleIds(), allIds);
+
+        openRange();
+        const trigger = get('ledger-maintenance-expiry-filter-trigger');
+        trigger.getBoundingClientRect = () => ({ left: 10, top: 80, bottom: 112, width: 160 });
+        await trigger.dispatch('click');
+        await get('ledger-maintenance-expiry-filter-options').querySelector('[data-value="expired"]').dispatch('click');
+        assertRangeCleared();
+        assert.deepEqual(visibleIds(), [10]);
+        assert.equal(presetSelect.value, 'maintenance');
+        ledger.resetLedgerFilters();
+        assert.equal(presetSelect.value, 'asset');
+
+        openRange();
+        assert.equal(await ledger.closeLedger(), true);
+        assertRangeCleared();
+        openRange();
+        ledger.openLedger();
+        assertRangeCleared();
+        assert.deepEqual(visibleIds(), allIds);
+        assert.equal(presetSelect.value, 'asset');
+        assert.deepEqual(presetWrites, []);
+    }));
+
     await t.test('個票の保守期限編集を適用・保存すると、元の年月精度を保ち期限条件を再分類する', () => withExpiryReference(async () => {
         seedExpiry();
         appState.views[1].name = '別ビュー';
@@ -376,7 +472,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
             const payload = JSON.parse(options.body); calls.push(payload);
             return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {},
                 devices: payload.devices.map(change => ({ ...change.device, resource_revision: 2 })),
-                views: [], placements: [], links: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
+                views: [], placements: [], view_link_routes: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
         };
         ledger.openLedgerWithFilters({ maintenanceExpiry: 'expired' });
         assert.equal(await ledger.openLedgerDetail(10), true);
@@ -391,13 +487,13 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         assert.deepEqual(visibleIds(), [80, 10, 70, 90, 30]);
     }));
 
-    await t.test('候補から消えた施設・フロア・種別も条件を保持し、復帰後に再び一致する', async () => {
+    await t.test('機器の設置フロア・種別変更時もID条件を保持し、復帰後に再び一致する', async () => {
         seed();
-        ledger.openLedgerWithFilters({ facility: ['施設A', '施設B'], floor: ['1F', '2F'], type: ['switch', 'router'] });
+        ledger.openLedgerWithFilters({ buildingId: ['1', '2'], floorId: ['11', '21'], type: ['switch', 'router'] });
         await select(20);
         const filters = ledger.getLedgerFilterValues(); const original = structuredClone(appState.devices);
         for (const device of appState.devices) {
-            device.facility = '別施設'; device.floor = '9F'; device.type = 'ap';
+            device.floor_id = null; device.type = 'ap';
         }
         ledger.renderLedgerTable();
         assert.deepEqual(ledger.getLedgerFilterValues(), filters);
@@ -426,7 +522,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
 
     await t.test('複数ビューの全選択・解除は表示外選択を保持し、同集合の入口は選択を保持する', async () => {
         seed(); ledger.openLedgerWithFilters({ viewId: [7, 8] }); await select(20);
-        chooseValues('ledger-facility-filter', ['施設A']); ledger.renderLedgerTable();
+        chooseValues('ledger-building-filter', ['1']); ledger.renderLedgerTable();
         const master = get('ledger-select-all');
         master.checked = true; ledger.toggleAllLedgerCheckboxes(master);
         assert.deepEqual(new Set(ledger.getLedgerSelectedDeviceIds()), new Set([30, 10, 20, 40]));
@@ -479,7 +575,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
 
     await t.test('ビュー条件は検索・種別・施設・配置状態とANDし、chipだけ解除すると他条件を保つ', async () => {
         seed(); ledger.openLedgerWithFilters({ viewId: 7 });
-        get('ledger-search').value = '対象'; get('ledger-type-filter').value = 'switch'; get('ledger-facility-filter').value = '施設A';
+        get('ledger-search').value = '対象'; get('ledger-type-filter').value = 'switch'; get('ledger-building-filter').value = '1';
         ledger.renderLedgerTable();
         assert.deepEqual(visibleIds(), [30]);
         get('ledger-placement-filter').value = 'unplaced'; ledger.renderLedgerTable();
@@ -493,11 +589,11 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         assert.deepEqual(ledger.getLedgerSelectedDeviceIds(), []);
         assert.equal(get('ledger-search').value, '対象');
         assert.equal(get('ledger-type-filter').value, 'switch');
-        assert.equal(get('ledger-facility-filter').value, '施設A');
+        assert.equal(get('ledger-building-filter').value, '1');
         assert.deepEqual(visibleIds(), [30, 40, 50]);
         ledger.openLedgerWithFilters({ viewId: 7 });
         await select(30);
-        get('ledger-floor-filter').value = '1F'; get('ledger-status-filter').value = 'unknown';
+        get('ledger-floor-filter').value = '11'; get('ledger-status-filter').value = 'unknown';
         get('ledger-ip-presence-filter').value = 'registered'; get('ledger-placement-filter').value = 'placed';
         ledger.resetLedgerFilters();
         assert.deepEqual(ledger.getLedgerFilterValues().viewIds, []);
@@ -612,14 +708,15 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         globalThis.fetch = async (url, options) => {
             assert.ok(url.includes('action=save_resources'));
             const payload = JSON.parse(options.body); calls.push(payload);
-            return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {}, devices: payload.devices.map(change => ({ ...change.device, resource_revision: 2 })), views: [], placements: [], links: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
+            return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {}, devices: payload.devices.map(change => ({ ...change.device, resource_revision: 2 })), views: [], placements: [], view_link_routes: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [] }));
         };
+        appState.floors.push({ id: 31, building_id: 2, name: '3F' });
         await ledger.openLedgerBulkEdit();
-        const change = get('ledger-bulk-change-floor'); change.checked = true; await change.dispatch('change');
-        get('ledger-bulk-value-floor').value = '合成一括変更';
+        const change = get('ledger-bulk-change-floor_id'); change.checked = true; await change.dispatch('change');
+        get('ledger-bulk-value-floor_id').value = '31';
         ledger.previewLedgerBulkEdit(); ledger.confirmLedgerBulkEdit();
         await queue.flushSaveQueue({ silent: true });
-        assert.deepEqual(appState.devices.map(device => device.floor), ['合成一括変更', '合成一括変更', '合成一括変更', '合成一括変更', '1F']);
+        assert.deepEqual(appState.devices.map(device => device.floor_id), [31, 31, 31, 31, 11]);
         assert.deepEqual(calls.flatMap(call => call.devices.map(change => change.id)).sort((a, b) => a - b), [10, 20, 30, 40]);
         assert.deepEqual(visibleIds(), [30, 10, 20, 40]);
         assert.equal(await ledger.openLedgerDetail(20), true);
@@ -652,7 +749,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         await ledger.pingLedgerSelected();
         assert.equal(calls.length, 0);
         for (const id of [30, 20, 10, 40]) await select(id);
-        get('ledger-facility-filter').value = '施設A'; ledger.renderLedgerTable();
+        get('ledger-building-filter').value = '1'; ledger.renderLedgerTable();
         assert.match(get('ledger-selection-summary').textContent, /表示外 1件/);
         const originalUntargeted = { ...appState.devices.find(device => device.id === 50) };
         const ping = ledger.pingLedgerSelected();
@@ -674,7 +771,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
         ledger.clearLedgerSelection();
         assert.deepEqual(ledger.getLedgerSelectedDeviceIds(), []);
         assert.equal(get('ledger-ping-btn').disabled, true);
-        get('ledger-facility-filter').value = ''; get('ledger-status-filter').value = 'red'; ledger.renderLedgerTable();
+        get('ledger-building-filter').value = ''; get('ledger-status-filter').value = 'red'; ledger.renderLedgerTable();
         assert.deepEqual(visibleIds(), [20, 40]);
         const master = get('ledger-select-all'); master.checked = true;
         ledger.toggleAllLedgerCheckboxes(master);
@@ -744,7 +841,7 @@ test('ビュー限定台帳は配置IDを使い、既存台帳の操作と条件
     });
     await t.test('ラック単独搭載は未配置から除外し、ラック指定台帳と検索の配置先に含める', async () => {
         seed();
-        appState.views.push({ id: 11, name: 'ラックA', view_type: 'rack', facility: '別施設', floor: '別階' });
+        appState.views.push({ id: 11, name: 'ラックA', view_type: 'rack', floor_id: 21 });
         appState.rackSettings = [{ view_id: 11, total_u: 8, location: 'ラック場所' }];
         appState.rackMounts = [{ device_id: 50, view_id: 11, face: 'rear', start_u: 2, height_u: 2, width_slot: 'right' }];
         const originalDevice = structuredClone(appState.devices.find(device => device.id === 50));

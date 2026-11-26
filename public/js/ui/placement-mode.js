@@ -18,6 +18,9 @@ import {
     getDeviceById
 } from '../core/state.js';
 import { getPlacedDeviceIds, getRackDeviceMounts } from '../core/device-placement.js';
+import { sharesPlacementFloor, viewHierarchyPath } from '../core/building-hierarchy.js';
+import { canPlaceFloorRack, getFloorRackDestination } from '../core/floor-rack-data.js';
+import { showFloorRackPlacement } from '../modals/view-manager-modal.js';
 
 import {
     clampPosition
@@ -63,11 +66,13 @@ import { eventBus } from '../core/event-bus.js';
 import { endLinkMode } from '../core/link-mode.js';
 import { FLOOR_RACK_ICON } from '../canvas/floor-racks.js';
 import { hasResourceConflict } from '../core/save-queue.js';
+import { finishCanvasContextToolbar } from './canvas-context-toolbar.js';
 
 let ghostClientPoint = null;
 
 eventBus.on('placement-mode:exit', exitPlacementMode);
 eventBus.on('placement-mode:view-changed', () => {
+    resetPlacementFloorFilter();
     if (placementState.tab === 'rack' || getCurrentView()?.view_type === 'rack') exitPlacementMode();
     else syncPlacementModeUi();
 });
@@ -90,7 +95,7 @@ export const placementState = {
     unplacedScope: 'current-view', // 'current-view' | 'all-views'
     unplacedSearchKeyword: '',
     selectedUnplacedIds: new Set(),
-    queue: [] // [{ id, name, type, ip, facility, floor }]
+    queue: [] // [{ id, name, type, ip }]
 };
 
 eventBus.on('resources:ids-remapped', maps => {
@@ -99,6 +104,14 @@ eventBus.on('resources:ids-remapped', maps => {
     placementState.queue.forEach(row => { row.id = Number(maps.devices?.[row.id] ?? row.id); });
     if (placementState.selectedRackId != null) {
         placementState.selectedRackId = Number(maps.views?.[placementState.selectedRackId] ?? placementState.selectedRackId);
+    }
+});
+eventBus.on('resources:reloaded', () => {
+    placementState.queue = [];
+    placementState.selectedUnplacedIds.clear();
+    placementState.selectedRackId = null;
+    if (placementState.active) {
+        exitPlacementMode();
     }
 });
 
@@ -117,8 +130,16 @@ export function enterPlacementMode(options = {}) {
     if (!requireAdminUiAction()) {
         return false;
     }
+    if (appState.authExpired || appState.appStatus?.state === 'unconfirmed') {
+        showToast('現在の状態では配置モードを開始できません', 'warning');
+        return false;
+    }
     if (appState.currentViewId === null) {
         showToast('表示中のビューがありません', 'warning');
+        return false;
+    }
+    if (hasResourceConflict('views', appState.currentViewId)) {
+        showToast('現在のビューは競合しています。対象を再読込してください', 'warning');
         return false;
     }
     if (getCurrentView()?.view_type === 'rack') {
@@ -141,6 +162,8 @@ export function enterPlacementMode(options = {}) {
 }
 
 function setupPlacementMode(options) {
+    resetPlacementFloorFilter();
+    finishCanvasContextToolbar('replace');
     eventBus.emit('canvas-note:finish');
     if (typeof window.closeToolbarMenu === 'function') {
         window.closeToolbarMenu();
@@ -380,24 +403,51 @@ export function renderPlacementRacks() {
         empty.textContent = 'ビュー管理でラックを先に登録してください。';
         list.appendChild(empty);
     }
+    const currentView = getCurrentView();
     for (const rack of racks) {
-        const placed = (appState.floorRackPlacements || []).some(row => Number(row.rack_view_id) === Number(rack.id));
-        const totalU = appState.rackSettings.find(row => Number(row.view_id) === Number(rack.id))?.total_u;
-        const button = document.createElement('button');
-        button.type = 'button'; button.className = 'placement-rack-item';
-        button.disabled = placed || appState.authExpired || appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', appState.currentViewId) ||
-            hasResourceConflict('views', rack.id);
-        button.classList.toggle('is-selected', Number(placementState.selectedRackId) === Number(rack.id));
-        button.setAttribute('aria-pressed', String(Number(placementState.selectedRackId) === Number(rack.id)));
+        const rackId = Number(rack.id);
+        const destination = getFloorRackDestination(appState, rackId);
+        const allowed = canPlaceFloorRack(rack, currentView);
+        const selectable = !destination && allowed;
+        const disabled = !selectable || appState.authExpired || appState.appStatus.state === 'unconfirmed' ||
+            hasResourceConflict('views', appState.currentViewId) || hasResourceConflict('views', rackId);
+        if (!selectable && placementState.selectedRackId === rackId) {
+            placementState.selectedRackId = null;
+            hidePlacementGhost();
+        }
+        const item = document.createElement(selectable ? 'button' : 'div');
+        item.className = 'placement-rack-item';
+        if (selectable) {
+            item.type = 'button';
+            item.disabled = disabled;
+            const selected = placementState.selectedRackId === rackId;
+            item.classList.toggle('is-selected', selected);
+            item.setAttribute('aria-pressed', String(selected));
+            item.addEventListener('click', () => {
+                placementState.selectedRackId = rackId;
+                renderPlacementRacks();
+            });
+        }
+        const totalU = appState.rackSettings.find(row => Number(row.view_id) === rackId)?.total_u;
         const icon = document.createElement('img'); icon.src = FLOOR_RACK_ICON; icon.alt = '';
         const text = document.createElement('span');
         const name = document.createElement('strong'); name.textContent = rack.name;
-        const detail = document.createElement('span'); detail.textContent = `${totalU ?? '—'}U / ${placed ? '配置済み' : '未配置'}`;
-        text.append(name, detail); button.append(icon, text);
-        button.addEventListener('click', () => {
-            placementState.selectedRackId = Number(rack.id); renderPlacementRacks();
-        });
-        list.appendChild(button);
+        const detail = document.createElement('span');
+        detail.textContent = `${totalU ?? '—'}U / ${destination
+            ? `配置先：${viewHierarchyPath(destination.view, appState)} / ${destination.view.name}`
+            : allowed ? '未配置 / 配置可能' : '未配置 / このフロアには配置できません'}`;
+        text.append(name, detail);
+        if (destination) {
+            const jump = document.createElement('button');
+            jump.type = 'button';
+            jump.className = 'btn btn-secondary btn-sm';
+            jump.textContent = '配置先へ';
+            jump.setAttribute('aria-label', `ラック「${rack.name}」の配置先へ`);
+            jump.addEventListener('click', () => showFloorRackPlacement(rackId));
+            text.appendChild(jump);
+        }
+        item.append(icon, text);
+        list.appendChild(item);
     }
 }
 
@@ -485,35 +535,19 @@ export function getUnplacedCandidates(scope = placementState.unplacedScope) {
  */
 export function getRecommendedUnplacedDevices(devices) {
     const currentView = getCurrentView();
-    const viewFacility = normalizeText(currentView?.facility || '').trim().toLocaleLowerCase('ja');
-    const viewFloor = normalizeText(currentView?.floor || '').trim().toLocaleLowerCase('ja');
-
     const recommended = [];
     const others = [];
-
-    devices.forEach(device => {
-        const devFacility = normalizeText(device.facility || '').trim().toLocaleLowerCase('ja');
-        const devFloor = normalizeText(device.floor || '').trim().toLocaleLowerCase('ja');
-
-        let isMatch = false;
-        if (viewFacility && devFacility && viewFacility === devFacility) {
-            if (viewFloor && devFloor) {
-                isMatch = viewFloor === devFloor;
-            } else {
-                isMatch = true;
-            }
-        } else if (!viewFacility && viewFloor && devFloor && viewFloor === devFloor) {
-            isMatch = true;
-        }
-
-        if (isMatch) {
-            recommended.push(device);
-        } else {
-            others.push(device);
-        }
-    });
+    for (const device of devices) {
+        (sharesPlacementFloor(device, currentView) ? recommended : others).push(device);
+    }
 
     return { recommended, others };
+}
+
+function resetPlacementFloorFilter() {
+    if (typeof document === 'undefined') return;
+    const checkbox = document.getElementById('placement-show-other-floors');
+    if (checkbox) checkbox.checked = false;
 }
 
 /**
@@ -524,9 +558,17 @@ export function renderPlacementUnplacedList() {
     const currentCountEl = document.getElementById('place-scope-current-count');
     const allCountEl = document.getElementById('place-scope-all-count');
 
-    // 件数バッジの更新
-    const currentScopeCandidates = getUnplacedCandidates('current-view');
-    const allScopeCandidates = getUnplacedCandidates('all-views');
+    const currentView = getCurrentView();
+    const hasFloorFilter = currentView?.view_type === 'floor' && currentView.floor_id != null;
+    const floorFilter = document.getElementById('placement-floor-filter');
+    if (floorFilter) floorFilter.hidden = !hasFloorFilter;
+    const limitToFloor = hasFloorFilter && !document.getElementById('placement-show-other-floors')?.checked;
+    const visibleCandidates = scope => {
+        const candidates = getUnplacedCandidates(scope);
+        return limitToFloor ? candidates.filter(device => device.floor_id == null || sharesPlacementFloor(device, currentView)) : candidates;
+    };
+    const currentScopeCandidates = visibleCandidates('current-view');
+    const allScopeCandidates = visibleCandidates('all-views');
     if (currentCountEl) currentCountEl.textContent = String(currentScopeCandidates.length);
     if (allCountEl) allCountEl.textContent = String(allScopeCandidates.length);
 
@@ -537,6 +579,12 @@ export function renderPlacementUnplacedList() {
     const candidates = placementState.unplacedScope === 'all-views'
         ? allScopeCandidates
         : currentScopeCandidates;
+    if (limitToFloor && placementState.selectedUnplacedIds.size) {
+        const visibleIds = new Set(candidates.map(device => Number(device.id)));
+        for (const id of placementState.selectedUnplacedIds) {
+            if (!visibleIds.has(id)) placementState.selectedUnplacedIds.delete(id);
+        }
+    }
 
     const keyword = normalizeText(
         document.getElementById('placement-unplaced-search')?.value || ''
@@ -549,8 +597,7 @@ export function renderPlacementUnplacedList() {
             device.name,
             device.type,
             device.ip,
-            device.facility,
-            device.floor,
+            viewHierarchyPath(device, appState),
             device.model,
             device.asset_number
         ].map(normalizeText).join(' ').toLocaleLowerCase('ja');
@@ -560,7 +607,7 @@ export function renderPlacementUnplacedList() {
     if (filtered.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'workspace-nav-empty';
-        empty.textContent = keyword ? '条件に一致する未配置機器はありません' : '未配置の機器はありません';
+        empty.textContent = keyword || limitToFloor ? '条件に一致する未配置機器はありません' : '未配置の機器はありません';
         listContainer.appendChild(empty);
         updateEnqueueButton();
         return;
@@ -634,7 +681,7 @@ function createUnplacedItemElement(device, isRecommended) {
     sub.className = 'placement-unplaced-option-sub';
     const typeLabel = DEVICE_TYPES[device.type]?.label || 'その他';
     const ipText = device.ip ? `IP: ${device.ip}` : 'IPなし';
-    const locText = [device.facility, device.floor].filter(Boolean).join(' / ');
+    const locText = viewHierarchyPath(device, appState);
     sub.textContent = [typeLabel, ipText, locText].filter(Boolean).join(' | ');
 
     info.appendChild(title);
@@ -697,9 +744,7 @@ export function addDevicesToPlacementQueue(deviceIds) {
             id: Number(device.id),
             name: device.name || '(名称未設定)',
             type: device.type || 'switch',
-            ip: device.ip || '',
-            facility: device.facility || '',
-            floor: device.floor || ''
+            ip: device.ip || ''
         });
         existingQueueIds.add(id);
         addedCount++;
@@ -931,6 +976,11 @@ export function handleCanvasPlacementClick(event) {
         if ((appState.floorRackPlacements || []).some(row => Number(row.rack_view_id) === Number(rack.id))) {
             showToast('このラックは既に配置されています', 'warning'); renderPlacementRacks(); return true;
         }
+        if (!canPlaceFloorRack(rack, getCurrentView())) {
+            showToast('ラックと同じフロアの物理配置図に配置してください', 'warning');
+            renderPlacementRacks();
+            return true;
+        }
         appState.floorRackPlacements.push({
             floor_view_id: Number(appState.currentViewId), rack_view_id: Number(rack.id), x: position.x, y: position.y
         });
@@ -941,6 +991,10 @@ export function handleCanvasPlacementClick(event) {
     }
 
     if (placementState.tab === 'new') {
+        if (appState.authExpired || appState.appStatus?.state === 'unconfirmed' ||
+            hasResourceConflict('views', appState.currentViewId)) {
+            return true;
+        }
         if (!placementState.newDeviceType || !DEVICE_TYPES[placementState.newDeviceType]) {
             showToast('配置する機器種別をパレットから選択してください', 'warning');
             return true;
@@ -1002,6 +1056,10 @@ export function handleCanvasPlacementClick(event) {
     }
 
     if (placementState.tab === 'unplaced') {
+        if (appState.authExpired || appState.appStatus?.state === 'unconfirmed' ||
+            hasResourceConflict('views', appState.currentViewId)) {
+            return true;
+        }
         // キュー方式：キュー先頭の機器を配置
         if (placementState.queue.length === 0) {
             showToast('配置待ちの機器がありません。パレットから選択してください', 'warning');

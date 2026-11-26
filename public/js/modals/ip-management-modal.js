@@ -1582,6 +1582,7 @@ function hideIpManagement() {
     if (overlay) overlay.hidden = true;
     form = null; membershipSelections.clear();
     membershipDestination = '';
+    recoveryRequired = false;
     registerModalClose('ip-management');
 }
 
@@ -1652,6 +1653,7 @@ export async function openIpManagement(options = {}) {
         form = null; membershipSelections.clear();
         membershipDestination = '';
         spaceId = ''; segmentId = null; query = ''; candidateFilter = ''; page = 0; includeUnregistered = false; highlightedIp = '';
+        recoveryRequired = false;
     } else {
         target = null; targetReady = false; focusTarget = false;
         form = null; membershipSelections.clear();

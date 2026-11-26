@@ -237,7 +237,8 @@ class BackupTest extends TestCase
             try {
                 stream_set_timeout($pipes[1], 10);
                 $this->assertSame("ready\n", fgets($pipes[1]));
-                $this->previewIdBackup($path, 409);
+                $busy = $this->previewIdBackup($path, 409);
+                $this->assertSame('operation_busy', $busy['details']['reason']);
                 $this->commitIdBackup($preview, 409);
                 $this->assertRestoreStatus(409, function () use ($root): void {
                     $workspace = new \Netarium\Services\Backup\RestoreWorkspace($this->restoreWorkspaceConfig($root));
@@ -299,6 +300,241 @@ class BackupTest extends TestCase
             $this->assertSame(0, $this->runRestorePrune($storage));
             $this->assertSame($files, $this->restoreFiles($valid));
         });
+    }
+
+    public function testHierarchyLegacyContractsAndMigration(): void
+    {
+        foreach (range(11, 23) as $schema) {
+            $db = new \PDO('sqlite::memory:', null, null, [
+                \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            ]);
+            for ($version = 1; $version <= $schema; $version++) {
+                ('migrateDatabaseToVersion' . $version)($db);
+            }
+            $db->exec("INSERT INTO views(id,name,view_type) VALUES(1,'Legacy','floor')");
+            $db->exec("INSERT INTO devices(id,name,facility,floor) VALUES
+                (1,'Matching device',' Main ',' B1 '),
+                (2,'Device only',' Device only ',' 1F '),
+                (3,'Partial device',' Device building only ','')");
+            $service = new \Netarium\Services\Backup\BackupService($db);
+            $source = $service->fetchBackupTables($schema);
+            $this->assertFalse(array_key_exists('floor_id', $source['views'][0]));
+            $converted = $service->convertBackupRestoreData($source, $schema);
+            $this->assertSame([], $converted['buildings']);
+            $this->assertSame([], $converted['floors']);
+            $this->assertNull($converted['views'][0]['floor_id']);
+            $this->assertSame([null, null, null], array_column($converted['devices'], 'floor_id'));
+            $withView = $source;
+            $withView['views'][0]['facility'] = ' Main ';
+            $withView['views'][0]['floor'] = ' B1 ';
+            $fromView = $service->convertBackupRestoreData($withView, $schema);
+            $this->assertSame(['Main'], array_column($fromView['buildings'], 'name'));
+            $this->assertSame([1], array_column($fromView['buildings'], 'building_view_enabled'));
+            $this->assertSame(['B1'], array_column($fromView['floors'], 'name'));
+            $this->assertSame($fromView['views'][0]['floor_id'], $fromView['devices'][0]['floor_id']);
+            $this->assertNotNull($fromView['devices'][0]['floor_id']);
+            $this->assertNull($fromView['devices'][1]['floor_id']);
+            $this->assertNull($fromView['devices'][2]['floor_id']);
+            foreach ($source['devices'] as $index => $device) {
+                $this->assertSame($device['facility'], $fromView['devices'][$index]['facility']);
+                $this->assertSame($device['floor'], $fromView['devices'][$index]['floor']);
+            }
+            foreach (['buildings', 'floors', 'floor_id'] as $field) {
+                $mixed = $source;
+                if ($field === 'floor_id') { $mixed['views'][0][$field] = null; }
+                else { $mixed[$field] = []; }
+                $this->assertRestoreStatus(400, static fn() => $service->convertBackupRestoreData($mixed, $schema));
+            }
+        }
+    }
+
+    public function testHierarchyWebZipRoundTripAndStrictBoundaries(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $viewId = (int)$db->query("SELECT id FROM views WHERE view_type='floor' ORDER BY id LIMIT 1")->fetchColumn();
+            $db->exec("INSERT INTO buildings(id,name,sort_order,building_view_enabled)
+                VALUES(71,'Building',-999999,0),(72,'Enabled building',0,1)");
+            $db->exec("INSERT INTO floors(id,building_id,name,sort_order,scale,offset_x,offset_y,rotation)
+                VALUES(81,71,'Floor',999999,0.5,-12.25,42.5,-180)");
+            $db->exec("UPDATE views SET floor_id=81 WHERE id=$viewId");
+            $db->exec("UPDATE floors SET representative_view_id=$viewId WHERE id=81");
+            $db->exec("UPDATE devices SET floor_id=81, facility=' Legacy raw ', floor=' B1 '");
+            $db->exec("INSERT INTO views(id,name,facility,floor,view_type)
+                VALUES(901,'Unassigned legacy view',' New annex ',' 1F ','floor')");
+            file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($path) === true);
+            $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $document = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+            $zip->close();
+            $this->assertSame(APP_DATABASE_SCHEMA_VERSION, $manifest['schema_version']);
+            $this->assertSame([71 => 0, 72 => 1], array_column($document['tables']['buildings'], 'building_view_enabled', 'id'));
+            $expected = $db->query('SELECT * FROM floors WHERE id=81')->fetch(\PDO::FETCH_ASSOC);
+            $db->exec('UPDATE buildings SET building_view_enabled = 1 - building_view_enabled');
+            $this->commitIdBackup($this->previewIdBackup($path));
+            $this->assertSame($expected, $db->query('SELECT * FROM floors WHERE id=81')->fetch(\PDO::FETCH_ASSOC));
+            $this->assertSame(81, (int)$db->query("SELECT floor_id FROM views WHERE id=$viewId")->fetchColumn());
+            $this->assertSame(81, (int)$db->query('SELECT floor_id FROM devices ORDER BY id LIMIT 1')->fetchColumn());
+            $this->assertSame(' Legacy raw ', $db->query('SELECT facility FROM devices ORDER BY id LIMIT 1')->fetchColumn());
+            $this->assertSame([0, 1], $db->query('SELECT building_view_enabled FROM buildings ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+            foreach (['buildings', 'floors'] as $table) {
+                $maximum = (int)$db->query("SELECT MAX(id) FROM $table")->fetchColumn();
+                $this->assertTrue((int)$db->query("SELECT value FROM resource_sequences WHERE name='$table'")->fetchColumn() >= $maximum);
+            }
+            foreach (['missing', 'unknown', 'empty-name', 'sort', 'id', 'building', 'membership', 'representative',
+                'representative-type', 'representative-membership', 'scale', 'offset', 'rotation', 'numeric-string',
+                'device-membership', 'device-id-string', 'device-id-missing'] as $fault) {
+                $bad = $path . '.hierarchy-' . $fault;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($fault, $viewId): void {
+                    $floor = &$doc['tables']['floors'][0];
+                    if ($fault === 'missing') { unset($floor['scale']); }
+                    if ($fault === 'unknown') { $floor['extra'] = 0; }
+                    if ($fault === 'empty-name') { $floor['name'] = ' '; }
+                    if ($fault === 'sort') { $floor['sort_order'] = 1000000; }
+                    if ($fault === 'id') { $floor['id'] = \Netarium\Core\ResourceId::MAX_RESTORE + 1; }
+                    if ($fault === 'building') { $floor['building_id'] = 999; }
+                    if ($fault === 'representative') { $floor['representative_view_id'] = 999; }
+                    if ($fault === 'scale') { $floor['scale'] = 0; }
+                    if ($fault === 'offset') { $floor['offset_x'] = null; }
+                    if ($fault === 'rotation') { $floor['rotation'] = 180.1; }
+                    if ($fault === 'numeric-string') { $floor['scale'] = '1'; }
+                    if ($fault === 'device-membership') { $doc['tables']['devices'][0]['floor_id'] = 999; }
+                    if ($fault === 'device-id-string') { $doc['tables']['devices'][0]['floor_id'] = '81'; }
+                    if ($fault === 'device-id-missing') { unset($doc['tables']['devices'][0]['floor_id']); }
+                    foreach ($doc['tables']['views'] as &$view) {
+                        if ($view['id'] !== $viewId) { continue; }
+                        if ($fault === 'membership') { $view['floor_id'] = 999; }
+                        if ($fault === 'representative-type') { $view['view_type'] = 'topology'; }
+                        if ($fault === 'representative-membership') { $view['floor_id'] = null; }
+                    }
+                    unset($view);
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($expected, $db->query('SELECT * FROM floors WHERE id=81')->fetch(\PDO::FETCH_ASSOC));
+            }
+            foreach (['scale', 'offset_x', 'offset_y', 'rotation'] as $field) {
+                foreach (['1e309', '-1e309'] as $index => $number) {
+                    $bad = $path . '.hierarchy-nonfinite-' . $field . '-' . $index;
+                    copy($path, $bad);
+                    $this->rewriteBackupZip($bad, static function (array &$doc) use ($field): void {
+                        $doc['tables']['floors'][0][$field] = '__NONFINITE__';
+                    }, static fn(string $json): string => str_replace('"__NONFINITE__"', $number, $json));
+                    $this->previewIdBackup($bad, 400);
+                    $this->assertSame($expected, $db->query('SELECT * FROM floors WHERE id=81')->fetch(\PDO::FETCH_ASSOC));
+                }
+            }
+            $before = $this->idBoundaryState($db);
+            foreach ([2, -1, '0', true, false, null, [], '__FLOAT__'] as $index => $invalid) {
+                $bad = $path . '.building-view-' . $index;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($invalid): void {
+                    $doc['tables']['buildings'][0]['building_view_enabled'] = $invalid;
+                }, static fn(string $json): string => str_replace('"__FLOAT__"', '1.0', $json));
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $missing = $path . '.building-view-missing';
+            copy($path, $missing);
+            $this->rewriteBackupZip($missing, static function (array &$doc): void {
+                unset($doc['tables']['buildings'][0]['building_view_enabled']);
+            });
+            $this->previewIdBackup($missing, 400);
+            $mixed = $path . '.building-view-mixed';
+            copy($path, $mixed);
+            $this->rewriteBackupZip($mixed, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 25;
+            });
+            $this->previewIdBackup($mixed, 400);
+            $this->assertSame($before, $this->idBoundaryState($db));
+
+            foreach ([25, 24] as $schema) {
+                $legacy = $path . '.building-view-schema' . $schema;
+                copy($path, $legacy);
+                $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest) use ($schema): void {
+                    $manifest['schema_version'] = $schema;
+                    self::removeConnectionContract($doc, $manifest);
+                    foreach ($doc['tables']['buildings'] as &$building) { unset($building['building_view_enabled']); }
+                    unset($building);
+                    if ($schema === 24) {
+                        foreach ($doc['tables']['devices'] as &$device) { unset($device['floor_id']); }
+                        unset($device);
+                    }
+                });
+                $this->commitIdBackup($this->previewIdBackup($legacy));
+                $enabled = $db->query('SELECT name, building_view_enabled FROM buildings ORDER BY id')->fetchAll(\PDO::FETCH_KEY_PAIR);
+                $annexFloorId = $db->query('SELECT floor_id FROM views WHERE id=901')->fetchColumn();
+                if ($schema === 25) {
+                    $this->assertSame(['Building' => 1, 'Enabled building' => 1], $enabled);
+                    $this->assertNull($annexFloorId);
+                } else {
+                    $this->assertSame(['Building' => 1, 'Enabled building' => 1, 'New annex' => 1], $enabled);
+                    $this->assertSame('1F', $db->query('SELECT name FROM floors WHERE id=' . (int)$annexFloorId)->fetchColumn());
+                }
+                $this->assertSame($expected, $db->query('SELECT * FROM floors WHERE id=81')->fetch(\PDO::FETCH_ASSOC));
+            }
+        });
+    }
+
+    private static function removeQualityNotApplicableContract(array &$doc, array &$manifest): void
+    {
+        unset($doc['tables']['quality_not_applicable'], $manifest['summary']['quality_not_applicable']);
+    }
+
+    private static function removePortVlanContract(array &$doc, array &$manifest): void
+    {
+        self::removeQualityNotApplicableContract($doc, $manifest);
+        $oldVlans = array_column($doc['tables']['legacy_link_vlans'] ?? [], 'vlan', 'link_id');
+        unset($doc['tables']['legacy_link_vlans'], $manifest['summary']['legacy_link_vlans']);
+        foreach ($doc['tables']['device_ports'] as &$port) { unset($port['vlan']); }
+        unset($port);
+        foreach ($doc['tables']['links'] as &$link) { $link['vlan'] = $oldVlans[$link['id']] ?? ''; }
+        unset($link);
+    }
+
+    private static function removeConnectionContract(array &$doc, array &$manifest): void
+    {
+        $tables = &$doc['tables'];
+        if (!isset($tables['device_ports'])) { return; }
+        self::removePortVlanContract($doc, $manifest);
+        $ports = array_column($tables['device_ports'], 'name', 'id');
+        $placed = [];
+        foreach ($tables['device_placements'] as $row) { $placed[$row['device_id']][$row['view_id']] = true; }
+        $routes = [];
+        foreach ($tables['view_link_routes'] as $route) {
+            $routes[$route['device_a_id']][$route['device_b_id']][$route['view_id']] = $route['manual_route'];
+        }
+        foreach ($tables['links'] as &$link) {
+            $from = $link['from_id'];
+            $to = $link['to_id'];
+            $shared = array_intersect_key($placed[$from] ?? [], $placed[$to] ?? []);
+            $view = array_key_first($shared) ?? throw new \RuntimeException('Legacy fixture needs both devices in a view');
+            $points = $routes[min($from, $to)][max($from, $to)][$view] ?? null;
+            $link['view_id'] = $view;
+            $link['from_port'] = $ports[$link['from_port_id']] ?? '';
+            $link['to_port'] = $ports[$link['to_port_id']] ?? '';
+            $link['route_mode'] = $points === null ? 'auto' : 'manual';
+            $link['manual_route'] = $from < $to ? ($points ?? []) : array_reverse($points ?? []);
+            unset($link['from_port_id'], $link['to_port_id'], $link['resource_revision']);
+        }
+        unset($link);
+        foreach ($tables['views'] as &$view) { unset($view['show_connections']); }
+        unset($view);
+        foreach (['device_ports', 'view_link_routes', 'legacy_link_conflicts', 'resource_sequences'] as $table) {
+            unset($tables[$table], $manifest['summary'][$table]);
+        }
+    }
+
+    private static function removeHierarchyContract(array &$doc, array &$manifest): void
+    {
+        self::removeConnectionContract($doc, $manifest);
+        unset($doc['tables']['buildings'], $doc['tables']['floors'],
+            $manifest['summary']['buildings'], $manifest['summary']['floors']);
+        foreach ($doc['tables']['views'] as &$view) { unset($view['floor_id']); }
+        unset($view);
+        foreach ($doc['tables']['devices'] as &$device) { unset($device['floor_id']); }
+        unset($device);
     }
 
     public function testFloorPlanRotationMigrationAndSourceContracts(): void
@@ -375,7 +611,7 @@ class BackupTest extends TestCase
                     if ($fault === 'missing') { unset($doc['tables']['view_floor_plans'][0]['rotation']); }
                     if ($fault === 'unknown') { $doc['tables']['view_floor_plans'][0]['unknown'] = 0; }
                     if ($fault === 'legacy-mixed') { $manifest['schema_version'] = 22; }
-                    if ($fault === 'future') { $manifest['schema_version'] = 24; }
+                    if ($fault === 'future') { $manifest['schema_version'] = APP_DATABASE_SCHEMA_VERSION + 1; }
                 });
                 $this->previewIdBackup($bad, 400);
                 $this->assertSame($before, $this->idBoundaryState($db));
@@ -384,6 +620,7 @@ class BackupTest extends TestCase
             copy($path, $legacy);
             $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
                 $manifest['schema_version'] = 22;
+                self::removeHierarchyContract($doc, $manifest);
                 foreach ($doc['tables']['view_floor_plans'] as &$plan) { unset($plan['rotation']); }
                 unset($plan);
             });
@@ -412,7 +649,12 @@ class BackupTest extends TestCase
                 'rack_settings' => 'rack_settings', 'rack_mounts' => 'rack_mounts',
                 'device_ip_addresses' => 'device_ip_addresses', 'address_spaces' => 'address_spaces',
                 'ip_segments' => 'ip_segments', 'change_history' => 'change_history',
-                'device_configs' => 'device_configs', 'device_config_states' => 'device_config_states'] as $key => $table) {
+                'device_configs' => 'device_configs', 'device_config_states' => 'device_config_states',
+                'buildings' => 'buildings', 'floors' => 'floors', 'device_ports' => 'device_ports',
+                'view_link_routes' => 'view_link_routes', 'legacy_link_conflicts' => 'legacy_link_conflicts',
+                'legacy_link_vlans' => 'legacy_link_vlans',
+                'quality_not_applicable' => 'quality_not_applicable',
+                'resource_sequences' => 'resource_sequences'] as $key => $table) {
                 if (isset($manifest['summary'][$key]) && is_array($document['tables'][$table] ?? null)) {
                     $manifest['summary'][$key] = count($document['tables'][$table]);
                 }
@@ -450,6 +692,7 @@ class BackupTest extends TestCase
 
     private static function removeChangeHistoryContract(array &$doc, array &$manifest): void
     {
+        self::removeHierarchyContract($doc, $manifest);
         foreach ($doc['tables']['view_floor_plans'] ?? [] as $index => $plan) {
             unset($doc['tables']['view_floor_plans'][$index]['rotation']);
         }
@@ -500,6 +743,7 @@ class BackupTest extends TestCase
             copy($archive, $legacy);
             $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
                 $manifest['schema_version'] = 20;
+                self::removeHierarchyContract($doc, $manifest);
                 foreach ($doc['tables']['address_spaces'] as &$space) { unset($space['ping_reachability']); }
                 unset($space);
                 foreach ($doc['tables']['view_floor_plans'] as &$plan) { unset($plan['rotation']); }
@@ -706,7 +950,7 @@ class BackupTest extends TestCase
         $devices = $db->query('SELECT * FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
         $addresses = $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
         migrateDatabase($db);
-        foreach ($devices as &$row) { $row['ip_segment_id'] = null; }
+        foreach ($devices as &$row) { $row['ip_segment_id'] = null; $row['floor_id'] = null; }
         unset($row);
         foreach ($addresses as &$row) { $row['segment_id'] = null; }
         unset($row);
@@ -714,6 +958,11 @@ class BackupTest extends TestCase
         $this->assertSame($addresses, $db->query('SELECT * FROM device_ip_addresses ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
         $this->assertSame([], $db->query('SELECT * FROM address_spaces')->fetchAll());
         $this->assertSame([], $db->query('SELECT * FROM ip_segments')->fetchAll());
+        $this->assertSame([], $db->query('SELECT * FROM buildings')->fetchAll());
+        $this->assertSame([], $db->query('SELECT * FROM floors')->fetchAll());
+        $this->assertSame(['assigned' => 0, 'explicit' => 0, 'created_buildings' => 0, 'created_floors' => 0,
+            'unclassified' => ['empty_legacy_location' => 2]],
+            json_decode($db->query("SELECT meta_value FROM app_meta WHERE meta_key='legacy_hierarchy_migration'")->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
         $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
     }
 
@@ -764,13 +1013,23 @@ class BackupTest extends TestCase
 
     private function saveBackupLinks(array $data, array $links): array
     {
+        $operations = [];
+        $oldById = array_column($data['links'], null, 'id');
+        foreach ($links as $link) {
+            $old = $oldById[$link['id']];
+            unset($link['id'], $link['resource_revision']);
+            $operations[] = ['operation' => 'update', 'id' => $old['id'],
+                'expected_revision' => $old['resource_revision'], 'link' => $link];
+        }
+        $this->client->postJson('/api.php?action=save_connections', ['links' => $operations])->assertOk();
+        return $this->client->get('/api.php?action=load')->assertOk()->getJson();
+    }
+
+    private function saveBackupRoutes(array $data, array $routes): array
+    {
         $this->client->postJson('/api.php?action=save', [
-            'revision' => (int)$data['revision'],
-            'views' => $data['views'],
-            'devices' => $data['devices'],
-            'placements' => $data['placements'],
-            'links' => $links,
-            'canvas_notes' => $data['canvas_notes'],
+            'revision' => $data['revision'], 'views' => $data['views'], 'devices' => $data['devices'],
+            'placements' => $data['placements'], 'view_link_routes' => $routes, 'canvas_notes' => $data['canvas_notes'],
         ])->assertOk();
         return $this->client->get('/api.php?action=load')->assertOk()->getJson();
     }
@@ -836,20 +1095,16 @@ class BackupTest extends TestCase
     {
         $device = $data['devices'][0];
         $device['location'] = $location;
-        $link = $data['links'][0];
-        $viewId = (int)$link['view_id'];
-        $view = array_column($data['views'], null, 'id')[$viewId];
-        $links = array_values(array_filter($data['links'], static fn(array $row): bool => (int)$row['view_id'] === $viewId));
-        $links[0]['vlan'] = $vlan;
+        $port = $data['device_ports'][0];
         $this->client->postJson('/api.php?action=save_resources', [
             'devices' => [['operation' => 'update', 'id' => (int)$device['id'],
                 'expected_revision' => (int)$device['resource_revision'], 'device' => $device]],
-            'views' => [['operation' => 'update', 'id' => $viewId,
-                'expected_revision' => (int)$view['resource_revision'], 'view' => $view,
-                'placements' => array_values(array_filter($data['placements'], static fn(array $row): bool => (int)$row['view_id'] === $viewId)),
-                'links' => $links,
-                'canvas_notes' => array_values(array_filter($data['canvas_notes'], static fn(array $row): bool => (int)$row['view_id'] === $viewId))]],
+            'views' => [],
         ])->assertOk();
+        $this->client->postJson('/api.php?action=save_connections', ['device_ports' => [[
+            'operation' => 'update', 'id' => $port['id'], 'expected_revision' => $port['resource_revision'],
+            'port' => ['vlan' => $vlan],
+        ]]])->assertOk();
         return $this->client->get('/api.php?action=load')->assertOk()->getJson();
     }
 
@@ -862,7 +1117,7 @@ class BackupTest extends TestCase
                 $vlan = $field === 'vlan' ? $value : '';
                 $saved = $this->saveStringBoundaryValues($data, $location, $vlan);
                 $this->assertSame($location, $saved['devices'][0]['location']);
-                $this->assertSame($vlan, $saved['links'][0]['vlan']);
+                $this->assertSame($vlan, $saved['device_ports'][0]['vlan']);
                 file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
                 $zip = new ZipArchive();
                 $this->assertTrue($zip->open($path) === true);
@@ -871,7 +1126,8 @@ class BackupTest extends TestCase
                     $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
                     $this->assertSame('netarium-config', $manifest['format']);
                     $this->assertSame($location, $document['tables']['devices'][0]['location']);
-                    $this->assertSame($vlan, $document['tables']['links'][0]['vlan']);
+                    $this->assertSame($vlan, $document['tables']['device_ports'][0]['vlan']);
+                    $this->assertFalse(array_key_exists('vlan', $document['tables']['links'][0]));
                 } finally {
                     $zip->close();
                 }
@@ -886,7 +1142,7 @@ class BackupTest extends TestCase
                 ])->assertOk();
                 $restored = $this->client->get('/api.php?action=load')->assertOk()->getJson();
                 $this->assertSame($location, $restored['devices'][0]['location']);
-                $this->assertSame($vlan, $restored['links'][0]['vlan']);
+                $this->assertSame($vlan, $restored['device_ports'][0]['vlan']);
             }
         });
     }
@@ -898,7 +1154,7 @@ class BackupTest extends TestCase
 
     public function testSavedVlanBoundariesRoundTripThroughBackup(): void
     {
-        $this->assertStringBoundaryRoundTrip('vlan', 50, 100);
+        $this->assertStringBoundaryRoundTrip('vlan', 100, 200);
     }
 
     public function testOversizedBackupStringsRejectWithoutChangingCurrentData(): void
@@ -912,7 +1168,7 @@ class BackupTest extends TestCase
                 $db->query('SELECT * FROM resource_sequences ORDER BY 1')->fetchAll(\PDO::FETCH_ASSOC),
             ];
             $allocations = $allocationState();
-            foreach ([['devices', 'location', 150], ['links', 'vlan', 100]] as [$table, $field, $limit]) {
+            foreach ([['devices', 'location', 150], ['device_ports', 'vlan', 200]] as [$table, $field, $limit]) {
                 foreach (['A', '𠀀'] as $character) {
                     copy($validPath, $path);
                     $this->rewriteBackupZip($path, static function (array &$document, array &$manifest) use ($table, $field, $limit, $character): void {
@@ -941,6 +1197,8 @@ class BackupTest extends TestCase
         $db->exec("INSERT INTO views(id,name) VALUES (1,'Topology')");
         $db->exec("INSERT INTO views(id,name,view_type) VALUES (2,'Rack','rack')");
         $db->exec("INSERT INTO devices(id,name,type) VALUES (1,'Server','server'),(2,'Printer','printer')");
+        $db->exec("UPDATE views SET facility=' 旧庁舎 ',floor=' 2F ' WHERE id=1");
+        $db->exec("UPDATE devices SET facility='旧庁舎',floor='2F',x=12.5,y=34 WHERE id=1");
         $db->exec('INSERT INTO device_placements(id,device_id,view_id,x,y) VALUES (1,1,1,12,34)');
         $db->exec('INSERT INTO links(id,view_id,from_id,to_id) VALUES (1,1,1,2)');
         $db->exec("INSERT INTO device_monitor_status(device_id,status) VALUES (1,'green')");
@@ -957,22 +1215,53 @@ class BackupTest extends TestCase
             $before[$table] = $db->query("SELECT * FROM \"$table\" ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC);
         }
         $objects = $db->query("SELECT type,name,tbl_name,sql FROM sqlite_master
-            WHERE type IN ('trigger','index') AND name <> 'resource_owner_view_floor_plans_update'
+            WHERE type IN ('trigger','index') AND name NOT IN ('resource_owner_view_floor_plans_update',
+                'resource_revision_views_update', 'resource_revision_views_floor') AND tbl_name <> 'links'
             ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
         migrateDatabase($db);
+        $initialRevision = (int)array_column($before['resource_sequences'], 'value', 'name')['revision'];
         $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
         $this->assertSame(1, (int)$db->query('PRAGMA foreign_keys')->fetchColumn());
         $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
         foreach ($before as $table => $rows) {
+            if ($table === 'links') { continue; }
             if ($table === 'rack_mounts') {
                 $rows = array_map(static fn($row) => $row + ['depth' => 'half'], $rows);
             }
-            if ($table === 'devices') {
-                $rows = array_map(static fn($row) => $row + ['ip_segment_id' => null], $rows);
+            if ($table === 'views' || $table === 'devices') {
+                foreach ($rows as &$row) {
+                    if ($table === 'devices') { $row['ip_segment_id'] = null; }
+                    $row['floor_id'] = $row['id'] === 1 ? 1 : null;
+                    if ($row['id'] === 1) {
+                        $row['resource_revision'] = $initialRevision + ($table === 'views' ? 1 : 2);
+                    }
+                }
+                unset($row);
             }
-            $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-            $this->assertSame($rows, $db->query("SELECT * FROM \"$table\"$where ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC));
+            if ($table === 'resource_sequences') {
+                foreach ($rows as &$row) {
+                    if ($row['name'] === 'revision') { $row['value'] += 3; }
+                }
+                unset($row);
+            }
+            $where = $table === 'resource_sequences'
+                ? " WHERE name IN ('" . implode("','", array_column($rows, 'name')) . "')"
+                : ($table === 'app_meta' ? " WHERE meta_key NOT IN ('legacy_hierarchy_migration', 'legacy_link_migration')" : '');
+            $columns = $rows === [] ? '*' : implode(',', array_keys($rows[0]));
+            $this->assertSame($rows, $db->query("SELECT $columns FROM \"$table\"$where ORDER BY rowid")->fetchAll(\PDO::FETCH_ASSOC));
         }
+        $this->assertSame([['id' => 1, 'name' => '旧庁舎', 'sort_order' => 0]],
+            $db->query('SELECT id, name, sort_order FROM buildings')->fetchAll(\PDO::FETCH_ASSOC));
+        $this->assertSame([['id' => 1, 'from_id' => 1, 'to_id' => 2, 'from_port_id' => null, 'to_port_id' => null]],
+            $db->query('SELECT id, from_id, to_id, from_port_id, to_port_id FROM links')->fetchAll(\PDO::FETCH_ASSOC));
+        $this->assertSame([1, 1], $db->query('SELECT show_connections FROM views ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+        $this->assertSame([['id' => 1, 'building_id' => 1, 'name' => '2F', 'sort_order' => 2, 'representative_view_id' => null]],
+            $db->query('SELECT id,building_id,name,sort_order,representative_view_id FROM floors')->fetchAll(\PDO::FETCH_ASSOC));
+        $this->assertSame(['buildings' => 1, 'floors' => 1],
+            $db->query("SELECT name,value FROM resource_sequences WHERE name IN ('buildings','floors') ORDER BY name")->fetchAll(\PDO::FETCH_KEY_PAIR));
+        $this->assertSame(['assigned' => 2, 'explicit' => 0, 'created_buildings' => 1, 'created_floors' => 1,
+            'unclassified' => ['empty_legacy_location' => 2]],
+            json_decode($db->query("SELECT meta_value FROM app_meta WHERE meta_key='legacy_hierarchy_migration'")->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
         $oldNames = array_column($objects, 'name');
         $newObjects = $db->query("SELECT type,name,tbl_name,sql FROM sqlite_master
             WHERE type IN ('trigger','index') ORDER BY name")->fetchAll(\PDO::FETCH_ASSOC);
@@ -1045,14 +1334,19 @@ class BackupTest extends TestCase
     public function testFloorRackBackupRoundTripAndLegacyConversion(): void
     {
         $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
-            $db->exec("INSERT INTO views(id,name,view_type) VALUES (90,'Placed rack','rack'),(91,'Rack floor','floor')");
+            $db->exec("INSERT INTO buildings (id, name) VALUES (80, 'ラック棟')");
+            $db->exec("INSERT INTO floors (id, building_id, name) VALUES (81, 80, '1階'), (82, 80, '2階')");
+            $db->exec("INSERT INTO views (id, name, view_type, floor_id)
+                VALUES (90, 'Placed rack', 'rack', 81), (91, 'Rack floor', 'floor', 82)");
             $db->exec("INSERT INTO rack_settings VALUES (90,42,'')");
             $db->exec('INSERT INTO floor_rack_placements VALUES (91,90,12.5,-20)');
+            $placements = $db->query('SELECT * FROM floor_rack_placements')->fetchAll(\PDO::FETCH_ASSOC);
             $archive = $path . '.floor-rack.zip';
             file_put_contents($archive, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
             $db->exec('DELETE FROM floor_rack_placements');
             $this->commitIdBackup($this->previewIdBackup($archive));
-            $this->assertSame(90, (int)$db->query('SELECT rack_view_id FROM floor_rack_placements')->fetchColumn());
+            $this->assertSame($placements, $db->query('SELECT * FROM floor_rack_placements')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame([81, 82], $db->query('SELECT floor_id FROM views WHERE id IN (90, 91) ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
             foreach (['duplicate', 'type', 'coordinate', 'missing'] as $fault) {
                 $bad = $archive . '.' . $fault;
                 copy($archive, $bad);
@@ -1294,7 +1588,8 @@ class BackupTest extends TestCase
                         return;
                     }
                     $doc['tables']['views'][] = ['id' => 90, 'resource_revision' => 1, 'name' => 'rack',
-                        'facility' => '', 'floor' => '', 'view_type' => 'rack', 'sort_order' => 0, 'memo' => ''];
+                        'facility' => '', 'floor' => '', 'view_type' => 'rack', 'sort_order' => 0, 'memo' => '',
+                        'floor_id' => null, 'show_connections' => 1];
                     $doc['tables']['rack_settings'] = [['view_id' => 90, 'total_u' => 42, 'location' => '']];
                     $id = $doc['tables']['devices'][0]['id'];
                     $doc['tables']['rack_mounts'] = [['device_id' => $id, 'view_id' => 90, 'face' => 'both',
@@ -1307,8 +1602,13 @@ class BackupTest extends TestCase
                     if ($fault === 'unknown-column') { $doc['tables']['rack_settings'][0]['extra'] = 1; }
                     if ($fault === 'collision') { $doc['tables']['rack_mounts'][] = $doc['tables']['rack_mounts'][0]; }
                     if ($fault === 'fractional') { $doc['tables']['rack_mounts'][0]['start_u'] = 1.5; }
-                    foreach (['xy-placement' => 'device_placements', 'xy-link' => 'links', 'floor-plan' => 'view_floor_plans'] as $case => $table) {
+                    foreach (['xy-placement' => 'device_placements', 'floor-plan' => 'view_floor_plans'] as $case => $table) {
                         if ($fault === $case) { $doc['tables'][$table][0]['view_id'] = 90; }
+                    }
+                    if ($fault === 'xy-link') {
+                        $link = $doc['tables']['links'][0];
+                        $doc['tables']['view_link_routes'][] = ['view_id' => 90, 'device_a_id' => min($link['from_id'], $link['to_id']),
+                            'device_b_id' => max($link['from_id'], $link['to_id']), 'manual_route' => []];
                     }
                     if ($fault === 'invalid-note') {
                         $doc['tables']['canvas_notes'][0]['view_id'] = 90;
@@ -1353,7 +1653,12 @@ class BackupTest extends TestCase
         foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems',
             'device_images', 'device_monitor_status', 'view_floor_plans', 'app_meta', 'rack_settings', 'rack_mounts',
             'resource_sequences', 'sqlite_sequence', 'device_ip_addresses', 'address_spaces', 'ip_segments', 'change_history',
-            'device_configs', 'device_config_states'] as $table) {
+            'device_configs', 'device_config_states', 'buildings', 'floors', 'device_ports', 'view_link_routes',
+            'legacy_link_conflicts', 'legacy_link_vlans', 'quality_not_applicable'] as $table) {
+            if (in_array($table, ['device_ports', 'view_link_routes', 'legacy_link_conflicts'], true)
+                && (int)$db->query('PRAGMA user_version')->fetchColumn() < 27) { continue; }
+            if ($table === 'legacy_link_vlans' && (int)$db->query('PRAGMA user_version')->fetchColumn() < 28) { continue; }
+            if ($table === 'quality_not_applicable' && (int)$db->query('PRAGMA user_version')->fetchColumn() < 29) { continue; }
             if (in_array($table, ['rack_settings', 'rack_mounts'], true)
                 && (int)$db->query('PRAGMA user_version')->fetchColumn() === 11) {
                 continue;
@@ -1372,6 +1677,10 @@ class BackupTest extends TestCase
                 && (int)$db->query('PRAGMA user_version')->fetchColumn() < 20) {
                 continue;
             }
+            if (in_array($table, ['buildings', 'floors'], true)
+                && (int)$db->query('PRAGMA user_version')->fetchColumn() < 24) {
+                continue;
+            }
             $rows = $db->query('SELECT * FROM ' . $table)->fetchAll(\PDO::FETCH_ASSOC);
             usort($rows, static fn(array $a, array $b): int => strcmp(serialize($a), serialize($b)));
             $state[$table] = $rows;
@@ -1385,10 +1694,11 @@ class BackupTest extends TestCase
         $tables[$table][0]['id'] = $id;
         $references = match ($table) {
             'devices' => ['device_placements' => ['device_id'], 'links' => ['from_id', 'to_id'],
-                'device_images' => ['device_id'], 'device_monitor_status' => ['device_id']],
-            'views' => ['device_placements' => ['view_id'], 'links' => ['view_id'],
-                'canvas_notes' => ['view_id'], 'view_floor_plans' => ['view_id']],
+                'device_images' => ['device_id'], 'device_monitor_status' => ['device_id'], 'device_ports' => ['device_id']],
+            'views' => ['device_placements' => ['view_id'], 'canvas_notes' => ['view_id'],
+                'view_floor_plans' => ['view_id'], 'view_link_routes' => ['view_id']],
             'link_systems' => ['links' => ['system_id']],
+            'device_ports' => ['links' => ['from_port_id', 'to_port_id']],
             default => [],
         };
         foreach ($references as $referencingTable => $columns) {
@@ -1400,6 +1710,12 @@ class BackupTest extends TestCase
                 }
             }
             unset($row);
+        }
+        if (in_array($table, ['links', 'device_ports'], true)) {
+            foreach ($tables['resource_sequences'] as &$sequence) {
+                if ($sequence['name'] === $table) { $sequence['value'] = $id; }
+            }
+            unset($sequence);
         }
     }
 
@@ -1427,7 +1743,7 @@ class BackupTest extends TestCase
             $dangerous = [self::API_ID_MAX, self::API_ID_MAX + 1, PHP_INT_MAX,
                 '9007199254740991', '9007199254740992', '9223372036854775807',
                 '9223372036854775808', '999999999999999999999999999999999999', 1.0e30, 1.5];
-            foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_images'] as $table) {
+            foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_images', 'device_ports'] as $table) {
                 foreach ($dangerous as $id) {
                     copy($validPath, $path);
                     $this->rewriteBackupZip($path, static function (array &$document, array &$manifest) use ($table, $id): void {
@@ -1440,7 +1756,7 @@ class BackupTest extends TestCase
                     $this->assertSame($beforeLoad, $this->client->get('/api.php?action=load')->assertOk()->getJson());
                 }
             }
-            foreach (['device_placements' => ['device_id', 'view_id'], 'links' => ['from_id', 'to_id', 'view_id', 'system_id'],
+            foreach (['device_placements' => ['device_id', 'view_id'], 'links' => ['from_id', 'to_id', 'from_port_id', 'to_port_id', 'system_id'],
                 'canvas_notes' => ['view_id'], 'device_images' => ['device_id'],
                 'device_monitor_status' => ['device_id'], 'view_floor_plans' => ['view_id']] as $table => $columns) {
                 foreach ($columns as $column) {
@@ -1458,7 +1774,7 @@ class BackupTest extends TestCase
     public function testRestoreRejectsExhaustedCurrentCountersAndCurrentRowIds(): void
     {
         $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
-            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems'] as $name) {
+            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems', 'device_ports'] as $name) {
                 $original = (int)$db->query("SELECT value FROM resource_sequences WHERE name = '{$name}'")->fetchColumn();
                 foreach ([self::API_ID_MAX, self::API_ID_MAX + 1, PHP_INT_MAX] as $id) {
                     $db->exec("UPDATE resource_sequences SET value = {$id} WHERE name = '{$name}'");
@@ -1477,7 +1793,7 @@ class BackupTest extends TestCase
             }
             $db->exec("UPDATE sqlite_sequence SET seq = {$originalImageSequence} WHERE name = 'device_images'");
             // Updating a primary key does not run the INSERT counter trigger.
-            foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_images'] as $table) {
+            foreach (['devices', 'views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_images', 'device_ports'] as $table) {
                 $db->exec('PRAGMA foreign_keys = OFF');
                 $old = (int)$db->query("SELECT MIN(id) FROM {$table}")->fetchColumn();
                 $db->exec("UPDATE {$table} SET id = " . self::API_ID_MAX . " WHERE id = {$old}");
@@ -1493,7 +1809,7 @@ class BackupTest extends TestCase
     public function testRestoreCommitRechecksCountersWithoutBusinessRevisionChanges(): void
     {
         $this->withIdBoundaryFixture(function (string $path, \PDO $db, \Netarium\Tests\TestServer $server): void {
-            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems', 'device_images'] as $name) {
+            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems', 'device_images', 'device_ports'] as $name) {
                 $preview = $this->previewIdBackup($path);
                 $meta = $db->query('SELECT * FROM app_meta ORDER BY meta_key')->fetchAll(\PDO::FETCH_ASSOC);
                 if ($name === 'device_images') {
@@ -1568,7 +1884,7 @@ class BackupTest extends TestCase
 
     public function testRestoreBoundaryPreservesLastAllocationAndNonReuseForEveryResourceKind(): void
     {
-        foreach (['views', 'device_placements', 'links', 'canvas_notes', 'link_systems'] as $table) {
+        foreach (['views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_ports'] as $table) {
             $this->withIdBoundaryFixture(function (string $path, \PDO $db) use ($table): void {
                 $this->rewriteBackupZip($path, static function (array &$document, array &$manifest) use ($table): void {
                     self::changeBackupId($document['tables'], $table, self::RESTORE_ID_MAX);
@@ -1587,28 +1903,35 @@ class BackupTest extends TestCase
                     $this->assertSame($before, $this->idBoundaryState($db));
                     return;
                 }
+                if ($table === 'links' || $table === 'device_ports') {
+                    $link = $db->query('SELECT from_id, to_id FROM links ORDER BY id LIMIT 1')->fetch(\PDO::FETCH_ASSOC);
+                    $row = ['operation' => 'create'] + ($table === 'links'
+                        ? ['link' => $link + ['from_port_name' => 'free-port']]
+                        : ['port' => ['device_id' => $link['from_id'], 'name' => 'free-port', 'memo' => '']]);
+                    $payload = [$table => [$row]];
+                    $this->client->postJson('/api.php?action=save_connections', $payload)->assertOk();
+                    $revision = (int)$db->query("SELECT resource_revision FROM $table WHERE id = " . self::API_ID_MAX)->fetchColumn();
+                    $this->assertTrue($revision > 0);
+                    $this->client->postJson('/api.php?action=save_connections', [$table => [[
+                        'operation' => 'delete', 'id' => self::API_ID_MAX, 'expected_revision' => $revision,
+                    ]]])->assertOk();
+                    $before = $this->idBoundaryState($db);
+                    if ($table === 'links') { $payload[$table][0]['link']['from_port_name'] = 'other-free-port'; }
+                    $this->client->postJson('/api.php?action=save_connections', $payload)->assertStatus(409);
+                    $this->assertSame($before, $this->idBoundaryState($db));
+                    return;
+                }
                 $data = $this->client->get('/api.php?action=load')->assertOk()->getJson();
                 $operation = [
                     'operation' => 'create', 'id' => 800002,
                     'view' => ['id' => 800002, 'name' => '最後の採番ビュー', 'view_type' => 'topology'],
-                    'placements' => [], 'links' => [], 'canvas_notes' => [],
+                    'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 ];
                 if ($table === 'device_placements') {
                     $operation['placements'][] = [
                         'id' => 800003, 'view_id' => 800002, 'device_id' => $data['devices'][0]['id'],
                         'x' => 0, 'y' => 0,
                     ];
-                } elseif ($table === 'links') {
-                    $link = $data['links'][0];
-                    $link['id'] = 800004;
-                    $link['view_id'] = 800002;
-                    $operation['links'][] = $link;
-                    foreach ([$link['from_id'], $link['to_id']] as $index => $deviceId) {
-                        $operation['placements'][] = [
-                            'id' => 800005 + $index, 'view_id' => 800002, 'device_id' => $deviceId,
-                            'x' => $index * 100, 'y' => 0,
-                        ];
-                    }
                 } elseif ($table === 'canvas_notes') {
                     $operation['canvas_notes'][] = [
                         'id' => 800007, 'view_id' => 800002, 'text' => '最後の採番メモ',
@@ -1634,12 +1957,12 @@ class BackupTest extends TestCase
     public function testRestorePreservesHigherPreexistingIdCounters(): void
     {
         $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
-            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems'] as $name) {
+            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems', 'device_ports'] as $name) {
                 $db->exec("UPDATE resource_sequences SET value = 700000 WHERE name = '{$name}'");
             }
             $db->exec("UPDATE sqlite_sequence SET seq = 700000 WHERE name = 'device_images'");
             $this->commitIdBackup($this->previewIdBackup($path));
-            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems'] as $name) {
+            foreach (['devices', 'views', 'placements', 'links', 'canvas_notes', 'link_systems', 'device_ports'] as $name) {
                 $this->assertSame(700000, (int)$db->query("SELECT value FROM resource_sequences WHERE name = '{$name}'")->fetchColumn());
             }
             $this->assertSame(700000, (int)$db->query("SELECT seq FROM sqlite_sequence WHERE name = 'device_images'")->fetchColumn());
@@ -1647,8 +1970,10 @@ class BackupTest extends TestCase
             $this->assertSame(700001, (int)$db->query('SELECT MAX(id) FROM devices')->fetchColumn());
             $data = $this->client->get('/api.php?action=load')->assertOk()->getJson();
             $link = $data['links'][0];
-            $link['id'] = 810003;
-            $link['view_id'] = 810001;
+            $this->client->postJson('/api.php?action=save_connections', ['links' => [[
+                'operation' => 'create', 'link' => ['from_id' => $link['from_id'], 'to_id' => $link['to_id'],
+                    'from_port_name' => 'retained-counter'],
+            ]]])->assertOk();
             $placements = [];
             foreach ([$link['from_id'], $link['to_id']] as $index => $deviceId) {
                 $placements[] = ['id' => 810004 + $index, 'view_id' => 810001,
@@ -1658,14 +1983,14 @@ class BackupTest extends TestCase
                 'devices' => [], 'views' => [[
                     'operation' => 'create', 'id' => 810001,
                     'view' => ['id' => 810001, 'name' => '保持カウンターの採番', 'view_type' => 'topology'],
-                    'placements' => $placements, 'links' => [$link],
+                    'placements' => $placements, 'view_link_routes' => [],
                     'canvas_notes' => [['id' => 810002, 'view_id' => 810001, 'text' => '保持カウンター']],
                 ]],
             ])->assertOk();
             $this->client->postJson('/api.php?action=create_link_system', [
                 'name' => '保持カウンターの系統', 'color_key' => 'teal',
             ])->assertOk();
-            foreach (['views', 'device_placements', 'links', 'canvas_notes', 'link_systems'] as $table) {
+            foreach (['views', 'device_placements', 'links', 'canvas_notes', 'link_systems', 'device_ports'] as $table) {
                 $this->assertTrue((int)$db->query("SELECT MAX(id) FROM {$table}")->fetchColumn() > 700000);
             }
         });
@@ -1785,7 +2110,11 @@ class BackupTest extends TestCase
             $this->client->get('/api.php?action=load')->assertOk();
             $after = $this->idBoundaryState($db);
             foreach (['view_floor_plans', 'device_images', 'device_monitor_status', 'device_placements', 'links', 'canvas_notes'] as $table) {
-                $this->assertSame($before[$table], $after[$table]);
+                $rows = static fn(array $state): array => array_map(static function (array $row): array {
+                    unset($row['resource_revision']);
+                    return $row;
+                }, $state[$table]);
+                $this->assertSame($rows($before), $rows($after));
             }
             $this->assertSame($before['devices'][0]['name'], $after['devices'][0]['name']);
             $this->assertSame($users, $db->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
@@ -1795,11 +2124,326 @@ class BackupTest extends TestCase
         });
     }
 
+    public function testLegacyWebConnectionsMigrateAndRoundTripWithOriginalConflicts(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $db->exec('PRAGMA foreign_keys=ON');
+            $db->exec("INSERT INTO devices(id,name) VALUES (77,'Old endpoint')");
+            $db->exec('INSERT OR IGNORE INTO device_placements(device_id,view_id,x,y)
+                VALUES (1,1,1,1),(2,1,2,2),(77,1,3,3),(1,2,1,1),(2,2,2,2),(77,2,3,3)');
+            file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $legacy = $path . '.legacy';
+            copy($path, $legacy);
+            $route = [['x' => 1, 'y' => 2], ['x' => 3, 'y' => 2]];
+            $original = ['id' => 41, 'view_id' => 1, 'from_id' => 2, 'to_id' => 1, 'system_id' => null,
+                'label' => 'Same cable', 'from_port' => 'ＬＡＮ２', 'to_port' => 'LAN　1', 'vlan' => " \t旧VLAN\f ", 'memo' => 'Keep',
+                'route_mode' => 'manual', 'manual_route' => array_reverse($route)];
+            $held = array_replace($original, ['id' => 52, 'to_id' => 77, 'from_id' => 1, 'from_port' => '',
+                'to_port' => '', 'label' => 'Uncertain', 'memo' => ' 原文 ', 'route_mode' => 'auto', 'manual_route' => []]);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest) use ($original, $held): void {
+                $manifest['schema_version'] = 26;
+                self::removeConnectionContract($doc, $manifest);
+                $doc['tables']['links'] = [
+                    $original,
+                    array_replace($original, ['id' => 42, 'view_id' => 2, 'from_id' => 1, 'to_id' => 2,
+                        'from_port' => 'LAN 1', 'to_port' => 'LAN2', 'route_mode' => 'auto', 'manual_route' => []]),
+                    $held, array_replace($held, ['id' => 53, 'view_id' => 2]),
+                ];
+            });
+            $preview = $this->previewIdBackup($legacy);
+            $this->assertSame(1, $preview['backup']['counts']['links']);
+            $this->assertSame(2, $preview['backup']['counts']['legacy_link_conflicts']);
+            $this->assertSame(1, $preview['backup']['counts']['legacy_link_vlans']);
+            $this->commitIdBackup($preview);
+            $this->assertSame([41], $db->query('SELECT id FROM links')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame(['LAN 1', 'LAN2'], $db->query('SELECT name FROM device_ports ORDER BY name')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame(['', ''], $db->query('SELECT vlan FROM device_ports ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame([['link_id' => 41, 'vlan' => $original['vlan']]],
+                $db->query('SELECT * FROM legacy_link_vlans')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($route, json_decode($db->query('SELECT manual_route FROM view_link_routes')->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
+            $this->assertSame([1, 1], $db->query('SELECT show_connections FROM views ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame(53, $db->query("SELECT value FROM resource_sequences WHERE name='links'")->fetchColumn());
+            $this->assertSame($held, json_decode($db->query('SELECT payload FROM legacy_link_conflicts WHERE legacy_link_id=52')->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
+
+            $db->exec("DELETE FROM device_placements WHERE device_id=77; DELETE FROM devices WHERE id=77;
+                UPDATE views SET show_connections=0 WHERE id=1;
+                UPDATE resource_sequences SET value=200 WHERE name='links';
+                UPDATE resource_sequences SET value=300 WHERE name='device_ports'");
+            file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $before = $this->idBoundaryState($db);
+            foreach (['wrong-owner', 'port-used-twice', 'invalid-show', 'invalid-route', 'conflict-id', 'counter'] as $fault) {
+                $bad = $path . '.' . $fault;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($fault): void {
+                    $tables = &$doc['tables'];
+                    $link = &$tables['links'][0];
+                    if ($fault === 'wrong-owner') { $link['from_port_id'] = $link['to_port_id']; }
+                    if ($fault === 'port-used-twice') { $tables['links'][] = array_replace($link, ['id' => 99, 'to_port_id' => null]); }
+                    if ($fault === 'invalid-show') { $tables['views'][0]['show_connections'] = true; }
+                    if ($fault === 'invalid-route') { $tables['view_link_routes'][0]['manual_route'] = (object)[]; }
+                    if ($fault === 'conflict-id') { $tables['legacy_link_conflicts'][0]['payload']['id'] = 999; }
+                    if ($fault === 'counter') { $tables['resource_sequences'][1]['value'] = 41; }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $db->exec("DELETE FROM legacy_link_conflicts; DELETE FROM view_link_routes; DELETE FROM links; DELETE FROM device_ports;
+                UPDATE views SET show_connections=1; UPDATE resource_sequences SET value=4 WHERE name IN ('links','device_ports')");
+            $this->assertSame([], $db->query('SELECT * FROM legacy_link_vlans')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->commitIdBackup($this->previewIdBackup($path));
+            $after = $this->idBoundaryState($db);
+            foreach (['legacy_link_conflicts', 'view_link_routes', 'legacy_link_vlans'] as $table) {
+                $this->assertSame($before[$table], $after[$table]);
+            }
+            foreach (['links', 'device_ports'] as $table) {
+                $this->assertSame(array_column($before[$table], 'id'), array_column($after[$table], 'id'));
+                $this->assertTrue($after[$table][0]['resource_revision'] > $before[$table][0]['resource_revision']);
+            }
+            $this->assertSame([0, 1], $db->query('SELECT show_connections FROM views ORDER BY id')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame(['device_ports' => 300, 'links' => 200], $db->query("SELECT name, value FROM resource_sequences
+                WHERE name IN ('device_ports','links') ORDER BY name")->fetchAll(\PDO::FETCH_KEY_PAIR));
+        });
+    }
+
+    public function testDatabaseAndWebMigrationKeepTheSamePendingLegacyVlans(): void
+    {
+        foreach ([26, 27] as $schema) {
+            $db = new \PDO('sqlite::memory:', null, null, [
+                \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+                \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+            ]);
+            $db->exec('PRAGMA foreign_keys=ON');
+            for ($version = 1; $version <= $schema; $version++) { ('migrateDatabaseToVersion' . $version)($db); }
+            $db->exec("INSERT INTO views(id,name) VALUES (1,'Old view');
+                INSERT INTO devices(id,name) VALUES (1,' Old device '),(2,'Peer'),(3,'Unspecified port peer');
+                INSERT INTO device_placements(device_id,view_id,x,y) VALUES (1,1,0,0),(2,1,1,1),(3,1,2,2)");
+            if ($schema === 26) {
+                $insert = $db->prepare("INSERT INTO links (id,view_id,from_id,to_id,from_port,vlan) VALUES (?,1,1,?,?,?)");
+                $insert->execute([21, 2, 'LAN 1', " \tOld VLAN\f "]);
+                $insert->execute([22, 3, '', " \t\n\v\f\r "]);
+            } else {
+                $db->exec("INSERT INTO device_ports (id,device_id,name) VALUES (7,1,'LAN 1')");
+                $insert = $db->prepare('INSERT INTO links (id,from_id,to_id,from_port_id,vlan) VALUES (?,1,?,?,?)');
+                $insert->execute([21, 2, 7, " \tOld VLAN\f "]);
+                $insert->execute([22, 3, null, " \t\n\v\f\r "]);
+                $insert->execute([23, 2, null, "\u{00A0}"]);
+            }
+            $insert = null;
+            $service = new \Netarium\Services\Backup\BackupService($db);
+            $converted = $service->convertBackupRestoreData($service->fetchBackupTables($schema), $schema);
+            migrateDatabase($db);
+            $current = $service->fetchBackupTables();
+            $this->assertSame($current['legacy_link_vlans'], $converted['legacy_link_vlans']);
+            $this->assertSame(['link_id' => 21, 'vlan' => " \tOld VLAN\f "], $current['legacy_link_vlans'][0]);
+            $this->assertSame(array_column($current['device_ports'], 'vlan'), array_column($converted['device_ports'], 'vlan'));
+        }
+    }
+
+    public function testSchema27WebBackupConversionAndSchema28PendingVlanRoundTrip(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $legacy = $path . '.v27';
+            copy($path, $legacy);
+            $legacyVlan = " \t" . str_repeat('𠀀', 96) . "\n\f";
+            $notAsciiWhitespace = '　';
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest) use ($legacyVlan, $notAsciiWhitespace): void {
+                $manifest['schema_version'] = 27;
+                self::removePortVlanContract($doc, $manifest);
+                $tables = &$doc['tables'];
+                $original = $tables['links'][0];
+                $tables['links'][0]['vlan'] = " \t\n\v\f\r ";
+                $tables['links'][] = array_replace($original, ['id' => 31, 'from_port_id' => null, 'to_port_id' => null, 'vlan' => $legacyVlan]);
+                $tables['links'][] = array_replace($original, ['id' => 32, 'from_id' => 1, 'to_id' => 3,
+                    'from_port_id' => null, 'to_port_id' => null, 'vlan' => $notAsciiWhitespace]);
+                foreach ($tables['resource_sequences'] as &$sequence) {
+                    if ($sequence['name'] === 'links') { $sequence['value'] = 32; }
+                }
+            });
+            $oversized = $legacy . '.oversized';
+            copy($legacy, $oversized);
+            $this->rewriteBackupZip($oversized, static function (array &$doc): void {
+                $doc['tables']['links'][1]['vlan'] .= 'x';
+            });
+            $this->previewIdBackup($oversized, 400);
+            $preview = $this->previewIdBackup($legacy);
+            $this->assertSame(2, $preview['backup']['counts']['legacy_link_vlans']);
+            $this->commitIdBackup($preview);
+            $this->assertSame([31 => $legacyVlan, 32 => $notAsciiWhitespace],
+                $db->query('SELECT link_id,vlan FROM legacy_link_vlans ORDER BY link_id')->fetchAll(\PDO::FETCH_KEY_PAIR));
+            $this->assertSame([''], $db->query('SELECT DISTINCT vlan FROM device_ports')->fetchAll(\PDO::FETCH_COLUMN));
+
+            $db->exec("UPDATE device_ports SET vlan='access 10' WHERE id=1");
+            file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $before = $this->idBoundaryState($db);
+            foreach (['link-vlan', 'missing-port-vlan', 'multiline-port-vlan', 'leading-space-port-vlan',
+                'trailing-space-port-vlan', 'blank-port-vlan', 'pending-extra-column', 'pending-empty', 'pending-long',
+                'pending-duplicate', 'pending-invalid-id', 'pending-dangling-id', 'pending-missing-vlan', 'pending-missing-table'] as $fault) {
+                $bad = $path . '.' . $fault;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc) use ($fault): void {
+                    $tables = &$doc['tables'];
+                    $row = &$tables['legacy_link_vlans'][0];
+                    if ($fault === 'link-vlan') { $tables['links'][0]['vlan'] = ''; }
+                    if ($fault === 'missing-port-vlan') { unset($tables['device_ports'][0]['vlan']); }
+                    if ($fault === 'multiline-port-vlan') { $tables['device_ports'][0]['vlan'] = "10\u{2028}20"; }
+                    if ($fault === 'leading-space-port-vlan') { $tables['device_ports'][0]['vlan'] = ' access 10'; }
+                    if ($fault === 'trailing-space-port-vlan') { $tables['device_ports'][0]['vlan'] = 'access 10 '; }
+                    if ($fault === 'blank-port-vlan') { $tables['device_ports'][0]['vlan'] = '   '; }
+                    if ($fault === 'pending-extra-column') { $row['migrated'] = 0; }
+                    if ($fault === 'pending-empty') { $row['vlan'] = " \f\v"; }
+                    if ($fault === 'pending-long') { $row['vlan'] .= 'x'; }
+                    if ($fault === 'pending-duplicate') { $tables['legacy_link_vlans'][] = $row; }
+                    if ($fault === 'pending-invalid-id') { $row['link_id'] = (string)$row['link_id']; }
+                    if ($fault === 'pending-dangling-id') { $row['link_id'] = 300; }
+                    if ($fault === 'pending-missing-vlan') { unset($row['vlan']); }
+                    if ($fault === 'pending-missing-table') { unset($tables['legacy_link_vlans']); }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+            $deviceRevision = $db->query('SELECT resource_revision FROM devices WHERE id=3')->fetchColumn();
+            $deleted = $this->client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'delete', 'id' => 3, 'expected_revision' => $deviceRevision]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $this->assertTrue(in_array(32, $deleted['deleted_link_ids'], true));
+            $this->assertSame([31 => $legacyVlan],
+                $db->query('SELECT link_id,vlan FROM legacy_link_vlans')->fetchAll(\PDO::FETCH_KEY_PAIR));
+            $db->exec("UPDATE device_ports SET vlan='changed'");
+            $this->commitIdBackup($this->previewIdBackup($path));
+            $this->assertSame($before['legacy_link_vlans'], $this->idBoundaryState($db)['legacy_link_vlans']);
+            $this->assertSame('access 10', $db->query('SELECT vlan FROM device_ports WHERE id=1')->fetchColumn());
+            $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+        });
+    }
+
+    public function testQualityNotApplicableWebBackupRoundTripAndSchema28Migration(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $db->exec("UPDATE devices SET memo = char(9,13,32) WHERE id=1;
+                INSERT INTO links (id,from_id,to_id) VALUES (60,1,2);
+                INSERT INTO quality_not_applicable (device_id,link_id,field) VALUES
+                    (1,NULL,'maintenance_expiry'),(1,NULL,'memo'),(1,60,'from_port'),(2,60,'to_port')");
+            $expected = [
+                ['device_id' => 1, 'link_id' => null, 'field' => 'maintenance_expiry'],
+                ['device_id' => 1, 'link_id' => null, 'field' => 'memo'],
+                ['device_id' => 1, 'link_id' => 60, 'field' => 'from_port'],
+                ['device_id' => 2, 'link_id' => 60, 'field' => 'to_port'],
+            ];
+            file_put_contents($path, $this->client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($path) === true);
+            $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $document = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+            $zip->close();
+            $this->assertSame(29, $manifest['schema_version']);
+            $this->assertSame(4, $manifest['summary']['quality_not_applicable']);
+            $this->assertSame($expected, $document['tables']['quality_not_applicable']);
+
+            $db->exec("DELETE FROM quality_not_applicable;
+                INSERT INTO quality_not_applicable (device_id,link_id,field) VALUES (3,NULL,'maintenance_expiry')");
+            $preview = $this->previewIdBackup($path);
+            $this->assertSame(4, $preview['backup']['counts']['quality_not_applicable']);
+            $this->commitIdBackup($preview);
+            $select = 'SELECT device_id, link_id, field FROM quality_not_applicable ORDER BY device_id, link_id, field';
+            $this->assertSame($expected, $db->query($select)->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+
+            $before = $this->idBoundaryState($db);
+            foreach (['missing-table', 'missing-count', 'object', 'extra-column', 'missing-link-id',
+                'device-id-string', 'link-id-string', 'link-id-overflow', 'unknown-device', 'unknown-link',
+                'not-allowed', 'device-field-on-link', 'link-field-on-device', 'wrong-endpoint', 'assigned-port', 'filled-field',
+                'duplicate-device', 'duplicate-endpoint', 'legacy-mixed'] as $fault) {
+                $bad = $path . '.' . $fault;
+                copy($path, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    $tables = &$doc['tables'];
+                    $rows = &$tables['quality_not_applicable'];
+                    if ($fault === 'missing-table') { unset($tables['quality_not_applicable']); }
+                    if ($fault === 'missing-count') { unset($manifest['summary']['quality_not_applicable']); }
+                    if ($fault === 'object') { $rows = (object)$rows; }
+                    if ($fault === 'extra-column') { $rows[0]['reason'] = ''; }
+                    if ($fault === 'missing-link-id') { unset($rows[0]['link_id']); }
+                    if ($fault === 'device-id-string') { $rows[0]['device_id'] = '1'; }
+                    if ($fault === 'link-id-string') { $rows[2]['link_id'] = '60'; }
+                    if ($fault === 'link-id-overflow') { $rows[2]['link_id'] = self::API_ID_MAX; }
+                    if ($fault === 'unknown-device') { $rows[0]['device_id'] = 999; }
+                    if ($fault === 'unknown-link') { $rows[2]['link_id'] = 999; }
+                    if ($fault === 'not-allowed') { $rows[0]['field'] = 'name'; }
+                    if ($fault === 'device-field-on-link') { $rows[2]['field'] = 'maintenance_expiry'; }
+                    if ($fault === 'link-field-on-device') { $rows[0]['field'] = 'from_port'; }
+                    if ($fault === 'wrong-endpoint') { $rows[2]['device_id'] = 2; }
+                    if ($fault === 'assigned-port') { $rows[2]['link_id'] = 1; }
+                    if ($fault === 'filled-field') { $rows[0]['field'] = 'manufacturer'; }
+                    if ($fault === 'duplicate-device') { $rows[] = $rows[0]; }
+                    if ($fault === 'duplicate-endpoint') { $rows[] = $rows[2]; }
+                    if ($fault === 'legacy-mixed') {
+                        $manifest['schema_version'] = 28;
+                        unset($manifest['summary']['quality_not_applicable']);
+                    }
+                });
+                $this->previewIdBackup($bad, 400);
+                $this->assertSame($before, $this->idBoundaryState($db));
+            }
+
+            $legacy = $path . '.v28';
+            copy($path, $legacy);
+            $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
+                $manifest['schema_version'] = 28;
+                self::removeQualityNotApplicableContract($doc, $manifest);
+            });
+            $preview = $this->previewIdBackup($legacy);
+            $this->assertSame(0, $preview['backup']['counts']['quality_not_applicable']);
+            $this->commitIdBackup($preview);
+            $this->assertSame([], $db->query($select)->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame(['from_id' => 1, 'to_id' => 2],
+                $db->query('SELECT from_id, to_id FROM links WHERE id=60')->fetch(\PDO::FETCH_ASSOC));
+        });
+    }
+
+    public function testRestorePreviewRejectsChangedQualityNotApplicableWithoutRevisionChange(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db, \Netarium\Tests\TestServer $server): void {
+            $insert = $db->prepare("INSERT INTO quality_not_applicable (device_id, link_id, field)
+                VALUES (?, NULL, 'maintenance_expiry') ON CONFLICT DO NOTHING");
+            $insert->execute([1]);
+            $insert->execute([2]);
+            $preview = $this->previewIdBackup($path);
+            $this->assertSame(0, $preview['backup']['counts']['quality_not_applicable']);
+            $selectRevisions = "SELECT meta_key, meta_value FROM app_meta
+                WHERE meta_key IN ('data_revision', 'monitor_revision') ORDER BY meta_key";
+            $revisions = $db->query($selectRevisions)->fetchAll(\PDO::FETCH_KEY_PAIR);
+
+            // API と同じ行操作で件数を変えずに対象だけを変える。
+            $db->exec("DELETE FROM quality_not_applicable
+                WHERE device_id = 2 AND link_id IS NULL AND field = 'maintenance_expiry'");
+            $insert->execute([3]);
+            $beforeCommit = $this->idBoundaryState($db);
+            $this->assertSame($revisions, $db->query($selectRevisions)->fetchAll(\PDO::FETCH_KEY_PAIR));
+            $autoBackups = $server->getTempDir() . '/backups/auto/pre-restore_*.zip';
+            $this->assertSame([], glob($autoBackups));
+            $this->commitIdBackup($preview, 409);
+            $this->assertSame($beforeCommit, $this->idBoundaryState($db));
+            $this->assertSame([], glob($autoBackups));
+
+            $freshPreview = $this->previewIdBackup($path);
+            // 同じ行を逆順で保存し直しても、重複登録しても、内容は変わらない。
+            $db->exec('DELETE FROM quality_not_applicable');
+            $insert->execute([3]);
+            $insert->execute([1]);
+            $insert->execute([1]);
+            $this->assertSame(0, $insert->rowCount());
+            $this->commitIdBackup($freshPreview);
+            $this->assertSame([], $db->query('SELECT * FROM quality_not_applicable')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame(1, count(glob($autoBackups)));
+        });
+    }
+
 
     public function testManualRouteBackupRoundTrip(): void
     {
         $before = $this->client->get('/api.php?action=load')->assertOk()->getJson();
-        $links = $before['links'];
+        $link = $before['links'][0];
         // 重複と同一直線の点を含む最大8点を、そのまま保存・復元する。
         $route = [
             ['x' => -200000, 'y' => 10], ['x' => -200000, 'y' => 10],
@@ -1807,37 +2451,33 @@ class BackupTest extends TestCase
             ['x' => 40.5, 'y' => 30], ['x' => 50.5, 'y' => 30],
             ['x' => 50.5, 'y' => 60], ['x' => 200000, 'y' => 60],
         ];
-        $links[0]['route_mode'] = 'manual';
-        $links[0]['manual_route'] = $route;
-        $saved = $this->saveBackupLinks($before, $links);
-        $this->assertSame($route, $saved['links'][0]['manual_route']);
+        $routes = [['view_id' => $before['views'][0]['id'], 'device_a_id' => min($link['from_id'], $link['to_id']),
+            'device_b_id' => max($link['from_id'], $link['to_id']), 'manual_route' => $route]];
+        $saved = $this->saveBackupRoutes($before, $routes);
+        $this->assertSame($route, $saved['view_link_routes'][0]['manual_route']);
         $zipPath = $this->testExportBackupZip();
         try {
             $zip = new ZipArchive();
             $this->assertTrue($zip->open($zipPath) === true);
             $document = json_decode((string)$zip->getFromName('data/netarium.json'), true);
             $zip->close();
-            $this->assertSame('manual', $document['tables']['links'][0]['route_mode']);
-            $this->assertSame($route, $document['tables']['links'][0]['manual_route']);
-            $changedLinks = $saved['links'];
-            $changedLinks[0]['manual_route'][0]['x'] = -300000;
-            $changedLinks[0]['manual_route'][1]['x'] = -300000;
-            // 第2→第3点も直交を維持する。
-            $changedLinks[0]['manual_route'][2]['x'] = -300000;
-            $changedLinks[0]['manual_route'][3]['x'] = -300000;
-            $changed = $this->saveBackupLinks($saved, $changedLinks);
-            $this->assertSame($changedLinks[0]['manual_route'], $changed['links'][0]['manual_route']);
+            $this->assertSame($route, $document['tables']['view_link_routes'][0]['manual_route']);
+            $changedRoutes = $saved['view_link_routes'];
+            // 第1〜4点の直交を維持する。
+            for ($i = 0; $i < 4; $i++) { $changedRoutes[0]['manual_route'][$i]['x'] = -300000; }
+            $changed = $this->saveBackupRoutes($saved, $changedRoutes);
+            $this->assertSame($changedRoutes[0]['manual_route'], $changed['view_link_routes'][0]['manual_route']);
             $preview = $this->client->postMultipart('/api.php?action=preview_backup_restore', [],
                 ['backup_zip' => ['path' => $zipPath, 'filename' => 'manual.zip', 'type' => 'application/zip']])->assertOk()->getJson();
             $this->client->postJson('/api.php?action=commit_backup_restore', [
                 'restore_token' => $preview['restore_token'], 'confirmation' => 'バックアップから復元',
             ])->assertOk();
             $restored = $this->client->get('/api.php?action=load')->assertOk()->getJson();
-            $this->assertSame($links, $restored['links']);
+            $this->assertSame($routes, $restored['view_link_routes']);
         } finally {
             @unlink($zipPath);
             $current = $this->client->get('/api.php?action=load')->assertOk()->getJson();
-            $this->saveBackupLinks($current, $before['links']);
+            $this->saveBackupRoutes($current, $before['view_link_routes']);
         }
     }
 
@@ -1873,6 +2513,8 @@ class BackupTest extends TestCase
                 try {
                     copy($validZip, $path);
                     $this->rewriteBackupZip($path, static function (array &$document, array &$manifest) use ($case): void {
+                        $manifest['schema_version'] = 26;
+                        self::removeConnectionContract($document, $manifest);
                         if (isset($case['remove'])) {
                             unset($document['tables']['links'][0][$case['remove']]);
                         } else {
@@ -1917,7 +2559,7 @@ class BackupTest extends TestCase
                 'views' => $baselineData['views'],
                 'devices' => $devices,
                 'placements' => $baselineData['placements'],
-                'links' => $baselineData['links'],
+                'view_link_routes' => $baselineData['view_link_routes'],
                 'canvas_notes' => $baselineData['canvas_notes'],
             ]);
             $changed->assertOk();
@@ -1941,7 +2583,7 @@ class BackupTest extends TestCase
                 'views' => $currentData['views'],
                 'devices' => $devices,
                 'placements' => $currentData['placements'],
-                'links' => $currentData['links'],
+                'view_link_routes' => $currentData['view_link_routes'],
                 'canvas_notes' => $currentData['canvas_notes'],
             ]);
             $changedAfterPreview->assertOk();
@@ -1951,6 +2593,7 @@ class BackupTest extends TestCase
                 'confirmation' => 'バックアップから復元',
             ]);
             $commit->assertError(409, '再度プレビューしてください');
+            $this->assertSame(null, $commit->getJson()['details']['reason'] ?? null);
 
             // 変更後の現行世代を基準に再プレビューすれば復元できる。
             $freshPreview = $this->client->postMultipart(
@@ -2205,8 +2848,7 @@ class BackupTest extends TestCase
         $before = $this->client->get('/api.php?action=load')->assertOk()->getJson();
         $data = $before;
         $this->assertTrue(count($data['links']) > 0);
-        $data['links'][0]['route_mode'] = 'manual';
-        $data['links'][0]['manual_route'] = [['x' => 11, 'y' => 22], ['x' => 33, 'y' => 22]];
+        unset($data['links'], $data['device_ports'], $data['legacy_link_conflicts']);
         $viewId = (int)$data['views'][0]['id'];
         $data['canvas_notes'][] = [
             'id' => 940001, 'view_id' => $viewId, 'text' => " 先頭\n末尾 <b>本文</b> ",
@@ -2228,6 +2870,7 @@ class BackupTest extends TestCase
             $changed = $this->client->get('/api.php?action=load')->assertOk()->getJson();
             $changed['canvas_notes'] = [];
             $changed['canvas_notes'][] = ['id' => 940002, 'view_id' => $viewId, 'text' => '復元で消すメモ'];
+            unset($changed['links'], $changed['device_ports'], $changed['legacy_link_conflicts']);
             $changed = $this->client->postJson('/api.php?action=save', $changed)->assertOk()->getJson();
             $highId = (int)$changed['id_maps']['canvas_notes'][940002];
             $preview = $this->client->postMultipart('/api.php?action=preview_backup_restore', [],
@@ -2242,16 +2885,17 @@ class BackupTest extends TestCase
             $staleView = array_values(array_filter($changed['views'], static fn($v) => (int)$v['id'] === $viewId))[0];
             $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [[
                 'operation' => 'update', 'id' => $viewId, 'expected_revision' => (int)$staleView['resource_revision'],
-                'view' => $staleView, 'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'view' => $staleView, 'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
             ]]])->assertStatus(409);
             $restored['canvas_notes'][] = ['id' => 940003, 'view_id' => $viewId, 'text' => '復元後の新規メモ'];
+            unset($restored['links'], $restored['device_ports'], $restored['legacy_link_conflicts']);
             $next = $this->client->postJson('/api.php?action=save', $restored)->assertOk()->getJson();
             $this->assertTrue((int)$next['id_maps']['canvas_notes'][940003] > $highId);
         } finally {
             @unlink($zipPath);
             $current = $this->client->get('/api.php?action=load')->assertOk()->getJson();
             $current['canvas_notes'] = $before['canvas_notes'];
-            $current['links'] = $before['links'];
+            unset($current['links'], $current['device_ports'], $current['legacy_link_conflicts']);
             $this->client->postJson('/api.php?action=save', $current)->assertOk();
         }
     }
@@ -2372,7 +3016,7 @@ class BackupTest extends TestCase
                 'views' => [['operation' => 'update', 'id' => $viewId,
                     'expected_revision' => (int)$staleView['resource_revision'], 'view' => $staleView,
                     'placements' => array_values(array_filter($preRestore['placements'], static fn($row) => (int)$row['view_id'] === $viewId)),
-                    'links' => array_values(array_filter($preRestore['links'], static fn($row) => (int)$row['view_id'] === $viewId)),
+                    'view_link_routes' => array_values(array_filter($preRestore['view_link_routes'], static fn($row) => (int)$row['view_id'] === $viewId)),
                     'canvas_notes' => array_values(array_filter($preRestore['canvas_notes'], static fn($row) => (int)$row['view_id'] === $viewId))]],
             ])->assertStatus(409);
             $unchanged = $this->client->get('/api.php?action=load')->assertOk()->getJson();
@@ -2810,6 +3454,7 @@ class BackupTest extends TestCase
             copy($archive, $legacy);
             $this->rewriteBackupZip($legacy, static function (array &$doc, array &$manifest): void {
                 $manifest['schema_version'] = 19;
+                self::removeHierarchyContract($doc, $manifest);
                 foreach ($doc['tables']['address_spaces'] ?? [] as $index => $space) {
                     unset($doc['tables']['address_spaces'][$index]['ping_reachability']);
                 }
@@ -2925,7 +3570,7 @@ class BackupTest extends TestCase
                 ->execute([$content]);
             $service = new \Netarium\Services\Backup\BackupService($db);
             $config = [
-                'application_version' => '1.3.0',
+                'application_version' => NETARIUM_VERSION,
                 'backup_export_directory' => $server->getTempDir() . '/export-boundary',
                 'backup_auto_directory' => $server->getTempDir() . '/auto-boundary',
                 'floor_plan_directory' => $server->getTempDir() . '/floorplans',
@@ -2981,12 +3626,18 @@ class BackupTest extends TestCase
         $policy = \Netarium\Services\Backup\BackupCompatibilityPolicy::class;
         foreach (['netarium-config', 'netarium-full'] as $format) {
             foreach (range(11, APP_DATABASE_SCHEMA_VERSION) as $schema) {
-                $this->assertTrue($policy::isCompatible($format, $format, 1, $schema, '1.2.0', APP_DATABASE_SCHEMA_VERSION, '1.3.0'));
+                $this->assertTrue($policy::isCompatible($format, $format, 1, $schema, '2.0.0', APP_DATABASE_SCHEMA_VERSION, '2.0.1'));
+            }
+            foreach (range(11, 23) as $schema) {
+                $this->assertTrue($policy::isCompatible($format, $format, 1, $schema, '1.5.2', APP_DATABASE_SCHEMA_VERSION, NETARIUM_VERSION));
+            }
+            foreach (['1.0.0', '1.4.99999999999999999999', '1.5.2'] as $source) {
+                $this->assertTrue($policy::isCompatible($format, $format, 1, 23, $source, 29, '2.10.0'));
             }
             foreach ([
-                ['1.3.0', '1.3.0'], ['1.3.0', '1.3.1'], ['1.3.2', '1.3.10'],
-                ['1.9.0', '1.10.0'], ['1.3.99', '1.4.0'], ['1.0.4', '1.3.0'],
-                ['1.3.9223372036854775808', '1.3.9223372036854775809'],
+                ['2.3.0', '2.3.0'], ['2.3.0', '2.3.1'], ['2.3.2', '2.3.10'],
+                ['2.9.0', '2.10.0'], ['2.3.99', '2.4.0'],
+                ['2.3.9223372036854775808', '2.3.9223372036854775809'],
             ] as [$source, $target]) {
                 $this->assertTrue($policy::isCompatible($format, $format, 1, 16, $source, 16, $target));
                 if ($source !== $target) {
@@ -3002,7 +3653,13 @@ class BackupTest extends TestCase
             }
             foreach ([
                 [1, 16, '1.3.1', 16, '1.3.0'], [1, 16, '0.3.0', 16, '1.3.0'],
-                [1, 16, '1.3.0', 16, '2.0.0'], [1, 16, '2.0.0', 16, '1.3.0'],
+                [1, 23, '1.5.3', 29, '2.0.0'], [1, 23, '1.10.0', 29, '2.0.0'],
+                [1, 23, '1.5.9223372036854775808', 29, '2.0.0'], [1, 23, '1.05.2', 29, '2.0.0'],
+                [1, 10, '1.5.2', 29, '2.0.0'], [1, 24, '1.5.2', 29, '2.0.0'],
+                [1, '23', '1.5.2', 29, '2.0.0'], [1, 23, '1.5.2', 28, '2.0.0'],
+                [1, 23, '1.5.2', 22, '2.0.0'], [1, 23, '1.5.2', 30, '2.0.0'],
+                [1, 23, '2.0.0', 23, '1.5.2'], [1, 23, '0.5.2', 29, '2.0.0'],
+                [1, 23, '1.5.2', 29, '3.0.0'], [1, 29, '3.0.0', 29, '2.0.0'],
                 [1, 10, '1.2.0', 16, '1.3.0'], [1, 17, '1.2.0', 16, '1.3.0'],
                 [1, '16', '1.2.0', 16, '1.3.0'], [1, 16, '1.2.0', 15, '1.3.0'],
                 [1, 16, '1.2.0', APP_DATABASE_SCHEMA_VERSION + 1, '1.3.0'], [1, 19, '1.2.0', 18, '1.3.0'],
@@ -3015,6 +3672,25 @@ class BackupTest extends TestCase
             $other = $format === 'netarium-config' ? 'netarium-full' : 'netarium-config';
             $this->assertFalse($policy::isCompatible($format, $other, 1, 16, '1.2.0', 16, '1.3.0'));
         }
+        foreach ([
+            [23, '1.5.3', 29, '2.0.0', '2.x への復元はアプリ版 1.0.0〜1.5.2 が対象です', 'unsupported 1.x application version'],
+            [24, '1.5.2', 29, '2.0.0', '1.x から 2.x への復元ではこのスキーマの組は未対応です', 'unsupported 1.x to 2.x schema path'],
+            [23, '1.5.2', 28, '2.0.0', '1.x から 2.x への復元ではこのスキーマの組は未対応です', 'unsupported 1.x to 2.x schema path'],
+            [23, '2.0.0', 23, '1.5.2', 'メジャーバージョンが異なります', 'different major version'],
+            [29, '2.0.1', 29, '2.0.0', '新版から旧版への逆方向復元はできません', 'reverse application version'],
+            [29, '2.0.0', 28, '2.0.0', 'DBスキーマの逆方向移行はできません', 'reverse schema migration'],
+            [23, '1.5.2-rc.1', 29, '2.0.0', 'アプリ版の表記が不正または非対応です', 'invalid application version'],
+            [10, '1.5.2', 29, '2.0.0', 'スキーマの保存契約または移行経路が未対応です', 'unsupported schema contract or migration path'],
+        ] as [$schema, $source, $targetSchema, $target, $expectedConfigReason, $expectedFullReason]) {
+            $configMessage = $policy::describeConfigIncompatibility($schema, $source, $targetSchema, $target);
+            $fullMessage = $policy::describeFullIncompatibility('netarium-full', 1, $schema, $source, $targetSchema, $target);
+            $this->assertTrue(str_contains($configMessage, $expectedConfigReason), $configMessage);
+            $this->assertTrue(str_contains($fullMessage, $expectedFullReason), $fullMessage);
+        }
+        $this->assertTrue(str_contains(
+            $policy::describeFullIncompatibility('netarium-config', 1, 23, '1.5.2', 29, '2.0.0'),
+            'unsupported ZIP format'
+        ));
 
         $repoRoot = (string)realpath(dirname(__DIR__, 2));
         $releaseRoot = sys_get_temp_dir() . '/netarium_v120_app_' . bin2hex(random_bytes(6));
@@ -3039,6 +3715,9 @@ class BackupTest extends TestCase
             $sourceDb->exec("INSERT INTO canvas_notes(id,view_id,text) VALUES(1,1,'公開版の構成メモ')");
             $sourceDb->exec("INSERT INTO link_systems(id,name,color_key) VALUES(1,'公開版の系統','indigo')");
             $sourceDb->exec('UPDATE links SET system_id=1');
+            $sourceDb->exec("UPDATE views SET facility='',floor=''; UPDATE devices SET facility='',floor=''");
+            $sourceDb->exec("UPDATE views SET facility=' 旧庁舎 ',floor=' 2F ' WHERE id=1");
+            $sourceDb->exec("UPDATE devices SET facility='旧庁舎',floor='2F' WHERE id=1");
             $archive = $release->getTempDir() . '/public-v120.zip';
             file_put_contents($archive, $sourceClient->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
             $zip = new ZipArchive();
@@ -3065,7 +3744,37 @@ class BackupTest extends TestCase
             $this->assertTrue($zip->open($roundTrip) === true);
             $restored = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
             $zip->close();
-            foreach (['devices', 'views', 'device_placements', 'links', 'link_systems', 'canvas_notes',
+            $expected = $sourceData['tables'] + ['buildings' => [], 'floors' => []];
+            $hierarchyReport = \Netarium\Services\Topology\LegacyHierarchyMigration::convert($expected);
+            $this->assertSame(2, $hierarchyReport['assigned']);
+            $this->assertSame(1, $hierarchyReport['created_buildings']);
+            $this->assertSame(1, $hierarchyReport['created_floors']);
+            $this->assertSame([['id' => 1, 'name' => '旧庁舎', 'sort_order' => 0, 'building_view_enabled' => 1]], $restored['tables']['buildings']);
+            $this->assertSame(1, count($restored['tables']['floors']));
+            $floor = $restored['tables']['floors'][0];
+            $this->assertSame(1, $floor['id']);
+            $this->assertSame(1, $floor['building_id']);
+            $this->assertSame('2F', $floor['name']);
+            $this->assertSame(2, $floor['sort_order']);
+            $this->assertNull($floor['representative_view_id']);
+            foreach (['scale' => 1, 'offset_x' => 0, 'offset_y' => 0, 'rotation' => 0] as $key => $value) {
+                $this->assertSame((float)$value, (float)$floor[$key]);
+            }
+            foreach (['views', 'devices'] as $table) {
+                $byId = array_column($restored['tables'][$table], null, 'id');
+                $this->assertSame(1, $byId[1]['floor_id']);
+            }
+            $connections = \Netarium\Services\Topology\LegacyLinkMigration::convert($expected['links']);
+            $expected['links'] = array_map(static fn(array $row): array => array_diff_key($row, ['vlan' => true]), $connections['links']);
+            $expected['device_ports'] = array_map(static fn(array $row): array => $row + ['vlan' => ''], $connections['device_ports']);
+            $originalLink = $connections['links'][0];
+            $this->assertSame([['link_id' => $originalLink['id'], 'vlan' => $originalLink['vlan']]],
+                $restored['tables']['legacy_link_vlans']);
+            foreach ($expected['views'] as &$view) { $view['show_connections'] = 1; }
+            unset($view);
+            $this->assertSame($connections['view_link_routes'], $restored['tables']['view_link_routes']);
+            $this->assertSame($connections['legacy_link_conflicts'], $restored['tables']['legacy_link_conflicts']);
+            foreach (['devices', 'views', 'device_placements', 'links', 'device_ports', 'link_systems', 'canvas_notes',
                 'view_floor_plans', 'device_images'] as $table) {
                 // Web復元は古い編集要求を失効させるため、resource_revisionを再発行する。
                 $withoutRevision = static fn(array $rows): array => array_map(
@@ -3087,7 +3796,9 @@ class BackupTest extends TestCase
                     }
                     unset($row);
                 }
-                $this->assertSame($withoutRevision($sourceData['tables'][$table]), $withoutRevision($restoredRows), $table);
+                $normalize = static function (array $row): array { ksort($row); return $row; };
+                $this->assertSame(array_map($normalize, $withoutRevision($expected[$table])),
+                    array_map($normalize, $withoutRevision($restoredRows)), $table);
             }
             foreach (['rack_settings', 'rack_mounts', 'rack_shelves', 'rack_shelf_devices', 'floor_rack_placements', 'device_ip_addresses', 'address_spaces', 'ip_segments', 'change_history', 'device_configs', 'device_config_states'] as $table) {
                 $this->assertSame([], $restored['tables'][$table]);
@@ -3128,7 +3839,7 @@ class BackupTest extends TestCase
                             [$major, $minor, $patch] = explode('.', NETARIUM_VERSION);
                             $m['application_version'] = $major . '.' . $minor . '.' . ((int)$patch + 1);
                         }
-                        if ($fault === 'major') { $m['application_version'] = '2.0.0'; }
+                        if ($fault === 'major') { $m['application_version'] = '3.0.0'; }
                         if ($fault === 'invalid') { $m['application_version'] = '1.3.0-beta.1'; }
                         if ($fault === 'schema') { $m['schema_version'] = APP_DATABASE_SCHEMA_VERSION + 1; }
                         if ($fault === 'format') { $m['format_version'] = 2; }
@@ -3153,5 +3864,216 @@ class BackupTest extends TestCase
             $this->removeTreeRecursive($releaseRoot);
             $this->removeTreeRecursive($candidateRoot);
         }
+    }
+
+    public function runPublicV152DirectUpdateAndWebRestore(): void
+    {
+        if (!getenv('NETARIUM_BACKUP_V152_ROOT')) {
+            throw new \RuntimeException('Set NETARIUM_BACKUP_V152_ROOT to the unpacked public v1.5.2 tag');
+        }
+        require_once dirname(__DIR__, 2) . '/bootstrap.php';
+        $releaseRoot = sys_get_temp_dir() . '/netarium_v152_app_' . bin2hex(random_bytes(6));
+        $release = new \Netarium\Tests\TestServer($releaseRoot);
+        $web = new \Netarium\Tests\TestServer();
+        $update = new \Netarium\Tests\TestServer();
+        $originalClient = $this->client;
+        $sourceDb = $webDb = $updatedDb = $restarted = null;
+        try {
+            $this->copyProjectTreeWithVersion(dirname(__DIR__, 2), $releaseRoot, '1.5.2');
+            $release->start();
+            $source = new TestHttpClient($release->getBaseUrl());
+            $this->assertTrue($source->login('admin', 'admin123'));
+            [$sourceDb] = $this->seedBackupImages($release, 1);
+            $this->assertSame(23, $sourceDb->query('PRAGMA user_version')->fetchColumn());
+            $sourceDb->exec(<<<'SQL'
+                UPDATE views SET facility=' 旧庁舎 ', floor=' 1F ' WHERE id=2;
+                UPDATE devices SET facility='旧庁舎', floor='1F', ip='192.0.2.1' WHERE id=1;
+                UPDATE devices SET facility='旧庁舎', floor='1F' WHERE id=3;
+                UPDATE views SET facility='', floor='' WHERE id=1;
+                INSERT INTO views(id,name,view_type) VALUES(90,'旧ラック','rack');
+                INSERT INTO rack_settings VALUES(90,42,'旧設置場所');
+                INSERT INTO rack_mounts(device_id,view_id,face,start_u,height_u,width_slot,depth) VALUES(3,90,'rear',2,3,'left','full');
+                INSERT INTO rack_shelves VALUES(7,90,'旧棚板','front',10,1,'full');
+                INSERT INTO rack_shelf_devices VALUES(4,7,0);
+                INSERT INTO floor_rack_placements VALUES(2,90,12.5,-20);
+                INSERT INTO device_placements(id,device_id,view_id,x,y) VALUES
+                    (4,2,2,300,100),(5,3,1,180,200),(6,3,2,180,200);
+                INSERT INTO links(id,view_id,from_id,to_id,label,from_port,to_port,vlan,memo) VALUES
+                    (41,2,2,1,'Trunk','ge0/24','ge0/1','1,10,20','幹線リンク'),
+                    (52,1,1,3,'候補A','','','旧VLAN',' 原文 '),
+                    (53,2,1,3,'候補B','','','旧VLAN',' 原文 ');
+                UPDATE links SET route_mode='manual', manual_route='[{"x":100,"y":150},{"x":300,"y":150}]' WHERE id=1;
+                UPDATE view_floor_plans SET rotation=-12.5 WHERE view_id=2;
+                INSERT INTO address_spaces(id,name) VALUES(12,'旧アドレス空間');
+                INSERT INTO ip_segments(id,address_space_id,cidr,vlan_id) VALUES(13,12,'192.0.2.0/24',10);
+                UPDATE devices SET ip_segment_id=13 WHERE id=1;
+                INSERT INTO device_ip_addresses(id,device_id,ip,label,segment_id) VALUES(14,1,'192.0.2.2','追加IP',13);
+                INSERT INTO device_config_states VALUES(1,5,9);
+                UPDATE resource_sequences SET value=70 WHERE name='devices';
+                SQL);
+            $now = gmdate('Y-m-d\TH:i:s\Z');
+            $sourceDb->prepare("INSERT INTO device_configs(device_id,generation,content,created_at,actor_user_id,actor_name)
+                VALUES(1,3,'hostname old',?,1,'admin'),(1,7,'hostname recent',?,1,'admin')")->execute([$now, $now]);
+            $sourceDb->prepare("INSERT INTO change_history(id,event_id,occurred_at,actor_user_id,actor_name,
+                target_type,target_id,target_name,operation,summary,changes_json)
+                VALUES(25,25,?,1,'admin','device',1,'ルータ01','update','管理IPを変更',
+                '{\"source\":\"save_resources\",\"items\":[{\"label\":\"管理IP\",\"before\":\"192.0.2.10\",\"after\":\"192.0.2.1\"}]}')")
+                ->execute([$now]);
+            $sourceDb->prepare("INSERT INTO login_rate_limits VALUES('viewer',2,?,?)")->execute([time() + 300, $now]);
+            $archive = $release->getTempDir() . '/public-v152.zip';
+            file_put_contents($archive, $source->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($archive) === true);
+            $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            $zip->close();
+            $this->assertSame(['netarium-config', 1, '1.5.2', 23], [
+                $manifest['format'], $manifest['format_version'], $manifest['application_version'], $manifest['schema_version']
+            ]);
+
+            // 通常更新: 旧DBの一貫したコピーを置き、候補プログラムの初回 HTTP 要求で移行する。
+            $update->start();
+            $snapshot = $release->getTempDir() . '/db/update.sqlite';
+            $sourceDb->exec('VACUUM INTO ' . $sourceDb->quote($snapshot));
+            $this->assertTrue(copy($snapshot, $update->getDbPath()));
+            $this->copyDirectoryRecursive($release->getTempDir() . '/uploads', $update->getTempDir() . '/uploads');
+            $updatedDb = new \PDO('sqlite:' . $update->getDbPath());
+            $this->assertSame(23, $updatedDb->query('PRAGMA user_version')->fetchColumn());
+            $updatedClient = new TestHttpClient($update->getBaseUrl());
+            $this->assertTrue($updatedClient->login('admin', 'admin123'));
+            $updatedClient->get('/api.php?action=load')->assertOk();
+            $this->assertSame(APP_DATABASE_SCHEMA_VERSION, $updatedDb->query('PRAGMA user_version')->fetchColumn());
+            $this->assertSame($sourceDb->query('SELECT id,username,password_hash,role,is_active,deleted_at FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
+                $updatedDb->query('SELECT id,username,password_hash,role,is_active,deleted_at FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($sourceDb->query("SELECT * FROM login_rate_limits WHERE username='viewer'")->fetchAll(\PDO::FETCH_ASSOC),
+                $updatedDb->query("SELECT * FROM login_rate_limits WHERE username='viewer'")->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame([3, 7], $updatedDb->query('SELECT generation FROM device_configs ORDER BY generation')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame(70, $updatedDb->query("SELECT value FROM resource_sequences WHERE name='devices'")->fetchColumn());
+            $this->assertSame($this->restoreFiles($release->getTempDir() . '/uploads'), $this->restoreFiles($update->getTempDir() . '/uploads'));
+            $beforeRestart = $this->idBoundaryState($updatedDb);
+            $restarted = $update->spawnWorker();
+            $restartClient = new TestHttpClient($restarted->getBaseUrl());
+            $this->assertTrue($restartClient->login('admin', 'admin123'));
+            $restartClient->get('/api.php?action=load')->assertOk();
+            $this->assertSame($beforeRestart, $this->idBoundaryState($updatedDb));
+
+            // Web復元: 通常更新とは別の新規DBに復元し、復元先の認証状態と画像実体を保つ。
+            $web->start();
+            $this->client = new TestHttpClient($web->getBaseUrl());
+            $viewer = new TestHttpClient($web->getBaseUrl());
+            $this->assertTrue($this->client->login('admin', 'admin123'));
+            $this->assertTrue($viewer->login('viewer', 'viewer123'));
+            [$webDb] = $this->seedBackupImages($web, 1);
+            $webDb->prepare("INSERT INTO login_rate_limits VALUES('web-local-user',1,0,?)")->execute([$now]);
+            $users = $webDb->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            $auth = $webDb->query('SELECT * FROM login_rate_limits ORDER BY username')->fetchAll(\PDO::FETCH_ASSOC);
+            $images = $this->restoreFiles($web->getTempDir() . '/uploads');
+            $preview = $this->previewIdBackup($archive);
+            $this->assertSame('1.5.2', $preview['backup']['application_version']);
+            $this->assertSame(2, $preview['image_resolution']['matched']);
+            $this->commitIdBackup($preview);
+            $this->assertSame([7], $webDb->query('SELECT generation FROM device_configs')->fetchAll(\PDO::FETCH_COLUMN));
+            $this->assertSame($users, $webDb->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($auth, $webDb->query('SELECT * FROM login_rate_limits ORDER BY username')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($images, $this->restoreFiles($web->getTempDir() . '/uploads'));
+
+            foreach ([$updatedDb, $webDb] as $db) {
+                $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
+                $this->assertSame('ok', $db->query('PRAGMA integrity_check')->fetchColumn());
+                foreach ([
+                    'SELECT id,device_id,view_id,x,y FROM device_placements ORDER BY id',
+                    'SELECT * FROM rack_settings', 'SELECT * FROM rack_mounts', 'SELECT * FROM rack_shelves',
+                    'SELECT * FROM rack_shelf_devices', 'SELECT * FROM floor_rack_placements',
+                    'SELECT view_id,sha256,rotation FROM view_floor_plans', 'SELECT id,device_id,sha256 FROM device_images',
+                    'SELECT * FROM address_spaces', 'SELECT * FROM ip_segments', 'SELECT * FROM device_ip_addresses',
+                    'SELECT ip_segment_id FROM devices WHERE id=1', 'SELECT * FROM change_history',
+                    'SELECT * FROM device_config_states', 'SELECT * FROM device_configs WHERE generation=7',
+                ] as $sql) {
+                    $this->assertSame($sourceDb->query($sql)->fetchAll(\PDO::FETCH_ASSOC), $db->query($sql)->fetchAll(\PDO::FETCH_ASSOC), $sql);
+                }
+                $this->assertSame(['facility' => ' 旧庁舎 ', 'floor' => ' 1F ', 'building' => '旧庁舎', 'classified' => '1F'],
+                    $db->query('SELECT v.facility,v.floor,b.name AS building,f.name AS classified FROM views v
+                        JOIN floors f ON f.id=v.floor_id JOIN buildings b ON b.id=f.building_id WHERE v.id=2')->fetch(\PDO::FETCH_ASSOC));
+                $this->assertSame([1, 3], $db->query('SELECT d.id FROM devices d JOIN views v ON v.floor_id=d.floor_id WHERE v.id=2 AND d.id IN (1,3) ORDER BY d.id')->fetchAll(\PDO::FETCH_COLUMN));
+                $this->assertSame(['facility' => '外部', 'floor' => '1F', 'floor_id' => null],
+                    $db->query('SELECT facility,floor,floor_id FROM devices WHERE id=4')->fetch(\PDO::FETCH_ASSOC));
+                $this->assertSame([1], $db->query('SELECT id FROM links')->fetchAll(\PDO::FETCH_COLUMN));
+                $this->assertSame([['name' => 'ge0/1', 'vlan' => ''], ['name' => 'ge0/24', 'vlan' => '']],
+                    $db->query('SELECT name,vlan FROM device_ports ORDER BY device_id')->fetchAll(\PDO::FETCH_ASSOC));
+                $this->assertSame('1,10,20', $db->query('SELECT vlan FROM legacy_link_vlans WHERE link_id=1')->fetchColumn());
+                $this->assertSame([['x' => 100, 'y' => 150], ['x' => 300, 'y' => 150]],
+                    json_decode((string)$db->query('SELECT manual_route FROM view_link_routes WHERE view_id=1 AND device_a_id=1 AND device_b_id=2')->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
+                $this->assertSame([52, 53], $db->query('SELECT legacy_link_id FROM legacy_link_conflicts ORDER BY legacy_link_id')->fetchAll(\PDO::FETCH_COLUMN));
+                $held = json_decode((string)$db->query('SELECT payload FROM legacy_link_conflicts WHERE legacy_link_id=52')->fetchColumn(), true, 512, JSON_THROW_ON_ERROR);
+                $this->assertSame(['候補A', '旧VLAN', ' 原文 '], [$held['label'], $held['vlan'], $held['memo']]);
+                $this->assertTrue($db->query("SELECT value FROM resource_sequences WHERE name='links'")->fetchColumn() >= 53);
+                $this->assertSame([], $db->query('SELECT * FROM quality_not_applicable')->fetchAll());
+            }
+            $db = null;
+
+            $beforeReject = $this->idBoundaryState($webDb);
+            foreach (['unsupported-version', 'invalid-source-data'] as $fault) {
+                $bad = $archive . '.' . $fault;
+                copy($archive, $bad);
+                $this->rewriteBackupZip($bad, static function (array &$doc, array &$manifest) use ($fault): void {
+                    if ($fault === 'unsupported-version') {
+                        $manifest['application_version'] = '1.5.3';
+                    } else {
+                        $doc['tables']['devices'][0]['floor_id'] = null;
+                    }
+                });
+                $this->previewIdBackup($bad, 400);
+            }
+            $this->assertSame($beforeReject, $this->idBoundaryState($webDb));
+            $this->assertSame($users, $webDb->query('SELECT * FROM users ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($auth, $webDb->query('SELECT * FROM login_rate_limits ORDER BY username')->fetchAll(\PDO::FETCH_ASSOC));
+            $this->assertSame($images, $this->restoreFiles($web->getTempDir() . '/uploads'));
+            $viewer->get('/api.php?action=load')->assertOk();
+            $this->client->get('/api.php?action=load')->assertOk();
+        } finally {
+            $this->client = $originalClient;
+            $sourceDb = $webDb = $updatedDb = $db = null;
+            $restarted?->stop();
+            $update->stop();
+            $web->stop();
+            $release->stop();
+            $this->removeTreeRecursive($releaseRoot);
+        }
+    }
+
+    public function testCompleteBackupRestoreRespectsDeviceConfigMaxTotalBytesFromConfig(): void
+    {
+        $this->withIdBoundaryFixture(function (string $path, \PDO $db): void {
+            $zip = new ZipArchive();
+            $this->assertTrue($zip->open($path) === true);
+            try {
+                $doc = json_decode((string)$zip->getFromName('data/netarium.json'), true, 512, JSON_THROW_ON_ERROR);
+                $manifest = json_decode((string)$zip->getFromName('manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+            } finally {
+                $zip->close();
+            }
+
+            $doc['tables']['device_config_states'] = [
+                ['device_id' => 1, 'revision' => 1, 'next_generation' => 2],
+            ];
+            $doc['tables']['device_configs'] = [[
+                'id' => 1,
+                'device_id' => 1,
+                'generation' => 1,
+                'content' => str_repeat('a', 64),
+                'created_at' => '2026-10-30T12:00:00+00:00',
+                'actor_user_id' => 1,
+                'actor_name' => 'admin',
+                'memo' => '',
+            ]];
+
+            $service = new \Netarium\Services\Backup\BackupService($db);
+            $this->assertRestoreStatus(400, function () use ($service, $doc, $manifest): void {
+                $service->validateCompleteBackupRestoreData(
+                    $doc['tables'],
+                    ['storage_capacity' => ['device_configs' => ['max_total_bytes' => 32]]],
+                    (int)$manifest['schema_version']
+                );
+            });
+        });
     }
 }

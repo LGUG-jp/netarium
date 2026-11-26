@@ -44,7 +44,7 @@ test('保存中の追加ドラッグは応答で上書きせず次回の保存�
     appState.floorRackPlacements[0].x = 60;
     assert.equal(hasResourceChangesSince(pending), true);
     applyResourceSaveResult({ revision: 30, id_maps: {}, devices: [], views: [{ ...data.views[0], resource_revision: 30 }],
-        placements: [], links: [], canvas_notes: [], floor_rack_placements: [{ floor_view_id: 1, rack_view_id: 3, x: 40, y: 30 }],
+        placements: [], view_link_routes: [], canvas_notes: [], floor_rack_placements: [{ floor_view_id: 1, rack_view_id: 3, x: 40, y: 30 }],
         deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [1] }, pending);
     assert.equal(appState.floorRackPlacements[0].x, 60);
     assert.equal(buildResourceSave().views[0].expected_revision, 30);
@@ -56,7 +56,7 @@ test('ラック削除応答でアイコンだけ整理し古い参照を再保�
     appState.rackSettings = []; appState.floorRackPlacements = [];
     const pending = createPendingResourceSave(buildResourceSave());
     applyResourceSaveResult({ revision: 31, id_maps: {}, devices: [], views: [{ ...data.views[0], resource_revision: 31 }],
-        placements: [], links: [], canvas_notes: [], floor_rack_placements: [],
+        placements: [], view_link_routes: [], canvas_notes: [], floor_rack_placements: [],
         deleted_device_ids: [], deleted_view_ids: [3], affected_view_ids: [1, 3] }, pending);
     assert.deepEqual(appState.floorRackPlacements, []);
     assert.deepEqual(buildResourceSave(), { devices: [], views: [] });
@@ -88,7 +88,7 @@ test('ビュー採番で参照元と参照先を一緒に更新する', () => {
     const pending = createPendingResourceSave(buildResourceSave());
     applyResourceSaveResult({ revision: 60, id_maps: { views: { '-1': 10, '-3': 30, '2': 20 } }, devices: [],
         views: data.views.map(row => ({ ...row, id: ({ '-1': 10, '-3': 30, '2': 20 })[row.id], resource_revision: 60 })),
-        placements: [], links: [], canvas_notes: [],
+        placements: [], view_link_routes: [], canvas_notes: [],
         floor_rack_placements: [{ floor_view_id: 10, rack_view_id: 30, x: 2, y: 3 }],
         rack_settings: [{ view_id: 30, total_u: 42, location: '' }], rack_mounts: [], rack_shelves: [], rack_shelf_devices: [],
         deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [10, 20, 30] }, pending);

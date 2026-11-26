@@ -142,6 +142,7 @@ function initializeHelp(doc = document, win = window) {
 const LEGACY_ANCHORS = {
     // 構成図 (help-canvas.html)
     'canvas': 'help-canvas.html#canvas',
+    'undo-redo': 'help-canvas.html#undo-redo',
     'modes': 'help-canvas.html#modes',
     'connections': 'help-canvas.html#connections',
     'link-systems': 'help-canvas.html#link-systems',
@@ -154,6 +155,7 @@ const LEGACY_ANCHORS = {
     // 機器・台帳 (help-devices.html)
     'devices': 'help-devices.html#devices',
     'device-sheet': 'help-devices.html#device-sheet',
+    'device-ports': 'help-devices.html#device-ports',
     'management-ssh': 'help-devices.html#management-ssh',
     'ledger': 'help-devices.html#ledger',
     'ip-management': 'help-devices.html#ip-management',
@@ -164,10 +166,14 @@ const LEGACY_ANCHORS = {
     'maintenance-outlook': 'help-devices.html#maintenance-outlook',
     'ledger-ping': 'help-devices.html#ledger-ping',
     'device-bulk': 'help-devices.html#device-bulk',
-    // ビュー・ラック (help-views.html)
+    // 建物・ビュー・ラック (help-views.html)
     'views': 'help-views.html#views',
+    'building-view': 'help-views.html#building-view',
     'floor-plans': 'help-views.html#floor-plans',
     'rack-views': 'help-views.html#rack-views',
+    // 分析・品質 (help-insights.html)
+    'dashboard': 'help-insights.html#dashboard',
+    'data-quality': 'help-insights.html#data-quality',
     // 保存・管理 (help-admin.html)
     'saving': 'help-admin.html#saving',
     'csv-backup': 'help-admin.html#csv-backup',
@@ -180,7 +186,7 @@ function handleLegacyAnchorRedirect(win = window) {
     const path = win.location.pathname || '';
     if (!/(^|\/)help\.html$/i.test(path)) return;
     const hash = (win.location.hash || '').replace(/^#/, '');
-    if (hash && LEGACY_ANCHORS[hash]) {
+    if (hash && Object.hasOwn(LEGACY_ANCHORS, hash)) {
         try {
             win.location.replace(LEGACY_ANCHORS[hash]);
         } catch (_) {

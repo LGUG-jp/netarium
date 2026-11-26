@@ -75,7 +75,7 @@ body.auth-page {
     box-sizing: border-box;
 }
 
-.auth-card button,
+.auth-card button:not(.btn-secondary),
 .auth-card .auth-link {
     display: inline-flex;
     justify-content: center;
@@ -97,13 +97,13 @@ body.auth-page {
     transition: background-color var(--transition-fast), border-color var(--transition-fast);
 }
 
-.auth-card button:hover,
+.auth-card button:not(.btn-secondary):hover,
 .auth-card .auth-link:hover {
     background-color: var(--primary-hover);
     border-color: var(--primary-hover);
 }
 
-.auth-card button:active,
+.auth-card button:not(.btn-secondary):active,
 .auth-card .auth-link:active {
     background-color: var(--primary-active);
     border-color: var(--primary-active);

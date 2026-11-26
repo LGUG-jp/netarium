@@ -187,7 +187,7 @@ test('新規追加IPのサーバー採番は応答待ちの編集と下書きへ
     const remote = { ...payload.devices[0].device, resource_revision: 2,
         additional_ips: [{ id: 77, ip: '192.0.2.10', label: '送信時', sort_order: 0 }] };
     applyResourceSaveResult({
-        revision: 2, id_maps: {}, devices: [remote], views: [], placements: [], links: [],
+        revision: 2, id_maps: {}, devices: [remote], views: [], placements: [], view_link_routes: [],
         canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: []
     }, pending);
     assert.equal(appState.devices[0].additional_ips[0].id, 77);
@@ -210,7 +210,7 @@ test('機器と追加IPの同時採番でも応答待ちの下書きを新しい
         revision: 2, id_maps: { devices: { 3: 30 } },
         devices: [{ ...sent, id: 30, resource_revision: 2,
             additional_ips: [{ id: 77, ip: '192.0.2.30', label: '送信時', sort_order: 0 }] }],
-        views: [], placements: [], links: [], canvas_notes: [],
+        views: [], placements: [], view_link_routes: [], canvas_notes: [],
         deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: []
     }, pending);
     eventBus.emit('resources:ids-remapped', maps);

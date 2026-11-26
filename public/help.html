@@ -21,7 +21,8 @@
                     <li><a href="help.html" class="help-nav-link" aria-current="page">トップ</a></li>
                     <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
                     <li><a href="help-devices.html" class="help-nav-link">機器・台帳</a></li>
-                    <li><a href="help-views.html" class="help-nav-link">ビュー・ラック</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">建物・ビュー・ラック</a></li>
+                    <li><a href="help-insights.html" class="help-nav-link">分析・品質</a></li>
                     <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
                 </ul>
             </nav>
@@ -46,26 +47,32 @@
         <main class="help-container" id="help-content">
             <h1>利用ガイド</h1>
             <p>
-                Netarium（ネタリウム）は、庁内や組織内のネットワーク構成（論理構成図およびフロア物理配置図）の可視化、機器台帳の管理、および疎通確認（Ping）を集約して行うシステムです。
+                Netarium（ネタリウム）は、組織内ネットワークの論理構成図・フロア物理配置図・ラック搭載図・機器台帳・ポート接続・Ping疎通結果を一元管理するシステムです。
             </p>
 
             <section>
                 <h2 id="quick-start" tabindex="-1">はじめて使うとき</h2>
-                <p>編集・登録・Pingの実行は管理者の操作です。閲覧者は保存済みの構成・台帳・Ping結果の閲覧と印刷を利用できます。</p>
+                <h3>管理者（構成を登録・編集するとき）</h3>
                 <ol>
-                    <li>上部バーで作業対象のビューを選びます（必要なら「管理」→「ビュー管理」で登録します）。</li>
-                    <li>左パレットで「配置」を選び、機器種別を選んでキャンバスをクリックして機器を配置します。</li>
-                    <li>「接続」を選び、機器同士をクリックして接続線を作成します。</li>
-                    <li>機器をクリックして右パネルで名称やIPアドレスを入力し、「適用」を押すと自動保存されます。</li>
-                    <li>上部「台帳」で登録機器の一覧確認、絞り込み、一括編集、Ping疎通確認を行えます。</li>
+                    <li><strong>ビューを開く:</strong> 上部バーのビュー検索欄で、論理構成図またはフロア物理配置図を開きます（新規作成は「管理」→「建物・フロア・ビュー管理」）。</li>
+                    <li><strong>機器を配置・登録する:</strong> 左パレットの「配置」で機器種別を選び、キャンバスをクリックして配置します。機器をクリックして右パネルで名称やIPアドレスを入力し、「適用」を押すと自動保存されます。</li>
+                    <li><strong>接続する:</strong> 左パレットの「接続」を選び、接続元と接続先の機器をクリックして共通接続を作成します。</li>
                 </ol>
+                <p>ポート・VLAN管理は<a href="help-devices.html#device-ports">ポート・接続・VLANの管理</a>、一括編集は<a href="help-devices.html#device-bulk">機器の一括編集</a>、全体集計や入力漏れの確認は<a href="help-insights.html#dashboard">ダッシュボード・データ品質診断</a>を参照してください。</p>
+
+                <h3>閲覧者（保存済みの構成を確認するとき）</h3>
+                <ul>
+                    <li>上部バーのビュー検索欄で、論理構成図・フロア物理配置図・ラック搭載図・建物ビューを切り替えます。</li>
+                    <li>上部バーの<strong>「台帳」</strong>から機器一覧の検索・絞り込みや、機器個票（ポート・接続情報を含む）を確認できます。</li>
+                    <li>左パレットの<strong>「印刷」</strong>から、表示中の図面を紙やPDFへ出力できます。建物ビューでは印刷できません。建物ビューを閉じ、印刷する図面を開いてから「印刷」を押してください。</li>
+                </ul>
             </section>
 
             <section>
-                <h2 id="screen" tabindex="-1">1. 画面構成と各領域の役割</h2>
+                <h2 id="screen" tabindex="-1">1. 画面構成と5つの領域</h2>
                 <figure class="help-figure">
                     <a href="assets/help/main-screen.webp" data-help-image data-caption="メイン画面：5つの領域" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/main-screen.webp" width="2832" height="1574" alt="メイン画面。①上部バー、②左作業パレット、③中央Canvas、④右プロパティパネル、⑤下部ステータスバーの位置を番号で示す。">
+                        <img src="assets/help/main-screen.webp" width="1024" height="567" alt="メイン画面。①上部バー、②左作業パレット、③中央Canvas、④右プロパティパネル、⑤下部ステータスバーの位置を番号で示す。">
                     </a>
                     <figcaption>画面内の①〜⑤と、下の領域説明を対応させてください。</figcaption>
                 </figure>
@@ -77,27 +84,27 @@
                         <tr>
                             <th scope="row">①</th>
                             <td>上部バー</td>
-                            <td>ビュー切り替え・リンクコピー、機器検索、ダッシュボード、台帳、再読込、保存状態、ヘルプ、管理メニュー、ユーザーメニュー。</td>
+                            <td>ビュー検索・切り替え、ビューリンクコピー、機器検索、ダッシュボード（管理者）、台帳、更新、元に戻す／やり直す（狭幅時は「操作履歴」、管理者）、保存（管理者）、ヘルプ、管理メニュー、ユーザーメニュー。</td>
                         </tr>
                         <tr>
                             <th scope="row">②</th>
                             <td>左作業パレット</td>
-                            <td>作業モード切り替え（選択・配置・接続・メモ）、Ping実行、ビュー内一覧（機器／接続）、印刷。</td>
+                            <td>作業モード切り替え（選択・配置・接続・メモ）、Ping実行（管理者）、ビュー内一覧（機器／接続、要確認バッジ付き）、印刷。</td>
                         </tr>
                         <tr>
                             <th scope="row">③</th>
                             <td>中央Canvas</td>
-                            <td>構成図・物理図面・ラックビューの描画と直接操作。ドラッグでパン、ホイールで拡大縮小、機器の移動・ダブルクリックで個票表示。</td>
+                            <td>構成図・フロア物理配置図・ラックビュー・建物ビューの描画と直接操作。ドラッグでパン、ホイールで拡大縮小、機器のダブルクリックで個票表示。</td>
                         </tr>
                         <tr>
                             <th scope="row">④</th>
                             <td>右プロパティパネル</td>
-                            <td>選択中の機器や接続の詳細情報。基本情報・設置・保守情報の確認・編集、接続情報、管理接続（HTTP/SSH）。「適用」で確定。</td>
+                            <td>選択中の機器や接続の明細確認・編集。機器の基本・設置・資産・保守情報、管理接続（HTTP/HTTPS/SSH）、接続のポート・VLAN設定・経路操作を「適用」で確定。</td>
                         </tr>
                         <tr>
                             <th scope="row">⑤</th>
                             <td>下部ステータスバー</td>
-                            <td>機器件数・接続件数・選択件数、保存状態表示、およびズーム操作ボタン（全体表示、縮小、100%復帰、拡大）。</td>
+                            <td>機器件数・接続件数・選択件数、保存状態表示（「未確認」時の状態確認ボタン）、処理状況・Ping結果案内、ズーム操作ボタン（全体・縮小・100%・拡大）。</td>
                         </tr>
                     </tbody>
                 </table>
@@ -105,43 +112,52 @@
 
             <section>
                 <h2 id="guide-nav" tabindex="-1">2. 機能別利用ガイド</h2>
-                <p>目的の操作に応じた各機能別ガイドを参照してください。</p>
+                <p>目的の操作に応じた機能別ガイドを参照してください。</p>
                 <div class="help-grid-nav">
                     <a href="help-canvas.html" class="help-card">
                         <h3>構成図の操作 <span>→</span></h3>
-                        <p>キャンバスの操作、機器の配置・結線、接続系統の設定、経路調整、メモ、印刷など図面上の操作。</p>
+                        <p>キャンバス操作、配置移動の元に戻す／やり直す、共通接続・要確認対応、接続系統、経路調整、メモ、印刷。</p>
                         <div class="help-card-tags">
                             <span class="help-tag">キャンバス操作</span>
-                            <span class="help-tag">接続作成</span>
-                            <span class="help-tag">経路調整</span>
+                            <span class="help-tag">Undo/Redo</span>
+                            <span class="help-tag">共通接続</span>
+                            <span class="help-tag">要確認対応</span>
                             <span class="help-tag">印刷</span>
                         </div>
                     </a>
                     <a href="help-devices.html" class="help-card">
                         <h3>機器・台帳の操作 <span>→</span></h3>
-                        <p>機器プロパティ、台帳一覧、個票シート編集、IPアドレス管理、変更履歴、Ping疎通確認、Config保管、一括編集。</p>
+                        <p>機器プロパティ、個票（基本・保守・ポート/VLAN・Config管理）、機器台帳、IPアドレス管理、変更履歴、Ping、一括編集。</p>
                         <div class="help-card-tags">
-                            <span class="help-tag">機器台帳</span>
-                            <span class="help-tag">個票編集</span>
+                            <span class="help-tag">機器個票</span>
+                            <span class="help-tag">ポート・VLAN</span>
+                            <span class="help-tag">Config管理</span>
                             <span class="help-tag">IPアドレス管理</span>
-                            <span class="help-tag">変更履歴</span>
-                            <span class="help-tag">Ping疎通</span>
                             <span class="help-tag">一括編集</span>
                         </div>
                     </a>
                     <a href="help-views.html" class="help-card">
-                        <h3>ビュー・ラックの操作 <span>→</span></h3>
-                        <p>論理・物理図面の切り替え、フロア平面図（下絵画像）の調整、物理19インチラックと棚板の機器搭載管理。</p>
+                        <h3>建物・ビュー・ラックの操作 <span>→</span></h3>
+                        <p>建物→フロア→ビュー管理、2.5D建物ビュー（フロア間接続・2棟比較）、フロア図面調整、ラック搭載と棚板。</p>
                         <div class="help-card-tags">
-                            <span class="help-tag">ビュー切り替え</span>
+                            <span class="help-tag">建物・フロア管理</span>
+                            <span class="help-tag">2.5D建物ビュー</span>
                             <span class="help-tag">フロア図面</span>
-                            <span class="help-tag">ラック搭載</span>
-                            <span class="help-tag">棚板</span>
+                            <span class="help-tag">ラック・棚板</span>
+                        </div>
+                    </a>
+                    <a href="help-insights.html" class="help-card">
+                        <h3>分析・品質管理 <span>→</span></h3>
+                        <p>ダッシュボード（運用状況／資産・保守／ネットワーク／データ品質の4タブ）、データ品質診断と「設定不要」の管理。</p>
+                        <div class="help-card-tags">
+                            <span class="help-tag">ダッシュボード</span>
+                            <span class="help-tag">データ品質診断</span>
+                            <span class="help-tag">設定不要</span>
                         </div>
                     </a>
                     <a href="help-admin.html" class="help-card">
                         <h3>保存・管理の操作 <span>→</span></h3>
-                        <p>自動保存と競合対処、CSV取込・バックアップZIPの使い分け、利用者アカウント・初回パスワード変更。</p>
+                        <p>自動保存と競合対処、CSV取込とバックアップZIPの使い分け、利用者アカウント・パスワード管理。</p>
                         <div class="help-card-tags">
                             <span class="help-tag">自動保存</span>
                             <span class="help-tag">競合対処</span>
@@ -154,23 +170,27 @@
 
             <section>
                 <h2 id="quick-links" tabindex="-1">3. 操作索引・アンカー案内</h2>
-                <p>各機能の詳細項目へ直接ジャンプできる索引です。旧リンク（ブックマークや外部資料）からも自動的に各ページへ案内されます。</p>
+                <p>各機能の詳細項目へ直接移動できる索引です。旧リンク（ブックマークや外部資料）からも該当ページへ自動的に案内されます。</p>
                 <table class="help-index-table">
                     <thead>
-                        <tr><th scope="col" style="width: 25%;">機能区分</th><th scope="col" style="width: 35%;">操作項目</th><th scope="col">直接リンク</th></tr>
+                        <tr><th scope="col" class="help-index-col-category">機能区分</th><th scope="col" class="help-index-col-item">操作項目</th><th scope="col">直接リンク</th></tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <th scope="row" rowspan="5">構成図 (`help-canvas.html`)</th>
+                            <th scope="row" rowspan="6">構成図 (`help-canvas.html`)</th>
                             <td>キャンバス表示・倍率変更</td>
                             <td><a href="help-canvas.html#canvas">キャンバスの表示と基本操作</a></td>
                         </tr>
                         <tr>
-                            <td>接続作成・削除・系統設定</td>
-                            <td><a href="help-canvas.html#connections">接続の作成と削除</a> / <a href="help-canvas.html#link-systems">接続系統の管理</a></td>
+                            <td>配置移動の元に戻す／やり直す</td>
+                            <td><a href="help-canvas.html#undo-redo">配置移動を元に戻す・やり直す</a></td>
                         </tr>
                         <tr>
-                            <td>共有リンク・ビュー内一覧</td>
+                            <td>作業モード・配置・接続作成・系統</td>
+                            <td><a href="help-canvas.html#modes">作業モードの切り替え</a> / <a href="help-canvas.html#connections">接続の作成と削除</a> / <a href="help-canvas.html#link-systems">接続系統の管理</a></td>
+                        </tr>
+                        <tr>
+                            <td>共有リンク・ビュー内一覧・要確認</td>
                             <td><a href="help-canvas.html#direct-links">リンクの共有</a> / <a href="help-canvas.html#view-links">ビュー内一覧と一括設定</a></td>
                         </tr>
                         <tr>
@@ -182,41 +202,59 @@
                             <td><a href="help-canvas.html#canvas-notes">キャンバスメモ</a> / <a href="help-canvas.html#printing">構成図の印刷・PDF出力</a></td>
                         </tr>
                         <tr>
-                            <th scope="row" rowspan="7">機器・台帳 (`help-devices.html`)</th>
+                            <th scope="row" rowspan="8">機器・台帳 (`help-devices.html`)</th>
                             <td>機器情報・個票シート・複数IP</td>
                             <td><a href="help-devices.html#devices">機器情報の編集と登録画像</a> / <a href="help-devices.html#device-sheet">機器個票の編集と複数IP</a></td>
                         </tr>
                         <tr>
-                            <td>管理接続（HTTP/SSH）</td>
-                            <td><a href="help-devices.html#management-ssh">機器への管理接続</a></td>
+                            <td>ポート台帳・ポートVLAN・未移行VLAN</td>
+                            <td><a href="help-devices.html#device-ports">機器個票でポートと接続を管理する</a></td>
                         </tr>
                         <tr>
-                            <td>台帳表示・列操作・Config保管</td>
-                            <td><a href="help-devices.html#ledger">機器台帳とダッシュボード</a> / <a href="help-devices.html#device-config">機器Configの手動保管</a> / <a href="help-devices.html#ledger-columns">台帳の表示項目とセル操作</a></td>
+                            <td>Config保管・差分比較</td>
+                            <td><a href="help-devices.html#device-config">機器Configの手動保管</a></td>
                         </tr>
                         <tr>
-                            <td>IPアドレス管理（ネットワーク区分）</td>
-                            <td><a href="help-devices.html#ip-management">IPアドレス管理（ネットワーク区分）</a></td>
+                            <td>管理接続（HTTP/HTTPS/SSH）</td>
+                            <td><a href="help-devices.html#management-ssh">機器へ管理接続する</a></td>
                         </tr>
                         <tr>
-                            <td>変更履歴の確認・差分表示</td>
-                            <td><a href="help-devices.html#change-history">変更履歴の確認</a></td>
+                            <td>機器台帳・列操作・複数条件絞り込み</td>
+                            <td><a href="help-devices.html#ledger">機器台帳の概要</a> / <a href="help-devices.html#ledger-columns">台帳の表示項目とセル操作</a> / <a href="help-devices.html#ledger-filters">台帳の複数条件による絞り込み</a></td>
                         </tr>
                         <tr>
-                            <td>複数条件絞り込み・保守期限</td>
-                            <td><a href="help-devices.html#ledger-filters">台帳の複数条件絞り込み</a> / <a href="help-devices.html#maintenance-outlook">保守期限の見通し</a></td>
+                            <td>保守期限の見通し</td>
+                            <td><a href="help-devices.html#maintenance-outlook">保守期限の見通しと台帳への移動</a></td>
+                        </tr>
+                        <tr>
+                            <td>IPアドレス管理・変更履歴</td>
+                            <td><a href="help-devices.html#ip-management">IPアドレス管理（ネットワーク区分）</a> / <a href="help-devices.html#change-history">変更履歴の確認</a></td>
                         </tr>
                         <tr>
                             <td>Ping疎通確認・一括編集</td>
-                            <td><a href="help-devices.html#ledger-ping">チェックした機器のPing</a> / <a href="help-devices.html#device-bulk">機器の一括編集</a></td>
-                        </tr>
-                            <th scope="row" rowspan="2">ビュー・ラック (`help-views.html`)</th>
-                            <td>ビュー切り替え・図面下絵調整</td>
-                            <td><a href="help-views.html#views">ビューの管理と切り替え</a> / <a href="help-views.html#floor-plans">フロア図面（下絵画像）</a></td>
+                            <td><a href="help-devices.html#ledger-ping">チェックした機器のPing</a> / <a href="help-devices.html#device-bulk">選択した機器の一括編集</a></td>
                         </tr>
                         <tr>
-                            <td>ラックビュー・機器搭載・棚板</td>
-                            <td><a href="help-views.html#rack-views">ラックビューと棚板</a></td>
+                            <th scope="row" rowspan="3">建物・ビュー・ラック (`help-views.html`)</th>
+                            <td>建物・フロア・ビュー管理</td>
+                            <td><a href="help-views.html#views">建物・フロア・ビューの管理と切り替え</a></td>
+                        </tr>
+                        <tr>
+                            <td>2.5D建物ビュー・フロア間接続・2棟比較</td>
+                            <td><a href="help-views.html#building-view">建物ビュー（2.5D表示・フロア間接続・2棟比較）</a></td>
+                        </tr>
+                        <tr>
+                            <td>フロア図面・ラックビュー・棚板</td>
+                            <td><a href="help-views.html#floor-plans">フロア図面（下絵画像）</a> / <a href="help-views.html#rack-views">ラックビューと棚板</a></td>
+                        </tr>
+                        <tr>
+                            <th scope="row" rowspan="2">分析・品質 (`help-insights.html`)</th>
+                            <td>ダッシュボード（4タブ・集計基準）</td>
+                            <td><a href="help-insights.html#dashboard">ダッシュボード（4タブ構成と指標）</a></td>
+                        </tr>
+                        <tr>
+                            <td>データ品質診断・設定不要</td>
+                            <td><a href="help-insights.html#data-quality">データ品質診断と「設定不要」</a></td>
                         </tr>
                         <tr>
                             <th scope="row" rowspan="3">保存・管理 (`help-admin.html`)</th>
@@ -224,12 +262,12 @@
                             <td><a href="help-admin.html#saving">変更の保存と競合への対処</a></td>
                         </tr>
                         <tr>
-                            <td>CSV・バックアップ使い分け</td>
+                            <td>CSV・バックアップZIP使い分け</td>
                             <td><a href="help-admin.html#csv-backup">CSVとバックアップZIPの使い分け</a></td>
                         </tr>
                         <tr>
                             <td>利用者管理・初回パスワード</td>
-                            <td><a href="help-admin.html#accounts">利用者管理とパスワード</a> / <a href="help-admin.html#first-password">初回パスワード変更</a></td>
+                            <td><a href="help-admin.html#accounts">利用者管理とパスワード</a> / <a href="help-admin.html#first-password">仮パスワードで初めてログインする</a></td>
                         </tr>
                     </tbody>
                 </table>

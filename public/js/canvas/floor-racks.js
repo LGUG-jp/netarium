@@ -2,9 +2,12 @@ import { appState, getCurrentView } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
 import { isCurrentUserAdmin, requireAdminUiAction } from '../ui/access-control.js';
 import { hasResourceConflict, scheduleSave } from '../core/save-queue.js';
+import { beginCanvasHistoryDrag, recordPlacementMove } from '../core/placement-history.js';
 import { markDirty } from '../ui/status-bar.js';
-import { closePanel, closeLinkPanel } from '../ui/property-panel.js';
+import { closePanel, closeLinkPanel, hasAnyUnappliedChanges } from '../ui/property-panel.js';
 import { openFloorRackView } from '../modals/view-manager-modal.js';
+import { isPlacementModeActive } from '../ui/placement-mode.js';
+import { finishCanvasNotes } from './canvas-notes.js';
 import { clampPosition } from './drag-drop.js';
 import { suppressCanvasClickOnce } from './interaction-state.js';
 import { render } from './renderer.js';
@@ -25,57 +28,120 @@ export function getSelectedFloorRackPlacement() {
     return getCurrentFloorRackPlacements().find(row => Number(row.rack_view_id) === selectedRackId) || null;
 }
 
-export function clearFloorRackSelection() { selectedRackId = null; cancelDrag?.(); }
-eventBus.on('resources:reloaded', () => { clearFloorRackSelection(); cancelDrag?.(); });
+function rackElement(rackId) {
+    return appState.deviceLayer?.querySelector(`[data-rack-view-id="${rackId}"]`);
+}
+
+function syncRackSelection(element, selected) {
+    element.classList.toggle('selected', selected);
+    element.querySelector('.floor-rack-trigger')?.setAttribute('aria-pressed', String(selected));
+    const open = element.querySelector('.floor-rack-open');
+    if (open) open.hidden = !selected;
+}
+
+function setSelectedRack(id) {
+    if (selectedRackId === id) return;
+    const previous = selectedRackId == null ? null : rackElement(selectedRackId);
+    if (previous) syncRackSelection(previous, false);
+    selectedRackId = id;
+    const current = id == null ? null : rackElement(id);
+    if (current) syncRackSelection(current, true);
+}
+
+export function clearFloorRackSelection() {
+    setSelectedRack(null);
+    cancelDrag?.();
+}
+eventBus.on('resources:reloaded', clearFloorRackSelection);
+eventBus.on('resource:reloaded', ({ kind, id }) => {
+    if (kind === 'views') cancelDrag?.(Number(id));
+});
 eventBus.on('resources:ids-remapped', maps => {
     if (selectedRackId != null) selectedRackId = Number(maps.views?.[selectedRackId] ?? selectedRackId);
 });
 
+function canUseRackControls() {
+    return !appState.linkMode && !appState.noteMode && !isPlacementModeActive() &&
+        !appState.floorPlanAdjustMode && !appState.isRangeSelecting;
+}
+
+function canEditRackPlacement(row) {
+    return canUseRackControls() && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+        appState.appStatus.state !== 'unconfirmed' && !hasResourceConflict('views', row.floor_view_id);
+}
+
 export async function removeSelectedFloorRack() {
     const row = getSelectedFloorRackPlacement();
-    if (!row || !requireAdminUiAction() || appState.authExpired || appState.appStatus.state === 'unconfirmed' ||
-        hasResourceConflict('views', row.floor_view_id)) return false;
+    if (!row || !requireAdminUiAction() || !canEditRackPlacement(row)) return false;
     const rack = appState.views.find(view => Number(view.id) === Number(row.rack_view_id));
     if (!window.confirm(`ラック「${rack?.name || ''}」の配置を外しますか？\nラックビュー・棚板・搭載機器は削除されません。`)) return false;
     if (!await closePanel() || !await closeLinkPanel()) return false;
-    if (!getCurrentFloorRackPlacements().includes(row) || appState.appStatus.state === 'unconfirmed' ||
-        hasResourceConflict('views', row.floor_view_id)) return false;
+    if (getSelectedFloorRackPlacement() !== row || !canEditRackPlacement(row)) return false;
     appState.floorRackPlacements = appState.floorRackPlacements.filter(item => item !== row);
     clearFloorRackSelection();
     markDirty(); scheduleSave({ immediate: true, silent: true }); render();
     return true;
 }
 
-async function selectRack(row) {
-    if (!await closePanel() || !await closeLinkPanel()) return false;
-    if (!getCurrentFloorRackPlacements().includes(row)) return false;
-    appState.selectedPlacementIds.clear();
-    selectedRackId = Number(row.rack_view_id);
-    eventBus.emit('canvas:selection-changed');
-    return true;
+function selectRack(row) {
+    const finish = () => {
+        if (!canUseRackControls() || !getCurrentFloorRackPlacements().includes(row) ||
+            finishCanvasNotes('selection') === false) return false;
+        appState.selectedPlacementIds.clear();
+        setSelectedRack(Number(row.rack_view_id));
+        eventBus.emit('canvas:selection-changed');
+        return true;
+    };
+
+    const hasDraft = hasAnyUnappliedChanges();
+    if (getSelectedFloorRackPlacement() === row && !hasDraft) return true;
+    if (hasDraft) {
+        return (async () => {
+            if (!await closePanel() || !await closeLinkPanel()) return false;
+            return finish();
+        })();
+    }
+    closePanel();
+    closeLinkPanel();
+    return finish();
 }
 
-function makeRackDraggable(element, row) {
-    element.addEventListener('pointerdown', event => {
-        if (event.button !== 0 || !isCurrentUserAdmin() || appState.authExpired || appState.isPinging ||
-            appState.linkMode || appState.noteMode || appState.floorPlanAdjustMode || appState.appStatus.state === 'unconfirmed' ||
-            hasResourceConflict('views', row.floor_view_id) || event.target.closest('button')) return;
+function makeRackDraggable(trigger, element, row) {
+    trigger.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || !canEditRackPlacement(row)) return;
         event.stopPropagation();
         cancelDrag?.();
-        const start = { x: event.clientX, y: event.clientY, rowX: row.x, rowY: row.y };
+        const start = { x: event.clientX, y: event.clientY };
+        const before = { x: Number(row.x), y: Number(row.y) };
+        const endHistoryDrag = beginCanvasHistoryDrag();
         const scale = appState.viewState.scale;
         let moved = false, ended = false, ready = false;
+        let renderRafId = null;
         const onMove = move => {
             if (move.pointerId !== event.pointerId || ended) return;
             const dx = move.clientX - start.x, dy = move.clientY - start.y;
             if (!moved && Math.max(Math.abs(dx), Math.abs(dy)) <= 3) return;
-            moved = true;
-            if (!ready) return;
-            if (!getCurrentFloorRackPlacements().includes(row) || hasResourceConflict('views', row.floor_view_id) || !isCurrentUserAdmin() || appState.authExpired) {
+            if (!getCurrentFloorRackPlacements().includes(row) || !canEditRackPlacement(row)) {
                 finish(null); return;
             }
-            Object.assign(row, clampPosition(Number(start.rowX) + dx / scale, Number(start.rowY) + dy / scale));
+            if (!moved) {
+                moved = true;
+                const selection = selectRack(row);
+                if (selection instanceof Promise) {
+                    selection.then(ok => { ready = ok && !ended; });
+                } else {
+                    ready = selection;
+                }
+            }
+            if (!ready) return;
+            Object.assign(row, clampPosition(before.x + dx / scale, before.y + dy / scale));
             element.style.left = `${row.x}px`; element.style.top = `${row.y}px`;
+            if (renderRafId === null) {
+                renderRafId = window.requestAnimationFrame(() => {
+                    renderRafId = null;
+                    eventBus.emit('canvas:render-links');
+                });
+            }
         };
         const finish = end => {
             if (end && end.pointerId !== event.pointerId) return;
@@ -86,28 +152,41 @@ function makeRackDraggable(element, row) {
             document.removeEventListener('pointercancel', onCancel);
             cancelDrag = null;
             refreshDrag = null;
+            if (renderRafId !== null) {
+                window.cancelAnimationFrame(renderRafId);
+                renderRafId = null;
+            }
             if (moved) {
                 suppressCanvasClickOnce();
                 element.dataset.dragged = 'true';
-                if (end?.type === 'pointerup' && ready) {
+                const recorded = end?.type === 'pointerup' && ready &&
+                    recordPlacementMove(row.floor_view_id, [{
+                        rackViewId: Number(row.rack_view_id), before, after: { x: Number(row.x), y: Number(row.y) }
+                    }]);
+                if (recorded) {
                     markDirty(); scheduleSave({ immediate: true, silent: true });
-                } else Object.assign(row, { x: start.rowX, y: start.rowY });
-                render();
+                } else {
+                    Object.assign(row, before);
+                    element.style.left = `${row.x}px`; element.style.top = `${row.y}px`;
+                }
+                if (ready) eventBus.emit('canvas:render-links');
             }
+            endHistoryDrag();
         };
         const onUp = end => { onMove(end); finish(end); };
         const onCancel = end => finish(end);
-        cancelDrag = () => finish(null);
+        cancelDrag = viewId => {
+            if (viewId == null || Number(row.floor_view_id) === viewId) finish(null);
+        };
         refreshDrag = () => {
             const current = getCurrentFloorRackPlacements().find(item => Number(item.rack_view_id) === Number(row.rack_view_id));
-            if (!current || hasResourceConflict('views', current.floor_view_id)) { finish(null); return; }
+            if (!current || !canEditRackPlacement(current)) { finish(null); return; }
             row = current;
-            element = appState.deviceLayer?.querySelector(`[data-rack-view-id="${row.rack_view_id}"]`) || element;
+            element = rackElement(row.rack_view_id) || element;
         };
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
         document.addEventListener('pointercancel', onCancel);
-        selectRack(row).then(selected => { ready = selected && !ended; if (ready) element.classList.add('selected'); });
     });
 }
 
@@ -118,37 +197,62 @@ export function renderFloorRacks() {
         const element = document.createElement('div');
         element.className = 'floor-rack';
         element.dataset.rackViewId = String(row.rack_view_id);
-        element.classList.toggle('selected', getSelectedFloorRackPlacement() === row);
+        const selected = getSelectedFloorRackPlacement() === row;
+        element.classList.toggle('selected', selected);
         element.style.left = `${row.x}px`; element.style.top = `${row.y}px`;
         element.style.width = `${DEFAULT_DEVICE_WIDTH}px`; element.style.height = `${DEFAULT_DEVICE_HEIGHT}px`;
-        element.tabIndex = 0; element.setAttribute('role', 'link');
-        element.setAttribute('aria-label', `ラック「${rack.name}」を開く`);
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'floor-rack-trigger';
+        trigger.setAttribute('aria-label', `ラック「${rack.name}」を選択`);
+        trigger.setAttribute('aria-pressed', String(selected));
+        const description = 'ダブルクリック、または選択後のボタンでラックビューを開く';
+        trigger.setAttribute('aria-description', description);
+        trigger.title = `クリックで選択 / ${description}${isCurrentUserAdmin() ? ' / ドラッグで移動' : ''}`;
         const icon = document.createElement('img'); icon.src = FLOOR_RACK_ICON; icon.alt = ''; icon.draggable = false;
         const label = document.createElement('span'); label.className = 'device-name'; label.textContent = rack.name;
-        element.title = `${rack.name}\nクリックでラックを開く${isCurrentUserAdmin() ? ' / ドラッグで移動' : ''}`;
-        element.append(icon, label);
-        element.addEventListener('click', event => {
+        trigger.append(icon, label);
+
+        const open = document.createElement('button');
+        open.type = 'button'; open.className = 'btn btn-secondary floor-rack-open';
+        open.textContent = 'ラックビューを開く';
+        open.setAttribute('aria-label', `ラックビューを開く：${rack.name}`);
+        open.hidden = !selected;
+        const openSelected = () => {
+            if (canUseRackControls() && getSelectedFloorRackPlacement() === row) return openFloorRackView(row.rack_view_id);
+        };
+        open.addEventListener('click', event => {
             event.stopPropagation();
-            if (appState.suppressNextClick || element.dataset.dragged) { appState.suppressNextClick = false; delete element.dataset.dragged; return; }
-            if (appState.linkMode || appState.noteMode) return;
-            if (isCurrentUserAdmin() && (event.ctrlKey || event.metaKey || event.shiftKey)) {
-                selectRack(row).then(() => render()); return;
-            }
-            openFloorRackView(row.rack_view_id);
+            return openSelected();
         });
-        element.addEventListener('keydown', event => {
-            if (event.target === element && (event.key === 'Enter' || event.key === ' ')) {
-                event.preventDefault(); openFloorRackView(row.rack_view_id);
-            }
+
+        let doubleClickReady = false;
+        trigger.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || !element.dataset.dragged) return;
+            doubleClickReady = false;
+            delete element.dataset.dragged;
         });
-        if (isCurrentUserAdmin()) {
-            const select = document.createElement('button'); select.type = 'button'; select.className = 'floor-rack-select';
-            select.textContent = '選択'; select.title = '配置解除するラックを選択';
-            select.disabled = appState.authExpired || appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', row.floor_view_id);
-            select.addEventListener('click', event => { event.stopPropagation(); selectRack(row).then(() => { render(); document.getElementById('deleteSelectedBtn')?.focus(); }); });
-            element.appendChild(select);
-            makeRackDraggable(element, row);
-        }
+        trigger.addEventListener('click', async event => {
+            event.stopPropagation();
+            if (appState.suppressNextClick || element.dataset.dragged || !canUseRackControls()) {
+                doubleClickReady = false;
+                appState.suppressNextClick = false;
+                delete element.dataset.dragged;
+                return;
+            }
+            // ネイティブの連続クリックは、ドラッグを含まない最初の1回で選択する。
+            if (event.detail > 1) return;
+            doubleClickReady = false;
+            if (await selectRack(row)) doubleClickReady = event.detail === 1;
+        });
+        trigger.addEventListener('dblclick', event => {
+            event.stopPropagation();
+            if (!doubleClickReady || appState.suppressNextClick || element.dataset.dragged) return;
+            doubleClickReady = false;
+            return openSelected();
+        });
+        if (isCurrentUserAdmin()) makeRackDraggable(trigger, element, row);
+        element.append(trigger, open);
         appState.deviceLayer.appendChild(element);
     }
     refreshDrag?.();
