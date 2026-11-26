@@ -10,7 +10,8 @@ import {
     MAX_VIEWS,
     VALID_STATUSES
 } from './constants.js';
-import { normalizeLinkRouteData } from './link-route-data.js';
+import { resolveViewLinkGroups, resolveViewLinks } from './connection-data.js';
+export { normalizeLink, toSaveLink } from './connection-data.js';
 import { validateCanvasNote } from './canvas-note-data.js';
 export { normalizeCanvasNote, toSaveCanvasNote } from './canvas-note-data.js';
 import { validateRackLayout } from './rack-layout.js';
@@ -19,9 +20,15 @@ import { normalizeAdditionalIps, validateDeviceIps, deviceIpRecords } from './de
 
 export const appState = {
     views: [],
+    buildings: [],
+    floors: [],
     devices: [],
     placements: [],
     links: [],
+    devicePorts: [],
+    viewLinkRoutes: [],
+    legacyLinkConflicts: [],
+    legacyLinkVlans: [],
     linkSystems: [],
     addressSpaces: [],
     ipSegments: [],
@@ -38,18 +45,22 @@ export const appState = {
     selectedCanvasNoteId: null,
     editingDeviceId: null,
     editingLinkId: null,
+    editingLinkGroupKey: null,
     nextViewId: 1,
     nextDeviceId: 1,
     nextPlacementId: 1,
     nextLinkId: 1,
+    nextDevicePortId: 1,
     nextCanvasNoteId: 1,
     dataRevision: 0,
     monitorRevision: 0,
     linkMode: false,
     noteMode: false,
     linkSourceId: null,
+    linkTargetId: null,
     linkSourceFixed: false,
     linkSourceConnected: false,
+    legacyLinkCreation: null,
     isSaving: false,
     isPinging: false,
     suppressNextClick: false,
@@ -62,7 +73,7 @@ export const appState = {
     },
     viewStates: new Map(),
     floorPlanAutoFittedViews: new Set(),
-    resourceConflicts: { devices: new Map(), views: new Map() },
+    resourceConflicts: { devices: new Map(), views: new Map(), links: new Map(), device_ports: new Map() },
     appStatus: {
         dirty: false,
         state: 'saved',
@@ -90,7 +101,8 @@ export const appState = {
     dataQualitySeverityFilter: '',
     dataQualityCategoryFilter: '',
     dataQualityCodeFilter: [],
-    dataQualityPreviousFocus: null,
+    dataQualityFieldFilter: '',
+    dataQualitySuppressedView: 'hidden',
     isDashboardNavigating: false
 };
 
@@ -106,11 +118,11 @@ export function toSaveView(view) {
     return {
         id: Number(view.id),
         name: normalizeText(view.name).trim(),
-        facility:
-            normalizeText(view.facility).trim(),
-        floor:
-            normalizeText(view.floor).trim(),
+        facility: normalizeText(view.facility),
+        floor: normalizeText(view.floor),
+        floor_id: view.floor_id == null ? null : Number(view.floor_id),
         view_type: ['topology', 'floor', 'rack'].includes(view.view_type) ? view.view_type : 'topology',
+        show_connections: Number(view.show_connections ?? 1) === 0 ? 0 : 1,
         sort_order:
             Number(view.sort_order) || 0,
         memo:
@@ -161,16 +173,21 @@ export function getCurrentPlacements() {
 }
 
 
-export function getCurrentLinks() {
-    if (appState.currentViewId === null) {
-        return [];
-    }
+// 端点選択・接続元固定・旧記録の復旧対象は作成操作の一時状態。保存には含めない。
+export function resetLinkCreationState() {
+    appState.linkSourceId = null;
+    appState.linkTargetId = null;
+    appState.linkSourceFixed = false;
+    appState.linkSourceConnected = false;
+    appState.legacyLinkCreation = null;
+}
 
-    return appState.links.filter(
-        link =>
-            Number(link.view_id) ===
-            Number(appState.currentViewId)
-    );
+export function getCurrentLinks() {
+    return resolveViewLinks(getCurrentView(), appState);
+}
+
+export function getCurrentLinkGroups() {
+    return resolveViewLinkGroups(getCurrentView(), appState);
 }
 
 export function getCurrentCanvasNotes() {
@@ -221,14 +238,33 @@ export function getPlacementForDeviceInCurrentView(deviceId) {
  * リンク作成モード切替
  */
 
+let reservedIdProvider = null;
+
+export function setReservedIdProvider(provider) {
+    reservedIdProvider = typeof provider === 'function' ? provider : null;
+}
+
+function getReservedIds(kind) {
+    return reservedIdProvider ? (reservedIdProvider(kind) || []) : [];
+}
+
 /**
  * 安全な未使用ID計算
  */
-export function calculateNextAvailableId(items) {
+export function calculateNextAvailableId(items, extraIds = []) {
     const used = new Set();
     let max = 0;
     for (const item of (items || [])) {
         const id = Number(item?.id);
+        if (Number.isSafeInteger(id) && id > 0) {
+            used.add(id);
+            if (id > max) {
+                max = id;
+            }
+        }
+    }
+    for (const rawId of (extraIds || [])) {
+        const id = Number(rawId);
         if (Number.isSafeInteger(id) && id > 0) {
             used.add(id);
             if (id > max) {
@@ -253,6 +289,7 @@ const KIND_TO_PROP = {
     devices: 'nextDeviceId',
     placements: 'nextPlacementId',
     links: 'nextLinkId',
+    devicePorts: 'nextDevicePortId',
     canvasNotes: 'nextCanvasNoteId'
 };
 
@@ -260,17 +297,23 @@ const KIND_TO_PROP = {
  * 安全な仮ID払い出し
  */
 export function allocateLocalId(kind) {
+    const extraIds = getReservedIds(kind);
     if (kind === 'rackShelves') {
-        return Math.min(0, ...appState.rackShelves.map(row => Number(row.id))) - 1;
+        const existing = [...appState.rackShelves.map(row => Number(row.id)), ...extraIds.map(Number)]
+            .filter(id => Number.isFinite(id));
+        return Math.min(0, ...existing) - 1;
     }
     const prop = KIND_TO_PROP[kind];
     const items = appState[kind] || [];
     let current = Number(appState[prop]);
-    const used = new Set(items.map(item => Number(item?.id)));
+    const used = new Set([
+        ...items.map(item => Number(item?.id)),
+        ...extraIds.map(Number)
+    ]);
     if (!Number.isSafeInteger(current) || current <= 0 || used.has(current)) {
-        current = calculateNextAvailableId(items);
+        current = calculateNextAvailableId(items, extraIds);
     }
-    appState[prop] = calculateNextAvailableId([...items, { id: current }]);
+    appState[prop] = calculateNextAvailableId([...items, { id: current }], extraIds);
     return current;
 }
 
@@ -278,50 +321,14 @@ export function allocateLocalId(kind) {
  * 次ID再計算
  */
 export function recalculateNextIds() {
-    appState.nextViewId = calculateNextAvailableId(appState.views);
-    appState.nextDeviceId = calculateNextAvailableId(appState.devices);
-    appState.nextPlacementId = calculateNextAvailableId(appState.placements);
-    appState.nextLinkId = calculateNextAvailableId(appState.links);
-    appState.nextCanvasNoteId = calculateNextAvailableId(appState.canvasNotes);
+    appState.nextViewId = calculateNextAvailableId(appState.views, getReservedIds('views'));
+    appState.nextDeviceId = calculateNextAvailableId(appState.devices, getReservedIds('devices'));
+    appState.nextPlacementId = calculateNextAvailableId(appState.placements, getReservedIds('placements'));
+    appState.nextLinkId = calculateNextAvailableId(appState.links, getReservedIds('links'));
+    appState.nextDevicePortId = calculateNextAvailableId(appState.devicePorts, getReservedIds('devicePorts'));
+    appState.nextCanvasNoteId = calculateNextAvailableId(appState.canvasNotes, getReservedIds('canvasNotes'));
 }
 
-
-function normalizeLinkSystemId(value) {
-    if (value == null) return null;
-    const id = Number(value);
-    if (!Number.isSafeInteger(id) || id <= 0 ||
-        (typeof value !== 'number' && (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)))) {
-        throw new Error('接続系統は未設定または正の整数で指定してください');
-    }
-    return id;
-}
-
-/**
- * DB/APIから取得したリンクデータの正規化
- */
-
-/**
- * DB/APIから取得したリンクデータの正規化
- */
-export function normalizeLink(link) {
-    return {
-        ...normalizeLinkRouteData(link),
-        system_id: normalizeLinkSystemId(link.system_id),
-        id: Number(link.id),
-        view_id: Number(link.view_id),
-        from_id: Number(
-            link.from_id ?? link.fromId
-        ),
-        to_id: Number(
-            link.to_id ?? link.toId
-        ),
-        label: normalizeText(link.label),
-        from_port: normalizeText(link.from_port),
-        to_port: normalizeText(link.to_port),
-        vlan: normalizeText(link.vlan),
-        memo: normalizeText(link.memo)
-    };
-}
 
 
 /**
@@ -348,6 +355,7 @@ export function toSaveDevice(device) {
 
         facility: normalizeText(device.facility),
         floor: normalizeText(device.floor),
+        floor_id: device.floor_id == null ? null : Number(device.floor_id),
         location: normalizeText(device.location),
         manufacturer: normalizeText(device.manufacturer),
         model: normalizeText(device.model),
@@ -367,70 +375,6 @@ export function toSaveDevice(device) {
 }
 
 
-/**
- * 保存用リンクデータ
- */
-
-/**
- * 保存用リンクデータ
- */
-export function toSaveLink(link) {
-    return {
-        ...normalizeLinkRouteData(link),
-        system_id: normalizeLinkSystemId(link.system_id),
-        id: Number(link.id),
-        view_id: Number(link.view_id),
-        from_id: Number(link.from_id),
-        to_id: Number(link.to_id),
-        label: normalizeText(link.label),
-        from_port:
-            normalizeText(link.from_port),
-        to_port:
-            normalizeText(link.to_port),
-        vlan: normalizeText(link.vlan),
-        memo: normalizeText(link.memo)
-    };
-}
-
-
-
-/**
- * リンク妥当性チェック
- */
-
-/**
- * リンク妥当性チェック
- */
-export function isValidLinkObject(link) {
-    if (!link) {
-        return false;
-    }
-
-    if (!Number.isFinite(link.id) || link.id <= 0) {
-        return false;
-    }
-
-    if (!Number.isFinite(link.from_id) || link.from_id <= 0) {
-        return false;
-    }
-
-    if (!Number.isFinite(link.to_id) || link.to_id <= 0) {
-        return false;
-    }
-
-    if (link.from_id === link.to_id) {
-        return false;
-    }
-
-    if (
-        !Number.isFinite(link.view_id) ||
-        link.view_id <= 0
-    ) {
-        return false;
-    }
-
-    return true;
-}
 
 /**
  * ステータス正規化
@@ -529,7 +473,6 @@ export function validateAllDataBeforeSave(data = appState) {
     validateViewsForSave(data);
     validateDevicesForSave(data.devices);
     validatePlacementsForSave(data);
-    validateLinksForSave(data);
     validateCanvasNotesForSave(data);
     validateRackLayout(data);
     validateFloorRackPlacements(data);
@@ -685,105 +628,6 @@ export function validatePlacementsForSave(data = appState) {
 }
 
 
-export function validateLinksForSave(data = appState) {
-    const deviceIds = new Set(
-        data.devices.map(device => Number(device.id))
-    );
-
-    const placementPairs = new Set(
-        data.placements.map(placement =>
-            `${Number(
-                placement.device_id
-            )}:${Number(
-                placement.view_id
-            )}`
-        )
-    );
-
-    const viewIds = new Set(
-        data.views.map(view => Number(view.id))
-    );
-
-    const usedIds = new Set();
-    const usedPairs = new Set();
-
-    for (const link of data.links) {
-        normalizeLinkRouteData(link);
-        normalizeLinkSystemId(link.system_id);
-        const id = Number(link.id);
-        const viewId =
-            Number(link.view_id);
-        const fromId =
-            Number(link.from_id);
-        const toId =
-            Number(link.to_id);
-
-        if (
-            !Number.isInteger(id) ||
-            id <= 0
-        ) {
-            throw new Error(
-                '接続IDが不正です'
-            );
-        }
-
-        if (usedIds.has(id)) {
-            throw new Error(
-                `接続ID ${id} が重複しています`
-            );
-        }
-
-        if (!viewIds.has(viewId)) {
-            throw new Error(
-                `接続ID ${id}: ビューが存在しません`
-            );
-        }
-
-        if (
-            !deviceIds.has(fromId) ||
-            !deviceIds.has(toId)
-        ) {
-            throw new Error(
-                `接続ID ${id}: 接続機器が存在しません`
-            );
-        }
-
-        if (fromId === toId) {
-            throw new Error(
-                `接続ID ${id}: 同一機器同士は接続できません`
-            );
-        }
-
-        if (
-            !placementPairs.has(
-                `${fromId}:${viewId}`
-            ) ||
-            !placementPairs.has(
-                `${toId}:${viewId}`
-            )
-        ) {
-            throw new Error(
-                `接続ID ${id}: 両端の機器を同じビューへ配置してください`
-            );
-        }
-
-        const pairIds =
-            [fromId, toId]
-                .sort((a, b) => a - b);
-
-        const pairKey =
-            `${viewId}:${pairIds[0]}:${pairIds[1]}`;
-
-        if (usedPairs.has(pairKey)) {
-            throw new Error(
-                `接続ID ${id}: 同一ビュー内で接続が重複しています`
-            );
-        }
-
-        usedIds.add(id);
-        usedPairs.add(pairKey);
-    }
-}
 
 
 
@@ -861,6 +705,7 @@ export function normalizeDevice(device) {
 
         facility: normalizeText(device.facility),
         floor: normalizeText(device.floor),
+        floor_id: device.floor_id == null ? null : Number(device.floor_id),
         location: normalizeText(device.location),
         manufacturer: normalizeText(device.manufacturer),
         model: normalizeText(device.model),
@@ -885,7 +730,9 @@ export function normalizeView(view) {
         name: normalizeText(view.name),
         facility: normalizeText(view.facility),
         floor: normalizeText(view.floor),
+        floor_id: view.floor_id == null ? null : Number(view.floor_id),
         view_type: ['topology', 'floor', 'rack'].includes(view.view_type) ? view.view_type : 'topology',
+        show_connections: Number(view.show_connections ?? 1) === 0 ? 0 : 1,
         sort_order:
             Number(view.sort_order) || 0,
         memo: normalizeText(view.memo)
@@ -1098,6 +945,9 @@ export function removeDevicesFromState(deviceIds) {
             !targetIds.has(Number(link.to_id))
         );
     });
+    appState.devicePorts = appState.devicePorts.filter(port => !targetIds.has(Number(port.device_id)));
+    appState.viewLinkRoutes = appState.viewLinkRoutes.filter(route =>
+        !targetIds.has(Number(route.device_a_id)) && !targetIds.has(Number(route.device_b_id)));
 
     return targetIds.size;
 }

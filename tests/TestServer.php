@@ -300,11 +300,20 @@ class TestServer
         ");
 
         // 5. Seed links
-        $pdo->exec("
-            INSERT INTO links (id, view_id, from_id, to_id, label, from_port, to_port, vlan, memo)
-            VALUES
-            (1, 1, 1, 2, 'Trunk', 'ge0/1', 'ge0/24', '1,10,20', '幹線リンク')
-        ");
+        $schemaVersion = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
+        if ($schemaVersion >= 27) {
+            $pdo->exec("INSERT INTO device_ports (id, device_id, name) VALUES (1, 1, 'ge0/1'), (2, 2, 'ge0/24')");
+            if ($schemaVersion >= 28) {
+                $pdo->exec("INSERT INTO links (id, from_id, to_id, label, from_port_id, to_port_id, memo)
+                    VALUES (1, 1, 2, 'Trunk', 1, 2, '幹線リンク')");
+            } else {
+                $pdo->exec("INSERT INTO links (id, from_id, to_id, label, from_port_id, to_port_id, vlan, memo)
+                    VALUES (1, 1, 2, 'Trunk', 1, 2, '1,10,20', '幹線リンク')");
+            }
+        } else {
+            $pdo->exec("INSERT INTO links (id, view_id, from_id, to_id, label, from_port, to_port, vlan, memo)
+                VALUES (1, 1, 1, 2, 'Trunk', 'ge0/1', 'ge0/24', '1,10,20', '幹線リンク')");
+        }
 
         // 6. Seed app_meta revision
         $pdo->exec("

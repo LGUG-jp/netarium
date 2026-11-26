@@ -21,7 +21,8 @@
                     <li><a href="help.html" class="help-nav-link">トップ</a></li>
                     <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
                     <li><a href="help-devices.html" class="help-nav-link" aria-current="page">機器・台帳</a></li>
-                    <li><a href="help-views.html" class="help-nav-link">ビュー・ラック</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">建物・ビュー・ラック</a></li>
+                    <li><a href="help-insights.html" class="help-nav-link">分析・品質</a></li>
                     <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
                 </ul>
             </nav>
@@ -36,16 +37,17 @@
                     <ol>
                         <li><a href="#devices">機器情報の編集と登録画像</a></li>
                         <li><a href="#device-sheet">機器個票の編集と複数IP</a></li>
+                        <li><a href="#device-ports">ポート・接続・VLANの管理</a></li>
+                        <li><a href="#device-config">機器Configの手動保管</a></li>
                         <li><a href="#management-ssh">機器への管理接続</a></li>
-                        <li><a href="#ledger">機器台帳とダッシュボード</a></li>
+                        <li><a href="#ledger">機器台帳の概要</a></li>
+                        <li><a href="#ledger-columns">台帳の表示項目とCSV連携</a></li>
+                        <li><a href="#ledger-filters">台帳の複数条件による絞り込み</a></li>
+                        <li><a href="#maintenance-outlook">保守期限の見通しと台帳への移動</a></li>
                         <li><a href="#ip-management">IPアドレス管理（ネットワーク区分）</a></li>
                         <li><a href="#change-history">変更履歴の確認</a></li>
-                        <li><a href="#device-config">機器Configの手動保管</a></li>
-                        <li><a href="#ledger-columns">台帳の表示項目とセル操作</a></li>
-                        <li><a href="#ledger-filters">台帳の複数条件絞り込み</a></li>
-                        <li><a href="#maintenance-outlook">保守期限の見通し</a></li>
                         <li><a href="#ledger-ping">チェックした機器のPing</a></li>
-                        <li><a href="#device-bulk">機器の一括編集</a></li>
+                        <li><a href="#device-bulk">選択した機器の一括編集</a></li>
                     </ol>
                 </nav>
             </details>
@@ -54,48 +56,47 @@
         <main class="help-container" id="help-content">
             <h1>機器・台帳の操作ガイド</h1>
             <p>
-                機器プロパティパネル、機器台帳、個票シート、IPアドレス管理、変更履歴、Config保管、Ping疎通確認、および一括編集の手順を説明します。
+                右プロパティパネル、機器個票（基本・保守・ポート/VLAN・Config管理）、機器台帳、IPアドレス管理、変更履歴、Ping疎通確認、一括編集の手順を説明します。
             </p>
 
             <section>
                 <h2 id="devices" tabindex="-1">機器情報の編集と登録画像</h2>
-                <p>キャンバス上の機器をクリックすると右側にプロパティパネルが開き、基本情報・設置情報・管理保守情報を確認・編集できます。</p>
+                <p>選択モードでキャンバス上の機器をクリックすると右パネルが開き、5つの分類で機器情報を確認・編集できます。</p>
                 <ol>
-                    <li>選択モードでキャンバス上の機器をクリックします。</li>
-                    <li>右パネルで必要な見出し（「基本情報」「設置情報」「機器・資産情報」「管理・保守情報」など）を開いて各項目を入力します。</li>
+                    <li>右パネルで対象の見出し（「基本情報」「設置情報」「機器・資産情報」「管理・保守情報」「補足・状態」）を開いて入力します。</li>
                     <li>パネル下部の<strong>「適用」</strong>を押すと入力が検証され、自動保存されます。</li>
-                    <li><strong>機器画像:</strong> 「機器・資産情報」の登録画像枠（最大3枚）から「＋ 画像を追加」でPNG/JPEG（10MiB以下、長辺4000px以下）をアップロードできます。管理者は画像の並べ替えや削除も可能です。</li>
+                    <li><strong>機器画像（管理者のみ）:</strong> 「機器・資産情報」の登録画像枠（1機器最大3枚）から<strong>「＋ 画像を追加」</strong>でPNGまたはJPEG（10MiB以下、各辺4,000px以下）を登録できます。画像の並べ替え・削除は即時反映されます。</li>
                 </ol>
+                <p class="note">アップロードした画像は長辺2,048px以下へ縮小し、EXIFメタデータを除去して保存します。原本は保持しません。</p>
             </section>
 
             <section>
                 <h2 id="device-sheet" tabindex="-1">機器個票の編集と複数IP</h2>
-                <p>機器台帳で「詳細」を押すか、キャンバス上で機器をダブルクリックすると、1台の詳細な個票シートが開きます。</p>
+                <p>機器台帳で「詳細」を押すか、キャンバス上の機器をダブルクリックすると機器個票が開きます。個票は<strong>「機器・設置・資産」</strong>、<strong>「管理・保守・状態」</strong>、<strong>「接続・ポート」</strong>、<strong>「Config管理」</strong>（管理者のみ）の4タブ構成です。</p>
                 <figure class="help-figure">
                     <a href="assets/help/device-sheet-basic.webp" data-help-image data-caption="機器個票 1：機器・設置・資産タブ（基本情報、追加IP、登録画像）" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-sheet-basic.webp" width="2228" height="1460" loading="lazy" alt="機器個票の編集画面（機器・設置・資産タブ）。基本情報・IPアドレス、追加IPv4アドレスの編集ボタン、設置・配置情報、機器・資産情報、登録画像を表示。">
+                        <img src="assets/help/device-sheet-basic.webp" width="892" height="521" loading="lazy" alt="機器個票の編集画面（機器・設置・資産タブ）。4つの情報分類タブ、基本情報・IPアドレス、追加IPv4アドレス、設置フロア・配置済みビュー、機器・資産情報、登録画像を表示。">
                     </a>
-                    <figcaption>第1タブ「機器・設置・資産」：基本情報、追加IPアドレスの登録・編集、設置先ビュー、資産番号、登録画像（最大3枚）を管理します。</figcaption>
+                    <figcaption>「機器・設置・資産」タブ：基本情報、追加IPアドレス、設置フロア・配置済みビュー、資産情報、登録画像を管理します。</figcaption>
                 </figure>
                 <figure class="help-figure">
                     <a href="assets/help/device-sheet-edit.webp" data-help-image data-caption="機器個票 2：管理・保守・状態タブ（監視状態とPing結果案内）" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-sheet-edit.webp" width="2480" height="1680" loading="lazy" alt="機器個票の編集画面（管理・保守・状態タブ）。①上部の適用ボタン、②情報分類タブ、③管理・保守情報、④監視・疎通状態（NGとPing結果についてのリンク）を表示。">
+                        <img src="assets/help/device-sheet-edit.webp" width="892" height="521" loading="lazy" alt="機器個票の編集画面（管理・保守・状態タブ）。①上部の適用ボタン、②情報分類タブ、③管理・保守情報、④監視・疎通状態（NGとPing結果についてのリンク）を表示。">
                     </a>
-                    <figcaption>第2タブ「管理・保守・状態」：①上部の「適用」で確定、②タブ切り替え、③保守情報入力、④Ping疎通結果と注意を確認します。</figcaption>
+                    <figcaption>「管理・保守・状態」タブ：①「適用」で確定、②タブ切り替え、③管理・保守情報入力、④Ping疎通結果と注意を確認します。</figcaption>
                 </figure>
+                <ul>
+                    <li><strong>設置フロア管理:</strong> 管理者は設置フロア欄の「建物・フロアを管理」から階層管理画面を開けます（未適用入力がある場合は保存・破棄・継続の確認が表示されます）。</li>
+                    <li><strong>旧所属情報の表示:</strong> 設置フロアが未分類で旧施設・旧フロアの原文が残っている場合だけ、読み取り専用で表示します（設置フロア設定後は表示しません）。</li>
+                </ul>
 
                 <h3>複数IPアドレスの追加・変更・削除</h3>
-                <p>1台の機器に対して、主IP（管理IPv4）に加えて複数の追加IP（サービス用、VIP、管理用セカンダリ等）を登録できます。</p>
+                <p>管理IPv4に加えて、サービス用やVIPなどの追加IPv4アドレスを登録できます。</p>
                 <ol>
-                    <li>「機器・設置・資産」タブの「追加IPv4アドレス」欄で、<strong>「編集」</strong>（未登録時は「IPアドレスを追加」）を押します。</li>
-                    <li>入力行に<strong>IPv4アドレス</strong>と<strong>用途ラベル（任意）</strong>を入力します。</li>
-                    <li>続けて登録する場合は<strong>「IPアドレスを追加」</strong>を押して行を増やします。</li>
-                    <li>不要なIPは行右端の赤い<strong>ゴミ箱アイコン</strong>を押して削除します。</li>
-                    <li><strong>「閉じる」</strong>を押すとサマリー表示へ戻り、上部の<strong>「適用」</strong>を押して自動保存します。</li>
+                    <li>「機器・設置・資産」タブの「追加IPv4アドレス」欄で<strong>「編集」</strong>（未登録時は「IPアドレスを追加」）を押します。</li>
+                    <li>IPv4アドレスと用途ラベル（任意）を入力し、<strong>「IPアドレスを追加」</strong>で行を増やします（削除は行右端のゴミ箱アイコン）。</li>
+                    <li><strong>「閉じる」</strong>で戻り、上部の<strong>「適用」</strong>を押して自動保存します。</li>
                 </ol>
-                <ul>
-                    <li><strong>セグメント所属の判定:</strong> IPアドレスを入力すると、一致するセグメント候補が1件の場合は自動選択され、複数候補がある場合は候補選択・確認が必要となります。該当する候補がない場合は「未分類」として登録されます。</li>
-                </ul>
                 <table class="help-table">
                     <thead>
                         <tr><th scope="col" class="help-table-column-label">IP重複の条件</th><th scope="col">保存時の判定と動作</th></tr>
@@ -107,15 +108,15 @@
                         </tr>
                         <tr>
                             <th scope="row">同一ネットワーク区分内の別機器で新規重複</th>
-                            <td><strong>登録拒否</strong>となり保存できません。</td>
+                            <td>登録拒否となり保存できません。</td>
                         </tr>
                         <tr>
                             <th scope="row">異なるネットワーク区分間の同じIP</th>
-                            <td>独立したアドレス空間として登録・保存可能です。</td>
+                            <td>独立したアドレス空間として登録・保存できます。</td>
                         </tr>
                         <tr>
                             <th scope="row">未分類を含む新規重複</th>
-                            <td>警告が表示され、明示的な確認が必要です（未確認の場合は保存が拒否されます）。</td>
+                            <td>警告が表示され、明示的な確認後に保存できます。</td>
                         </tr>
                         <tr>
                             <th scope="row">既存データの重複</th>
@@ -123,171 +124,205 @@
                         </tr>
                     </tbody>
                 </table>
-                <p class="note"><strong>注意（保存判定とPingスキップの区別）:</strong> 上記の重複判定はデータの保存可否に関する検証です。保存済みのデータであっても、同一IPが複数の到達可能区分に存在し通信先が特定できない場合は、Ping実行時に安全のため送信が自動スキップされます。</p>
+                <p class="note"><strong>保存判定とPingスキップの区別:</strong> 保存済みであっても、同一IPが複数の「到達可能」区分や未分類にまたがり通信先を特定できない場合は、安全のためPing送信を自動スキップします。</p>
 
                 <h3>個票から機器を完全削除する（管理者のみ）</h3>
                 <ol>
-                    <li>対象機器の個票を開き、上部操作バー左端の<strong>「機器を完全削除」</strong>を押します。</li>
-                    <li>未適用の入力がある場合は、「適用」で保存するか、「変更を取り消す」で入力を破棄します。「編集を続ける」を選ぶと削除を中止します。適用時に保存失敗や競合があれば削除へ進みません。</li>
-                    <li>確認画面の<strong>機器名</strong>を確認して削除します。全ビューの配置と関連する接続も完全削除します。キャンセルすると機器は削除しません。</li>
+                    <li>対象機器の個票を開き、上部操作バーの<strong>「機器を完全削除」</strong>を押します。</li>
+                    <li>未適用の入力がある場合は、保存するか取り消すかを確認画面で選びます（保存失敗・競合時は削除へ進みません）。</li>
+                    <li>確認画面で対象機器名を確認して実行すると、全ビューの配置と関連する接続も削除します。</li>
                 </ol>
-                <p class="note">削除を受け付けると個票が閉じます。画面下部の保存状態が「保存済み」になったことを確認してください。保存失敗や競合が出た場合は、保存状態の案内に従って復旧してください。</p>
+            </section>
+
+            <section>
+                <h2 id="device-ports" tabindex="-1">ポート・接続・VLANの管理（「接続・ポート」タブ）</h2>
+                <p>機器個票の「接続・ポート」タブでは、登録済みポートを1ポート1行で管理し、ポート単位でVLANを設定できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/device-sheet-ports.webp" data-help-image data-caption="機器個票 3：接続・ポートタブ（ポート一覧、VLAN編集、対向コピー）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-sheet-ports.webp" width="892" height="521" loading="lazy" alt="機器個票の接続・ポートタブ。ポート一覧の下に選択行の編集フォームを展開し、ポート名・VLAN設定・接続先機器・対向ポートのVLANコピーボタンを表示。">
+                    </a>
+                    <figcaption>登録済みポートと共通接続を1行ずつ確認・編集します。両端のポートが保存済みなら、接続先のVLAN設定を確認して双方向にコピーできます。</figcaption>
+                </figure>
+                <ul>
+                    <li><strong>「未接続」の意味:</strong> Netarium上に接続が未登録であることを示します（実機のリンクダウンではありません）。</li>
+                    <li><strong>「ポート未指定の接続」:</strong> 自機側ポートを割り当てていない接続は下部の別枠に表示され、後からポートを割り当てられます。</li>
+                    <li><strong>接続先個票への移動:</strong> 接続先の機器名を押すと、ビューを切り替えずに相手の個票を開けます。</li>
+                </ul>
+
+                <h3>ポートの登録と接続の編集（管理者のみ）</h3>
+                <ol>
+                    <li><strong>「ポートのみ追加」</strong>で未接続ポートだけを登録するか、<strong>「接続を追加」</strong>で新しい接続を作成します（自機ポート名は空欄可）。既存ポートに接続を割り当てる場合は行の<strong>「編集」</strong>を押します。</li>
+                    <li>「接続先機器」で機器名やIPアドレスを入力して相手を選び、「接続先ポート名（任意）」に既存候補または新しいポート名を入力します（未登録名を指定すると適用時に相手側のポートも自動登録します）。</li>
+                    <li>「VLAN設定」（1行・200文字以内、例：<code>access 10</code>、<code>trunk allowed 10,20 / native 99</code>）と「ポート備考」を入力します。消去するときは空欄にして保存します。</li>
+                    <li>接続系統・ラベル・接続備考を確認し、フォーム内の<strong>「適用」</strong>を押して保存します。</li>
+                </ol>
+                <p class="note"><strong>VLANの正本:</strong> VLAN設定は「ポート」に保存されます（IPアドレス管理のセグメントVLANとは別概念です）。ポート未指定の接続ではVLAN設定を入力できないため、先にポート名を指定してください。</p>
+
+                <h3>対向ポートへVLAN設定をコピーする</h3>
+                <p>両端のポートが保存済みの場合、編集フォーム内の「接続先の VLAN設定」で相手の値を確認できます。</p>
+                <ul>
+                    <li>管理者は<strong>「接続先 → この機器へコピー」</strong>または<strong>「この機器 → 接続先へコピー」</strong>で、選んだ方向へ即時保存できます（自動コピーは行いません）。</li>
+                    <li>コピー先に別の値がある場合は「VLAN設定の上書き確認」が開くため、両端の機器名・ポート名・設定値を比較してから実行してください。未適用入力がある間は先に適用またはキャンセルが必要です。</li>
+                </ul>
+
+                <h3>未移行VLANの再設定と、接続解除・ポート削除の違い</h3>
+                <ul>
+                    <li><strong>未移行VLANの解消:</strong> 旧版から引き継いだ未移行VLANは接続行に表示します（自動転記はしません）。行の「編集」でポート名と「VLAN設定」を入力して「適用」を押します。VLAN値を編集したときだけでなく、VLAN設定済みのポートを新たに割り当てて保存に成功したときも旧記録は消えます（ポート名だけを変えてVLANが空欄のままなら残ります）。必要な旧値は適用前に確認してください。ポート側を変えずに記録だけ消す場合は<strong>「未移行設定削除」</strong>を押します。</li>
+                    <li><strong>接続解除とポート削除:</strong> <strong>「接続を解除」</strong>は共通接続と未移行VLANだけを削除し、両端のポートとポートVLANは残ります。ポート自体を消すときは、未接続の行で<strong>「ポートを削除」</strong>を選びます。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="device-config" tabindex="-1">機器 Config の手動保管（管理者のみ）</h2>
+                <p>保存済み機器の個票にある<strong>「Config管理」</strong>タブで、設定テキストの世代管理（最大5世代、1版256KiB以内）と行単位の差分比較を行えます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/device-config-view.webp" data-help-image data-caption="Config管理 1：世代履歴と本文閲覧（Config本文タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-config-view.webp" width="892" height="521" loading="lazy" alt="機器個票内のConfig管理タブ（Config本文）。左に登録世代一覧（日時・登録者）、右に設定テキスト本文と検索・全文コピー、上部に「…」メニューと新しい版の登録ボタンを表示。">
+                    </a>
+                    <figcaption>「Config本文」タブ：左の一覧から登録世代を切り替え、本文の検索や「全文コピー」を行います。</figcaption>
+                </figure>
+                <figure class="help-figure">
+                    <a href="assets/help/device-config-diff.webp" data-help-image data-caption="Config管理 2：過去の版との行単位差分比較（差分比較タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/device-config-diff.webp" width="892" height="521" loading="lazy" alt="機器個票内のConfig管理タブ（差分比較）。左に比較元の過去版、右に比較先（最新版）を並べ、追加行を緑、削除・変更行を赤でハイライト表示。">
+                    </a>
+                    <figcaption>「差分比較」タブ：比較元の過去版を選び、追加行（緑）と削除・変更行（赤）を左右で比較します。</figcaption>
+                </figure>
+                <ol>
+                    <li>機器個票を開き、<strong>「Config管理」</strong>タブを選びます（上部の「前へ」「次へ」で台帳順または読み込み済み機器を連続確認できます）。</li>
+                    <li><strong>「+ 新しい版を登録」</strong>で設定テキストの貼り付け、またはUTF-8テキストファイルの読み込みを行い、メモを添えて登録します。</li>
+                    <li><strong>「差分比較」</strong>タブで比較元の版を選ぶと、「前の差分」「次の差分」で変更箇所へ移動できます。</li>
+                    <li>不要な版を消す場合は、タブ内右上の<strong>「…」</strong>メニューから<strong>「履歴を削除」</strong>を選んで対象版を削除します（機器本体は消えません）。</li>
+                </ol>
+                <p class="note"><strong>秘密情報のマスキング:</strong> 登録前にパスワード、事前共有鍵、SNMPコミュニティ名などを必ず削除・マスキングしてください。実機からの自動取得や適用は行いません。</p>
             </section>
 
             <section>
                 <h2 id="management-ssh" tabindex="-1">機器へ管理接続する</h2>
-                <p>右パネルや個票の<strong>「機器へ接続」</strong>から、管理画面や外部SSHクライアントを直接呼び出せます。</p>
+                <p>右パネルや個票の<strong>「機器へ接続」</strong>から、管理画面や外部SSHクライアントを起動できます。</p>
                 <ul>
-                    <li><strong>HTTP / HTTPS:</strong> 登録された管理用IP・ポートのURLをブラウザの別タブで開きます。</li>
-                    <li><strong>SSH:</strong> 端末のOSに関連付けられた外部SSHクライアント（<code>ssh://</code>プロトコル）を起動します。</li>
+                    <li><strong>HTTP / HTTPS:</strong> 登録された管理IPとポートのURLを新しいタブで開きます。</li>
+                    <li><strong>SSH:</strong> 端末のOSに関連付けられた外部SSHクライアント（<code>ssh://</code>）を起動します（Windowsでの設定手順は画面内の「？接続方法」で確認できます）。</li>
                 </ul>
-                <p class="note">WindowsでTera Term等を使用する場合は、SSH接続画面の「？接続方法」を開き、プロトコルの関連付け手順を確認してください。</p>
             </section>
 
             <section>
-                <h2 id="ledger" tabindex="-1">機器台帳・ダッシュボード・品質診断</h2>
-                <p>登録された全機器の一覧管理と、システム全体の運用状態を集約表示する機能です。</p>
+                <h2 id="ledger" tabindex="-1">機器台帳の概要</h2>
+                <p>上部バーの<strong>「台帳」</strong>から開きます。登録済み全機器の検索、表示列プリセットの切り替え、複数条件による絞り込み、CSV出力・取込、一括編集、選択機器へのPing実行を行えます。</p>
+                <p class="note">システム全体の集計確認は<a href="help-insights.html#dashboard">ダッシュボード</a>、不整合や未設定項目の検出は<a href="help-insights.html#data-quality">データ品質診断</a>（いずれも管理者専用）で行います。</p>
+            </section>
+
+            <section>
+                <h2 id="ledger-columns" tabindex="-1">台帳の表示項目とCSV連携</h2>
+                <p>台帳右上の「表示項目」ドロップダウンで列プリセットを切り替えられます。</p>
                 <ul>
-                    <li><strong>機器台帳:</strong> 上部バーの「台帳」ボタンから開きます。全機器の検索、列プリセット切り替え、複数条件絞り込み、CSV入出力、一括編集、選択機器のPingを実行できます。</li>
-                    <li><strong>ダッシュボード（管理者のみ）:</strong> 上部バーから開きます。機器総数、監視状態（OK / NG / 未確認）、保守期限の見通し、施設・種別の内訳を集計表示します。</li>
-                    <li><strong>データ品質診断（管理者のみ）:</strong> 上部バーの「管理」→「データ品質診断」から、未配置機器、IP重複、未設定項目などの不整合を検出し、修正導線を提供します。</li>
+                    <li><strong>標準:</strong> 名称、種別、主IP、追加IP、設置フロア、監視状態、操作。</li>
+                    <li><strong>設置・資産:</strong> 設置場所、メーカー、型番、管理番号、シリアル番号、導入年月など。</li>
+                    <li><strong>ネットワーク・管理:</strong> MACアドレス、管理接続方式、ポート、担当部署、保守ベンダー、保守期限。</li>
+                    <li><strong>すべて:</strong> すべての台帳項目を展開。</li>
+                </ul>
+                <p>管理者は「種別」セルをクリックしてインライン変更し、「変更を適用」で一括保存できます。設置フロアは建物／フロアの選択欄から変更でき、ビューへの配置操作では自動変更されません。</p>
+
+                <h3>CSV出力・取込と設置フロアの扱い</h3>
+                <ul>
+                    <li><strong>フォーマット:</strong> 固定20列（UTF-8）です。<code>facility</code>・<code>floor</code> 列には設置フロアの建物名・フロア名を出力します（未設定時は空欄）。</li>
+                    <li><strong>取込の所属判定:</strong> 既存の建物名・フロア名に一意に一致する場合だけ設置フロアを設定します。空欄・片側のみ・未一致・曖昧な行では既存所属を保持します（CSVで建物・フロアの新規作成や所属解除はできません）。</li>
+                    <li><strong>取込結果の確認:</strong> 「CSV取込仕様」は検証結果の表示時に自動で折りたたまれます（再展開可）。エラーが1件もない状態で「取込を実行」を押すと保存され、検索・絞り込み・並び順を保ったまま台帳へ戻ります。</li>
+                    <li>別の保存処理が実行中の場合は、処理が終わってから同じ検証結果で取込を再試行できます。再検証を求められた場合は、取込内容を確認し直してください。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="ledger-filters" tabindex="-1">台帳の複数条件による絞り込み</h2>
+                <p>「表示ビュー」「設置建物」「設置フロア」「状態」「種別」「IP登録」「配置状態」「保守期限」の8項目で絞り込めます。同名でもIDごとに区別して選びます。</p>
+                <ul>
+                    <li><strong>項目内（OR条件）:</strong> 各フィルターで複数項目にチェックを入れると、いずれかに一致する機器を表示します。</li>
+                    <li><strong>項目間（AND条件）:</strong> 異なるフィルター間および検索欄とは、すべてを満たす機器に絞り込みます。</li>
+                    <li><strong>チェック選択の保持:</strong> 「表示ビュー」を切り替えたときは行のチェック選択が解除されますが、その他の絞り込みでは画面外の選択も維持します。Pingや一括編集の前に対象件数を確認してください。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="maintenance-outlook" tabindex="-1">保守期限の見通しと台帳への移動</h2>
+                <p>ダッシュボードの「資産・保守」タブ、または台帳の「保守期限」フィルターで保守終了時期を管理できます。</p>
+                <ul>
+                    <li><strong>表示切替:</strong> 「年度別」（当年度から5年度分とそれ以降、年度開始月を変更可）と「残存期間別」を切り替えられます。設定は使用中のブラウザーに保存します。</li>
+                    <li><strong>判定基準:</strong> 年月のみ（<code>YYYY-MM</code>）の期限は月末日として集計し、期限当日は「期限超過」に含めません。期限未登録と設定不要は分けて集計します。</li>
+                    <li><strong>台帳への遷移:</strong> 年度や残存期間の区分を押すと、保守管理の列構成・期限順で台帳が開きます。</li>
                 </ul>
             </section>
 
             <section>
                 <h2 id="ip-management" tabindex="-1">IPアドレス管理（ネットワーク区分）</h2>
-                <p>組織内で利用されているIPv4ネットワーク体系を「ネットワーク区分」と「セグメント（CIDR）」として階層管理し、機器の所属やPing疎通到達性を制御します。閲覧者はネットワーク区分・セグメント・所属IPの参照が可能で、登録・編集・再分類は管理者のみ行えます。</p>
+                <p>組織内のIPv4アドレス体系を「ネットワーク区分」と「セグメント（CIDR）」で管理します（閲覧者も参照可、編集は管理者のみ）。</p>
                 <figure class="help-figure">
                     <a href="assets/help/ip-management-spaces.webp" data-help-image data-caption="IPアドレス管理：ネットワーク区分一覧とPing到達性・未分類IP" aria-haspopup="dialog" aria-controls="help-image-dialog">
                         <img src="assets/help/ip-management-spaces.webp" width="1970" height="1204" loading="lazy" alt="IPアドレス管理画面。ネットワーク区分一覧に各区分のセグメント数・登録IP数、Ping到達性（可能・不可・未設定）を表示。下部に未分類IPのエリアを表示。">
                     </a>
-                    <figcaption>ネットワーク区分ごとにPing到達性（可能／不可／未設定）を設定し、下部エリアで未分類IPの再分類を行います。</figcaption>
+                    <figcaption>ネットワーク区分ごとにPing到達性（可能／不可／未設定）を設定し、下部エリアで未分類IPを再分類します。</figcaption>
                 </figure>
                 <ol>
-                    <li>上部バーの<strong>「管理」→「IPアドレス管理」</strong>を開きます（閲覧者も参照可能）。</li>
-                    <li><strong>ネットワーク区分の登録（管理者のみ）:</strong> 「ネットワークを登録」を押し、区分名（例: 基幹系、情報系、庁内LAN）、メモ、および<strong>Ping到達性</strong>（「到達可能」「到達不可」「未設定」）を設定して保存します。</li>
-                    <li><strong>セグメント（CIDR）の登録（管理者のみ）:</strong> 区分カードをクリックして詳細を開き、「セグメントを追加」からCIDR（例: <code>192.168.10.0/24</code>）と用途を入力して登録します。</li>
-                    <li><strong>登録IPの確認:</strong> 各セグメントを開くと、所属する機器名・IPアドレス・種別が一覧表示されます。</li>
-                    <li><strong>未分類IPの再分類（管理者のみ）:</strong> 区分一覧下部の「未分類IP」を開くと、セグメントに属していないIPを持つ機器が一覧表示されます。セグメント登録後に所属を更新できます。</li>
+                    <li>上部バーの<strong>「管理」→「IPアドレス管理」</strong>を開きます。</li>
+                    <li><strong>ネットワーク区分の登録:</strong> 「ネットワークを登録」で区分名（例：基幹系、庁内LAN）、メモ、<strong>Ping到達性</strong>（「到達可能」「到達不可」「未設定」）を設定します。</li>
+                    <li><strong>セグメント（CIDR）の登録:</strong> 区分カードを開いて「セグメントを追加」からCIDRと用途（任意でセグメントメモ・VLAN情報）を登録します。</li>
+                    <li><strong>未分類IPの再分類:</strong> 画面下部の「未分類IP」から、セグメントに属していないIPを登録済みセグメントへ割り当てられます。</li>
                 </ol>
-                <p class="note"><strong>Ping到達性の設定と注意:</strong> 「到達不可」は不要なPing送信を安全にスキップするための設定であり、機器自体の故障を意味するものではありません。なお、Ping到達性は運用者による運用の宣言であり、設定してもサーバーOSの通信経路や送信元インターフェース・VRFが自動変更されるものではなく、実際の到達経路や応答機器の同一性が保証されるわけではありません。</p>
+                <p class="note"><strong>Ping到達性の注意:</strong> 「到達不可」は不要なPing送信をスキップするための運用宣言であり、サーバーOSのルーティングやVRFを自動変更するものではありません。</p>
             </section>
 
             <section>
-                <h2 id="change-history" tabindex="-1">変更履歴の確認</h2>
-                <p>機器の追加・更新・削除、ビューの配置変更、接続の作成・削除などの操作イベントを最大90日間保持し、変更前後の差分を確認できます。</p>
+                <h2 id="change-history" tabindex="-1">変更履歴の確認（管理者のみ）</h2>
+                <p>機器・ビュー・接続・ラック・ポートなどの編集差分を最大90日間保持し、変更前後を確認できます。</p>
                 <figure class="help-figure">
                     <a href="assets/help/change-history.webp" data-help-image data-caption="変更履歴：期間・対象別の絞り込みと変更前後の差分展開" aria-haspopup="dialog" aria-controls="help-image-dialog">
                         <img src="assets/help/change-history.webp" width="2078" height="1380" loading="lazy" alt="変更履歴画面。対象名検索、対象種別フィルター、直近7日・30日・90日ボタン、イベント一覧と変更前後の差分テーブルを表示。">
                     </a>
-                    <figcaption>直近の期間ボタンや対象種別で絞り込み、行をクリックして変更前後の差分（変更項目・以前の値・変更後の値）を確認します。</figcaption>
+                    <figcaption>期間や対象種別で絞り込み、行をクリックして「項目」「変更前」「変更後」の差分を確認します。</figcaption>
                 </figure>
                 <ol>
-                    <li>上部バーの<strong>「管理」→「変更履歴」</strong>、または機器個票の<strong>「変更履歴」</strong>ボタンから開きます。</li>
-                    <li>上部ツールバーで<strong>期間</strong>（「直近7日」「直近30日」「直近90日」）、対象種別（機器／ビュー／接続など）、操作者、対象名で絞り込みます。</li>
-                    <li>一覧の行をクリックするか左端の「▶」を押すと、変更イベントが展開され、<strong>「項目」「変更前」「変更後」</strong>の差分が表示されます。</li>
-                    <li>対象名のリンクをクリックすると、該当機器の個票やビューへ直接移動できます。</li>
+                    <li>上部バーの<strong>「管理」→「変更履歴」</strong>、または機器個票・ビュー管理の<strong>「変更履歴」</strong>ボタンから開きます。</li>
+                    <li>期間（直近7日／30日／90日）、対象種別、操作者、対象名で絞り込みます。</li>
+                    <li>行をクリックすると、変更項目ごとの差分と同一保存イベントの関連対象を展開します。設置フロアの差分は記録時点の建物名／フロア名を保持します。</li>
                 </ol>
-                <p class="note"><strong>ログの区別:</strong> 変更履歴は構成データの編集差分を追跡する機能です。ログインやAPI実行を記録する「監査ログ」や、設定テキスト世代を管理する「機器Config履歴」とは独立して保持されます。</p>
-            </section>
-
-            <section>
-                <h2 id="device-config" tabindex="-1">機器 Config の手動保管（管理者のみ）</h2>
-                <p>ルータやスイッチ等の設定テキスト（コンフィグ）を機器個票に紐付けて履歴保管・差分比較できます。</p>
-                <figure class="help-figure">
-                    <a href="assets/help/device-config-view.webp" data-help-image data-caption="Config管理 1：世代履歴と本文閲覧（Config本文タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-config-view.webp" width="2084" height="1396" loading="lazy" alt="Config管理の本文表示画面。左に登録世代一覧（日時・登録者）、右に設定テキスト本文と検索・全文コピーを表示。">
-                    </a>
-                    <figcaption>第1タブ「Config本文」：左側で過去の登録世代（最大5世代）を切り替え、設定テキストの全文閲覧や検索、コピーを行います。</figcaption>
-                </figure>
-                <figure class="help-figure">
-                    <a href="assets/help/device-config-diff.webp" data-help-image data-caption="Config管理 2：過去の版との行単位差分比較（差分比較タブ）" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-config-diff.webp" width="2082" height="1390" loading="lazy" alt="Config管理の差分比較画面。左に比較元の過去版、右に比較先（最新版）を並べ、追加行を緑、削除・変更行を赤でハイライト表示。">
-                    </a>
-                    <figcaption>第2タブ「差分比較」：過去の登録版を選び、追加行（緑）や変更・削除行（赤）を左右比較します。「前の差分」「次の差分」で移動できます。</figcaption>
-                </figure>
-                <ol>
-                    <li>保存済み機器の個票上部にある<strong>「Config」</strong>ボタンを押します。</li>
-                    <li><strong>「前へ」「次へ」</strong>で、台帳の検索・絞り込み後の表示順に移動できます。Config 未登録の機器も対象です。「×」で閉じると、最後に表示した機器の個票へ戻ります。</li>
-                    <li><strong>「+ 新しい版を登録」</strong>で設定テキストを貼り付けるか、UTF-8テキストファイルを読み込み、メモを添えて保存します（最大5世代、1版256KiB以内）。</li>
-                    <li><strong>差分比較:</strong> 「差分比較」タブを開き、プルダウンから比較元の過去版を選択すると、左右比較で行の追加（緑）・削除（赤）をハイライト表示します。</li>
-                    <li><strong>全文コピー:</strong> 「Config本文」タブの「全文コピー」でクリップボードへ一括取得できます。</li>
-                    <li><strong>履歴削除:</strong> 「履歴を削除」を押すと削除選択モードに入り、特定の版を選んで安全に削除できます（機器本体は削除されません）。</li>
-                </ol>
-                <p class="note">未保存の入力がある場合は、適用・変更を取り消す・編集を続ける、のいずれかを選びます。保存失敗や競合時は移動せず、入力を保持します。登録・削除の処理中や削除確認中は機器を切り替えられません。</p>
-                <p class="note"><strong>注意:</strong> 登録前にパスワード・共有鍵・SNMPコミュニティ名を必ずマスキングしてください。実機からの自動取得・適用は行いません。</p>
-            </section>
-
-            <section>
-                <h2 id="ledger-columns" tabindex="-1">台帳の表示項目とセル操作</h2>
-                <p>台帳右上の「表示項目」ドロップダウンで、用途に応じた列プリセットを切り替えます。</p>
-                <ul>
-                    <li><strong>標準:</strong> 名称、種別、主IP、追加IP、施設、フロア、監視状態、操作など日常業務に必要な列。</li>
-                    <li><strong>設置・資産:</strong> 設置場所詳細、資産番号、シリアル番号、導入年月日などを中心に表示。</li>
-                    <li><strong>ネットワーク・管理:</strong> MACアドレス、管理接続方式、ポート、担当部署、保守ベンダー、保守期限を表示。</li>
-                    <li><strong>すべて:</strong> 全25項目を展開。</li>
-                </ul>
-                <p>管理者は種別セルをクリックして機器種別をインライン変更できます。変更は下書きとして保持され、「変更を適用」で一括保存されます。</p>
-            </section>
-
-            <section>
-                <h2 id="ledger-filters" tabindex="-1">台帳の複数条件による絞り込み</h2>
-                <p>表示ビュー、施設、フロア、状態、種別、IP登録、配置状態、保守期限の8項目で多重絞り込みが可能です。</p>
-                <ul>
-                    <li><strong>複数選択（OR条件）:</strong> 各フィルターのボタンを開き、複数の値にチェックを入れると「いずれかに一致する機器」が表示されます。</li>
-                    <li><strong>項目間（AND条件）:</strong> 施設と種別など、異なる項目同士は「すべての条件に合致する機器」が表示されます。</li>
-                    <li><strong>解除:</strong> 条件チップの「×」で個別解除、「条件を解除」ボタンで全検索・全フィルターを一括解除します。</li>
-                </ul>
-                <p class="note">表示ビューを変更したときはチェック選択が解除されますが、その他の絞り込みでは画面外の選択も保持されます。一括編集やPing実行前に対象件数を確認してください。</p>
-            </section>
-
-            <section>
-                <h2 id="maintenance-outlook" tabindex="-1">保守期限の見通しと台帳への移動</h2>
-                <p>ダッシュボードの「資産・保守」タブ、または台帳の「保守期限」フィルターで、機器の保守終了時期を管理します。</p>
-                <ul>
-                    <li><strong>期限超過:</strong> 基準日時点で保守期限を過ぎている機器。</li>
-                    <li><strong>残り1年以内 / 残り1〜2年:</strong> 近い将来に機器更改や保守更新の検討が必要な機器。</li>
-                </ul>
-                <p>ダッシュボードの各区分件数を押すと、台帳が自動的に「保守管理」列付き・期限順ソートで開きます。</p>
+                <p class="note"><strong>ログの区別:</strong> 変更履歴は構成データの編集差分を記録します。認証の監査ログや「Config管理」のテキスト世代とは独立しています。</p>
             </section>
 
             <section>
                 <h2 id="ledger-ping" tabindex="-1">チェックした機器のPing（管理者のみ）</h2>
-                <p>台帳で選択した機器に対して、サーバーからICMP Pingを一括送信して疎通状態を確認します。</p>
+                <p>台帳でチェックした機器に対し、サーバーからICMP Pingを一括送信して疎通状態を確認します。</p>
                 <ol>
-                    <li>台帳のチェックボックスで対象機器を選択します（先頭セルクリックで反転）。</li>
-                    <li>台帳右上の<strong>「Ping（件数）」</strong>ボタンを押します。</li>
-                    <li>実行中は下部バーに進捗秒数が表示され、完了すると「OK」「NG」状態が更新されます。</li>
+                    <li>台帳のチェックボックスで対象機器を選びます。</li>
+                    <li>台帳右上の<strong>「Ping（件数）」</strong>を押します。実行中は台帳内に対象件数と経過時間を表示します。</li>
+                    <li>完了後、「結果を表示」からOK／NG／タイムアウト／スキップ／未確認の一覧とCSVダウンロードを利用できます。</li>
                 </ol>
-                <p class="note"><strong>重要（NGの意味）:</strong> PingのNGは機器の故障・停止を断定するものではありません。機器側のICMP応答無効化、ファイアウォールによる遮断、経路障害でもNGとなります。同様にOKもIP疎通を示すのみで、HTTP/SSHサービスの健全性を保証するものではありません。</p>
+                <p class="note"><strong>NGとOKの意味:</strong> PingのNGは機器の停止を断定するものではありません（ICMP応答無効化やファイアウォールでもNGになります）。OKもICMP応答の確認であり、HTTP/SSHサービスの稼働を保証しません。</p>
             </section>
 
             <section>
                 <h2 id="device-bulk" tabindex="-1">選択した機器の一括編集（管理者のみ）</h2>
-                <p>台帳で選んだ複数の機器に対し、施設・フロア・担当部署・保守期限などの属性を一括で更新します。</p>
+                <p>台帳で選んだ複数の機器に対し、設置フロア・設置場所・担当部署・保守期限・管理接続などの属性をまとめて変更します。</p>
                 <figure class="help-figure">
                     <a href="assets/help/device-bulk-input.webp" data-help-image data-caption="一括編集 1：変更する項目を指定" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-bulk-input.webp" width="1686" height="1422" loading="lazy" alt="一括編集の入力画面。施設はチェックONで本庁を入力、担当部署はONで空欄、フロアと設置場所などはOFFになっている。">
+                        <img src="assets/help/device-bulk-input.webp" width="892" height="521" loading="lazy" alt="一括編集の入力画面。設置フロアを変更するにチェックを入れ、担当部署を変更するをチェックして空欄にした状態。">
                     </a>
-                    <figcaption>1. 変更したい項目にチェックを入れ、新しい値を入力します。チェックONで空欄の項目は値を「消去」します。</figcaption>
+                    <figcaption>1. 変更したい項目にチェックを入れ、新しい値を入力します。チェックして空欄のままにすると値を消去します。</figcaption>
                 </figure>
                 <figure class="help-figure">
                     <a href="assets/help/device-bulk-confirm.webp" data-help-image data-caption="一括編集 2：変更前後を確認して適用" aria-haspopup="dialog" aria-controls="help-image-dialog">
-                        <img src="assets/help/device-bulk-confirm.webp" width="1666" height="1060" loading="lazy" alt="一括編集の確認画面。施設の変更後は青で本庁、担当部署の変更後は黄色で空欄にする、と表示。下部に戻ると49台に適用のボタンがある。">
+                        <img src="assets/help/device-bulk-confirm.webp" width="892" height="521" loading="lazy" alt="一括編集の確認画面。設置フロアの変更後は青で「本庁 / 本庁2F」、担当部署の変更後は黄色で「未設定にする」と表示し、下部に「5台に適用」ボタンがある。">
                     </a>
-                    <figcaption>2. 変更前後と対象台数を確認し、「適用」ボタンで確定すると自動保存されます。</figcaption>
+                    <figcaption>2. 変更前後と対象台数を確認し、「○台に適用」を押すと自動保存されます。</figcaption>
                 </figure>
                 <ol>
-                    <li>台帳で1台以上の機器を選択し、上部の<strong>「一括編集」</strong>を押します。</li>
-                    <li>変更したい項目のチェックボックスをONにし、新しい値を入力します（OFFの項目は変更されません）。</li>
-                    <li><strong>「変更内容を確認」</strong>を押し、変更後の値（青色）や空欄化（黄色）を確認します。</li>
-                    <li><strong>「○台に適用」</strong>を押して確定すると、対象機器のデータが更新され自動保存されます。</li>
+                    <li>台帳で1台以上の機器をチェックし、上部の<strong>「一括編集」</strong>を押します。</li>
+                    <li>変更する項目のチェックボックスをオンにし、新しい値を入力します（設置フロアは一覧から選び、「未設定」で所属を解除します。チェックがオフの項目は変更しません）。</li>
+                    <li><strong>「変更内容を確認」</strong>で変更前後の差分を確認し、<strong>「○台に適用」</strong>を押して確定します。</li>
                 </ol>
+                <p class="note">設置フロアを変更しても、すでに配置されているビュー上の位置や座標は変わりません。</p>
             </section>
 
             <div class="help-page-footer-nav">
                 <a href="help-canvas.html" class="btn btn-secondary btn-sm">← 前へ：構成図</a>
-                <a href="help-views.html" class="btn btn-primary btn-sm">次へ：ビュー・ラック →</a>
+                <a href="help-views.html" class="btn btn-primary btn-sm">次へ：建物・ビュー・ラック →</a>
             </div>
 
             <footer class="footer-close">

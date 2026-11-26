@@ -11,7 +11,8 @@ final class DeviceIpAddressRepository
 {
     public function __construct(private PDO $db) {}
 
-    public static function normalize(array $rows, string $managementIp = '', string $prefix = ''): array
+    /** @param array<int, array{label: string}> $owned Existing addresses of the target device, keyed by ID. */
+    public static function normalize(array $rows, string $managementIp = '', string $prefix = '', array $owned = []): array
     {
         if (!array_is_list($rows)) {
             throw new ApiException($prefix . '追加IPは配列で指定してください', 400);
@@ -32,14 +33,22 @@ final class DeviceIpAddressRepository
                 throw new ApiException($prefix . '追加IPのIDが不正または重複しています', 400);
             }
             $ip = trim($row['ip']);
-            $label = trim($row['label'] ?? '');
+            $label = $row['label'] ?? '';
             $order = $row['sort_order'] ?? $index;
             if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || isset($ips[$ip])) {
                 throw new ApiException($prefix . '追加IPのIPv4形式が不正、または機器内で重複しています', 400);
             }
-            $labelLength = preg_match_all('/./us', $label);
-            if ($labelLength === false || $labelLength > 100 || !is_int($order) || $order < 0 || $order > 2147483647) {
-                throw new ApiException($prefix . '追加IPの用途は100文字以内、表示順は非負整数で指定してください', 400);
+            // Compare before trim so only the exact stored value can bypass the stricter validation.
+            if ($id === null || ($owned[$id]['label'] ?? null) !== $label) {
+                $trimmed = trim($label);
+                if (preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x{009F}]/u', $label) !== 0
+                    || preg_match('/\A.{0,100}\z/us', $trimmed) !== 1) {
+                    throw new ApiException($prefix . '追加IPの用途は制御文字を除く100文字以内で指定してください', 400);
+                }
+                $label = $trimmed;
+            }
+            if (!is_int($order) || $order < 0 || $order > 2147483647) {
+                throw new ApiException($prefix . '追加IPの表示順は非負整数で指定してください', 400);
             }
             $ips[$ip] = true;
             if ($id !== null) { $ids[$id] = true; }
@@ -83,8 +92,8 @@ final class DeviceIpAddressRepository
     public function saveForDevice(int $deviceId, ?array $rows, string $managementIp): void
     {
         $existing = $this->getByDeviceIds([$deviceId])[$deviceId] ?? [];
-        $rows = self::normalize($rows ?? $existing, $managementIp, "機器ID {$deviceId}: ");
         $owned = array_column($existing, null, 'id');
+        $rows = self::normalize($rows ?? $existing, $managementIp, "機器ID {$deviceId}: ", $owned);
         foreach ($rows as $row) {
             if ($row['id'] !== null && !isset($owned[$row['id']])) {
                 throw new ApiException('追加IPのIDは保存対象機器に所属していません', 400);

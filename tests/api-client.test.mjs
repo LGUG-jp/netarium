@@ -54,6 +54,14 @@ test('一般APIの非JSON・JSONエラーと画像入口の認証失効を維持
     assert.equal(appState.authExpired, true);
 });
 
+test('図面APIの非JSON 401でも認証失効を通知する', async t => {
+    installClient(t, async () => new Response('<html>Unauthorized</html>', { status: 401 }));
+    appState.authExpired = false;
+    await assert.rejects(apiFetch('upload_floor_plan', { method: 'POST' }),
+        error => error.status === 401 && /ログインの有効期限/.test(error.message));
+    assert.equal(appState.authExpired, true);
+});
+
 test('専用拒否は5キー・version・元PHP応答URL・非redirect・JSON型を厳密に識別する', async t => {
     let response;
     installClient(t, async () => response);

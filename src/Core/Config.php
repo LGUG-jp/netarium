@@ -68,8 +68,7 @@ final class Config
             'quality_stale_monitor_days' => 30,
             'quality_identifier_case_insensitive' => true,
             'quality_recommended_device_fields' => [
-                'facility',
-                'floor',
+                'floor_id',
                 'location',
                 'manufacturer',
                 'model',
@@ -90,7 +89,8 @@ final class Config
             'image_upload_max_request_bytes' => 31 * 1024 * 1024,
 
             'max_placements_per_view' => 2000,
-            'max_links_per_view' => 5000,
+            'max_links_per_view' => 5000, // 旧ビュー単位形式との互換用
+            'max_links' => 50000,
 
             'floor_plan_directory' =>
                 self::joinPath($storageDir, 'uploads/floorplans'),

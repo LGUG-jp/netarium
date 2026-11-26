@@ -25,6 +25,9 @@ class DeleteDeviceImageAction implements ActionInterface
         $deviceId = (int)($input['device_id'] ?? 0);
         $imageId = (int)($input['image_id'] ?? 0);
         $requestedRevision = (int)($input['revision'] ?? 0);
+        $expectedDeviceRevision = array_key_exists('expected_device_revision', $input)
+            ? (int)$input['expected_device_revision']
+            : null;
 
         if ($deviceId <= 0 || $imageId <= 0) {
             throw new ApiException('パラメータが不正です', 400);
@@ -35,7 +38,8 @@ class DeleteDeviceImageAction implements ActionInterface
             $deviceId,
             $imageId,
             $requestedRevision,
-            $config
+            $config,
+            $expectedDeviceRevision
         );
 
         $auditSuccess = AuditLog::finish('success', [

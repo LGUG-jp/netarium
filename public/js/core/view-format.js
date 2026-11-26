@@ -1,26 +1,8 @@
 import { normalizeText } from './utils.js';
+import { appState } from './state.js';
+import { viewHierarchyPath } from './building-hierarchy.js';
 
-export function buildViewOptionLabel(view) {
-    const parts = [];
-    const facility = normalizeText(view.facility).trim();
-    const floor = normalizeText(view.floor).trim();
-    const name =
-        normalizeText(view.name).trim() ||
-        `ビューID ${view.id}`;
-
-    if (facility) {
-        parts.push(facility);
-    }
-
-    if (floor) {
-        parts.push(floor);
-    }
-
-    /*
-     * 名称が施設・フロアと同じ場合でも、
-     * ビューを識別できるよう必ず最後に表示する。
-     */
-    parts.push(name);
-
-    return parts.join(' / ');
+export function buildViewOptionLabel(view, data = appState) {
+    const name = normalizeText(view.name).trim() || `ビューID ${view.id}`;
+    return `${viewHierarchyPath(view, data)} / ${name}`;
 }

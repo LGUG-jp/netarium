@@ -25,6 +25,9 @@ class UpdateDeviceImagesAction implements ActionInterface
         $deviceId = (int)($input['device_id'] ?? 0);
         $requestedRevision = (int)($input['revision'] ?? 0);
         $images = $input['images'] ?? null;
+        $expectedDeviceRevision = array_key_exists('expected_device_revision', $input)
+            ? (int)$input['expected_device_revision']
+            : null;
 
         if ($deviceId <= 0 || !is_array($images)) {
             throw new ApiException('パラメータが不正です', 400);
@@ -35,7 +38,8 @@ class UpdateDeviceImagesAction implements ActionInterface
             $deviceId,
             $requestedRevision,
             $images,
-            $config
+            $config,
+            $expectedDeviceRevision
         );
 
         $auditSuccess = AuditLog::finish('success', [

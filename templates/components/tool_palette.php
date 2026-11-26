@@ -132,6 +132,10 @@
                                         全ビュー未配置 (<span id="place-scope-all-count">0</span>)
                                     </button>
                                 </div>
+                                <label id="placement-floor-filter" hidden>
+                                    <input id="placement-show-other-floors" type="checkbox">
+                                    他のフロアの機器も表示
+                                </label>
                                 <div class="placement-search-bar">
                                     <input
                                         type="search"
@@ -201,6 +205,36 @@
                             </div>
                         </div>
                         <div id="wiring-controls-content" class="workspace-nav-content wiring-controls-content"></div>
+                        <div id="wiring-target-search" class="wiring-target-section" hidden>
+                            <label id="wiring-target-query-label" for="wiring-target-query" class="form-label">他ビュー・未配置の機器を検索</label>
+                            <input id="wiring-target-query" type="search" class="form-input form-input-sm"
+                                autocomplete="off" placeholder="機器名、IP、設置場所、ビュー名">
+                            <label for="wiring-target-device" class="form-label">接続先の候補</label>
+                            <select id="wiring-target-device" class="form-input form-input-sm"></select>
+                            <button id="wiring-target-choose" type="button" class="btn btn-secondary btn-sm" disabled>接続先に選択</button>
+                        </div>
+                        <form id="wiring-target-form" class="wiring-target-section" aria-labelledby="wiring-target-heading" hidden>
+                            <strong id="wiring-target-heading">接続先：<span id="wiring-target-name"></span></strong>
+                            <details id="wiring-existing" hidden>
+                                <summary id="wiring-existing-message"></summary>
+                                <ul id="wiring-existing-links" aria-label="既存の接続"></ul>
+                            </details>
+                            <p id="wiring-legacy-ports" hidden></p>
+                            <div id="wiring-target-ports" hidden>
+                                <div>
+                                    <label for="wiring-from-port" class="form-label">接続元ポート</label>
+                                    <input id="wiring-from-port" type="text" class="form-input form-input-sm" data-max-length="50" autocomplete="off">
+                                </div>
+                                <div>
+                                    <label for="wiring-to-port" class="form-label">接続先ポート</label>
+                                    <input id="wiring-to-port" type="text" class="form-input form-input-sm" data-max-length="50" autocomplete="off">
+                                </div>
+                            </div>
+                            <div>
+                                <button id="wiring-target-add" type="submit" class="btn btn-primary btn-sm">接続を追加</button>
+                                <button id="wiring-target-cancel" type="button" class="btn btn-secondary btn-sm">接続先を取り消す</button>
+                            </div>
+                        </form>
                     </div>
                 </div>
                 <button id="palette-note-btn" type="button" class="palette-btn admin-only"
@@ -238,6 +272,7 @@
                     >
                         <img class="palette-icon" src="assets/icons/toolbar/list.svg" width="22" height="22" alt="" aria-hidden="true">
                         <span class="palette-text">一覧</span>
+                        <span id="palette-nav-legacy-badge" class="palette-nav-legacy-badge" hidden></span>
                     </button>
 
                     <div

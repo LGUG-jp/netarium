@@ -313,4 +313,18 @@ class AuthenticationLimitsTest extends TestCase
             }
         }
     }
+
+    public function testUnknownFloodPreservesActiveUserWindowFailureCounts(): void
+    {
+        $db = $this->database();
+        reserveLoginAttempt($db, 'alice', 1000);
+        $db->exec("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i <= " . (APP_LOGIN_MAX_ROWS + 20) . ")
+            INSERT INTO login_rate_limits (username, failure_count, locked_until, updated_at)
+            SELECT 'unknown-' || i, 1, 0, '2026-01-01 00:00:00' FROM n");
+        cleanupLoginFailures($db, 1001);
+
+        $alice = $db->query("SELECT failure_count, locked_until FROM login_rate_limits WHERE username = 'alice'")->fetch(PDO::FETCH_ASSOC);
+        $this->assertSame(['failure_count' => 1, 'locked_until' => 0], $alice);
+        $this->assertSame(APP_LOGIN_MAX_ROWS, (int)$db->query('SELECT COUNT(*) FROM login_rate_limits')->fetchColumn());
+    }
 }

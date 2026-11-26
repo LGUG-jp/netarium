@@ -35,7 +35,7 @@ class CsvImportExportService
     /**
      * 機器台帳CSVの列定義。
      *
-     * 出力・テンプレート・取込で同じ20列の順序を使用する。
+     * 出力・テンプレート・取込で従来の20列と同じ列順を使用する。
      */
     public function getDeviceCsvColumns(): array
     {
@@ -232,8 +232,9 @@ class CsvImportExportService
                 name,
                 type,
                 ip,
-                facility,
-                floor,
+                (SELECT b.name FROM floors f JOIN buildings b ON b.id = f.building_id
+                    WHERE f.id = devices.floor_id) AS facility,
+                (SELECT f.name FROM floors f WHERE f.id = devices.floor_id) AS floor,
                 location,
                 manufacturer,
                 model,
@@ -341,7 +342,7 @@ class CsvImportExportService
         return [
             'name' => 100,
             'facility' => 100,
-            'floor' => 50,
+            'floor' => 100,
             'location' => 150,
             'manufacturer' => 100,
             'model' => 100,
@@ -425,7 +426,7 @@ class CsvImportExportService
     {
         $normalized = [];
 
-        foreach ($this->getDeviceCsvColumns() as $column) {
+        foreach ([...$this->getDeviceCsvColumns(), 'floor_id'] as $column) {
             if ($column === 'id') {
                 $id = $device['id'] ?? null;
                 $normalized['id'] = ($id !== null && $id !== '') ? ResourceId::parse($id, 'id') : null;
@@ -465,6 +466,7 @@ class CsvImportExportService
             'maintenance_vendor' => '保守ベンダー',
             'install_date' => '導入年月',
             'maintenance_expiry' => '保守期限',
+            'floor_id' => '設置フロア',
         ];
     }
 
@@ -477,7 +479,7 @@ class CsvImportExportService
         $changedFields = [];
         $changes = [];
 
-        foreach ($this->getDeviceCsvColumns() as $column) {
+        foreach ([...$this->getDeviceCsvColumns(), 'floor_id'] as $column) {
             if ($column === 'id') {
                 continue;
             }
@@ -569,6 +571,11 @@ class CsvImportExportService
         return false;
     }
 
+    private function normalizeHierarchyName(string $name): string
+    {
+        return preg_replace('/\A[\s\p{Z}]+|[\s\p{Z}]+\z/u', '', $name) ?? $name;
+    }
+
     public function parseAndValidateDevicesCsvImport(string $filePath, int $maxRows): array
     {
         if (!is_file($filePath)) {
@@ -584,6 +591,20 @@ class CsvImportExportService
         $columns = $this->getDeviceCsvColumns();
         $columnCount = count($columns);
         $devicesById = $this->deviceRepo->getDevicesByIdForCsvImport();
+        // CSVは現在名だけを照合し、移行用の旧ビュー名・別名は参照しない。
+        $buildingsByName = [];
+        $floorsByBuilding = [];
+        $hierarchyNames = ['facility' => [], 'floor' => []];
+        foreach ($this->db->query('SELECT id, name FROM buildings')->fetchAll(PDO::FETCH_ASSOC) as $building) {
+            $name = $this->normalizeHierarchyName((string)$building['name']);
+            $buildingsByName[$name][] = (int)$building['id'];
+            $hierarchyNames['facility'][$name] = true;
+        }
+        foreach ($this->db->query('SELECT id, building_id, name FROM floors')->fetchAll(PDO::FETCH_ASSOC) as $floor) {
+            $name = $this->normalizeHierarchyName((string)$floor['name']);
+            $floorsByBuilding[(int)$floor['building_id']][$name][] = (int)$floor['id'];
+            $hierarchyNames['floor'][$name] = true;
+        }
         $additionalByDevice = (new DeviceIpAddressRepository($this->db))->getByDeviceIds();
         foreach ($devicesById as $id => &$device) {
             $device['additional_ips'] = $additionalByDevice[$id] ?? [];
@@ -728,6 +749,13 @@ class CsvImportExportService
                         }
                     }
                 }
+                $legacyText = ['facility' => (string)$values[5], 'floor' => (string)$values[6]];
+                $record['floor_id'] = $devicesById[$id]['floor_id'] ?? null;
+                foreach ($legacyText as $field => $value) {
+                    if ($this->containsForbiddenCsvControlCharacters($value)) {
+                        $errors[] = "{$field}: 使用できない制御文字が含まれています";
+                    }
+                }
 
                 /*
                  * 既存機器の更新行だけ、
@@ -738,7 +766,7 @@ class CsvImportExportService
                     $labels = $this->getDeviceCsvColumnLabels();
 
                     foreach ($this->getDeviceCsvColumns() as $column) {
-                        if ($column === 'id' || $column === 'additional_ips') {
+                        if (in_array($column, ['id', 'additional_ips', 'facility', 'floor'], true)) {
                             continue;
                         }
 
@@ -757,6 +785,51 @@ class CsvImportExportService
                     }
                 }
 
+                foreach (['facility', 'floor'] as $field) {
+                    $record[$field] = $this->normalizeHierarchyName($record[$field]);
+                    // 階層名も、現在のDB名で安全化を確認できる場合だけ復元する。
+                    if (!isset($hierarchyNames[$field][$record[$field]]) &&
+                        $this->isSanitizedCsvSpreadsheetCell($record[$field])) {
+                        $restored = $this->normalizeHierarchyName(substr($record[$field], 1));
+                        if (isset($hierarchyNames[$field][$restored])) {
+                            $result = $this->restoreDeviceCsvSpreadsheetCell(
+                                $record[$field], substr($record[$field], 1), $field,
+                                $this->getDeviceCsvColumnLabels()[$field]
+                            );
+                            $record[$field] = $restored;
+                            $legacyText[$field] = $restored;
+                            $transformations[] = $result['transformation'];
+                        }
+                    }
+                }
+                $facility = $record['facility'];
+                $floor = $record['floor'];
+                $buildingMatches = $buildingsByName[$facility] ?? [];
+                $floorMatches = count($buildingMatches) === 1
+                    ? ($floorsByBuilding[$buildingMatches[0]][$floor] ?? []) : [];
+                $matchedFloorId = $facility !== '' && $floor !== '' &&
+                    count($buildingMatches) === 1 && count($floorMatches) === 1 ? $floorMatches[0] : null;
+                $floorReason = null;
+                if ($matchedFloorId !== null) {
+                    $record['floor_id'] = $matchedFloorId;
+                } else {
+                    $floorReason = $facility === '' && $floor === '' ? 'empty'
+                        : (($facility === '' || $floor === '') ? 'incomplete'
+                            : ((count($buildingMatches) > 1 || count($floorMatches) > 1) ? 'ambiguous' : 'unmatched'));
+                }
+                if (!isset($devicesById[$id])) {
+                    foreach ($legacyText as $field => $value) {
+                        $maxLength = $field === 'floor' ? 50 : 100;
+                        if ($this->getUtf8TextLength(trim($value)) <= $maxLength) { continue; }
+                        // 長い現在名は所属IDだけに保存し、旧原文の契約は拡張しない。
+                        if ($field === 'floor' && $matchedFloorId !== null) {
+                            $legacyText[$field] = '';
+                        } else {
+                            $errors[] = "{$field}: 新規機器の旧情報は{$maxLength}文字以内で入力してください";
+                        }
+                    }
+                }
+
                 if ($record['name'] === '') {
                     $errors[] = 'name: 名称は必須です';
                 }
@@ -771,6 +844,7 @@ class CsvImportExportService
 
                 try {
                     $existingAdditional = $additionalByDevice[$id] ?? [];
+                    $existingByIp = array_column($existingAdditional, null, 'ip');
                     $additional = $existingAdditional;
                     if ($record['additional_ips'] !== '') {
                         $decoded = json_decode($record['additional_ips'], false, 512, JSON_THROW_ON_ERROR);
@@ -782,13 +856,19 @@ class CsvImportExportService
                             if (!$address instanceof \stdClass) {
                                 throw new ApiException('additional_ips: 各要素はIPと用途ラベルのオブジェクトで指定してください', 400);
                             }
-                            $additional[] = ['ip' => $address->ip ?? null, 'label' => $address->label ?? ''];
+                            $ip = $address->ip ?? null;
+                            // CSV omits internal IDs; map the same device/IP to its existing row.
+                            $additional[] = [
+                                'id' => is_string($ip) ? ($existingByIp[trim($ip)]['id'] ?? null) : null,
+                                'ip' => $ip,
+                                'label' => $address->label ?? '',
+                            ];
                         }
                     }
-                    $record['additional_ips'] = DeviceIpAddressRepository::normalize($additional, $record['ip'], 'additional_ips: ');
-                    $existingByIp = array_column($existingAdditional, null, 'ip');
+                    $record['additional_ips'] = DeviceIpAddressRepository::normalize(
+                        $additional, $record['ip'], 'additional_ips: ', array_column($existingAdditional, null, 'id')
+                    );
                     foreach ($record['additional_ips'] as &$address) {
-                        $address['id'] = $existingByIp[$address['ip']]['id'] ?? null;
                         if (isset($existingByIp[$address['ip']]) && $existingByIp[$address['ip']]['label'] === $address['label']) {
                             $address['segment_id'] = $existingByIp[$address['ip']]['segment_id'];
                         } else {
@@ -846,6 +926,12 @@ class CsvImportExportService
                 }
 
 
+                // 現在の所属名を旧原文へ書き戻さない。新規のみ入力原文を保存する。
+                foreach (['facility', 'floor'] as $field) {
+                    $record[$field] = isset($devicesById[$id])
+                        ? $devicesById[$id][$field] : $legacyText[$field];
+                }
+
                 $operation = 'insert';
                 $comparison = [
                     'changed_fields' => [],
@@ -863,6 +949,20 @@ class CsvImportExportService
                  * 確定を妨げない行単位の警告。
                  */
                 if ($errors === []) {
+                    if ($floorReason !== null && !($floorReason === 'empty' &&
+                        $operation === 'unchanged' && $record['floor_id'] === null)) {
+                        $messages = [
+                            'empty' => '施設・フロアが空欄です。空欄は所属解除を意味しません',
+                            'incomplete' => '施設・フロアの片側のみのため、一意に照合できません',
+                            'ambiguous' => '施設・フロア名が曖昧なため、一意に照合できません',
+                            'unmatched' => '現在の施設・フロア名に一致する所属がありません',
+                        ];
+                        $warnings[] = $this->createDeviceCsvWarning(
+                            'floor_' . $floorReason,
+                            $messages[$floorReason] . '。所属更新なし（既存所属を保持／新規は紐付けなし）。CSVから所属解除はできません',
+                            'floor'
+                        );
+                    }
                     if ($operation === 'insert') {
                         $warnings[] = $this->createDeviceCsvWarning(
                             'new_device_unplaced',
@@ -872,8 +972,9 @@ class CsvImportExportService
                     }
 
                     if ($operation === 'update' && isset($devicesById[$id])) {
-                        $oldIp = trim((string)$devicesById[$id]['ip']);
-                        $newIp = trim((string)$record['ip']);
+                        // Compare the stored value as-is, just as commit does when resetting monitoring.
+                        $oldIp = (string)$devicesById[$id]['ip'];
+                        $newIp = $record['ip'];
 
                         if ($oldIp !== '' && $newIp === '') {
                             $warnings[] = $this->createDeviceCsvWarning(
@@ -939,9 +1040,32 @@ class CsvImportExportService
         $resolved = $ipManagement->resolveDevices($toResolve, true);
         foreach ($resolved as $index => $record) {
             $rows[$index]['data'] = $record;
-            foreach (array_merge([['ip' => $record['ip'], 'segment_id' => $record['ip_segment_id']]], $record['additional_ips']) as $address) {
+            if (($rows[$index]['operation'] ?? '') === 'unchanged') {
+                continue;
+            }
+            $rowId = $rows[$index]['id'] ?? null;
+            $previous = $rowId !== null ? ($devicesById[$rowId] ?? null) : null;
+            $previousAdditional = $previous !== null
+                ? array_column($previous['additional_ips'] ?? [], null, 'id')
+                : [];
+            if ($record['ip'] !== '' && $record['ip_segment_id'] === null) {
+                $samePrimaryUnclassified = $previous !== null
+                    && (string)$previous['ip'] === $record['ip']
+                    && ($previous['ip_segment_id'] ?? null) === null;
+                if (!$samePrimaryUnclassified) {
+                    $rows[$index]['warnings'][] = $this->createDeviceCsvWarning('unclassified_ip', 'IP ' . $record['ip'] . ' は未分類で保存されます。アドレス空間・セグメントを確認してください', 'ip');
+                }
+            }
+            foreach ($record['additional_ips'] as $address) {
                 if ($address['ip'] !== '' && $address['segment_id'] === null) {
-                    $rows[$index]['warnings'][] = $this->createDeviceCsvWarning('unclassified_ip', 'IP ' . $address['ip'] . ' は未分類で保存されます。アドレス空間・セグメントを確認してください', 'ip');
+                    $prevAddr = ($address['id'] ?? null) !== null ? ($previousAdditional[(int)$address['id']] ?? null) : null;
+                    $sameAdditionalUnclassified = $prevAddr !== null
+                        && (string)($prevAddr['ip'] ?? '') === $address['ip']
+                        && (string)($prevAddr['label'] ?? '') === $address['label']
+                        && ($prevAddr['segment_id'] ?? null) === null;
+                    if (!$sameAdditionalUnclassified) {
+                        $rows[$index]['warnings'][] = $this->createDeviceCsvWarning('unclassified_ip', 'IP ' . $address['ip'] . ' は未分類で保存されます。アドレス空間・セグメントを確認してください', 'ip');
+                    }
                 }
             }
         }
@@ -1430,6 +1554,7 @@ class CsvImportExportService
                     y,
                     facility,
                     floor,
+                    floor_id,
                     location,
                     manufacturer,
                     model,
@@ -1452,6 +1577,7 @@ class CsvImportExportService
                     0,
                     :facility,
                     :floor,
+                    :floor_id,
                     :location,
                     :manufacturer,
                     :model,
@@ -1476,6 +1602,7 @@ class CsvImportExportService
                     ip = :ip,
                     facility = :facility,
                     floor = :floor,
+                    floor_id = :floor_id,
                     location = :location,
                     manufacturer = :manufacturer,
                     model = :model,
@@ -1554,6 +1681,7 @@ class CsvImportExportService
                     ':ip' => (string)$record['ip'],
                     ':facility' => (string)$record['facility'],
                     ':floor' => (string)$record['floor'],
+                    ':floor_id' => $record['floor_id'] ?? null,
                     ':location' => (string)$record['location'],
                     ':manufacturer' => (string)$record['manufacturer'],
                     ':model' => (string)$record['model'],
@@ -1625,7 +1753,8 @@ class CsvImportExportService
             if ($e instanceof PDOException && Database::isBusy($e)) {
                 throw new ApiException(
                     '現在、別の更新処理が実行されています。少し待ってから再度取込してください',
-                    409
+                    409,
+                    ['reason' => 'operation_busy']
                 );
             }
 

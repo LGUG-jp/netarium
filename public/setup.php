@@ -12,11 +12,12 @@ header('Content-Type: text/html; charset=UTF-8');
 startAppSession();
 
 $config = Config::create();
-$db = authDatabase();
+$db = null;
 $error = '';
 $completed = false;
 
 try {
+    $db = authDatabase();
     if (InitialSetup::isClosed($db)) {
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             http_response_code(409);

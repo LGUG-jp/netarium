@@ -195,9 +195,11 @@ export async function refreshUserList() {
         const data = await apiFetch('list_users');
         renderUserList(Array.isArray(data.users) ? data.users : []);
         setStatus('');
+        return true;
     } catch (error) {
         if (!body.children.length) body.innerHTML = '<tr><td colspan="5">読み込めませんでした</td></tr>';
         setStatus(error.message, 'error');
+        return false;
     } finally {
         if (ownsBusy) setAccountBusy(false);
     }
@@ -242,6 +244,7 @@ function renderUserList(users) {
         const roleCell = document.createElement('td');
         const role = document.createElement('select');
         role.className = 'account-user-role';
+        role.setAttribute('aria-label', `${user.username || ''}の権限`);
         role.innerHTML = `
             <option value="viewer">viewer</option>
             <option value="admin">admin</option>
@@ -369,18 +372,20 @@ async function updateUser(row) {
             body: JSON.stringify({ id, role, is_active: isActive })
         });
 
-        setStatus(data.message || '利用者情報を更新しました', 'success');
         row.querySelector('.account-user-role').dataset.baseline = role;
         row.querySelector('.account-user-active').dataset.baseline = String(isActive);
 
         if (data.current_user_changed === true) {
+            setStatus(data.message || '利用者情報を更新しました', 'success');
             window.location.href = data.session_ended === true
                 ? 'login.php'
                 : 'index.php';
             return;
         }
 
-        await refreshUserList();
+        if (await refreshUserList()) {
+            setStatus(data.message || '利用者情報を更新しました', 'success');
+        }
     } catch (error) {
         setStatus(error.message, 'error');
     } finally {
@@ -411,15 +416,17 @@ async function resetUserPassword(row) {
             })
         });
 
-        setStatus(data.message || 'パスワードを再設定しました', 'success');
         passwordInput.value = '';
 
         if (data.current_user_changed === true) {
+            setStatus(data.message || 'パスワードを再設定しました', 'success');
             window.location.href = 'login.php';
             return;
         }
 
-        await refreshUserList();
+        if (await refreshUserList()) {
+            setStatus(data.message || 'パスワードを再設定しました', 'success');
+        }
     } catch (error) {
         setStatus(error.message, 'error');
     } finally {

@@ -26,7 +26,7 @@ const fixture = (notes = []) => {
     recalculateNextIds();
 };
 const response = (pending, canvas_notes, id_maps = {}) => ({
-    revision: 2, id_maps, devices: [], placements: [], links: [], canvas_notes,
+    revision: 2, id_maps, devices: [], placements: [], view_link_routes: [], canvas_notes,
     views: pending.payload.views.filter(row => row.operation !== 'delete').map(row => ({
         ...row.view, id: Number(id_maps.views?.[row.id] ?? row.id), resource_revision: (row.expected_revision || 0) + 1
     })),

@@ -22,6 +22,9 @@ import {
     syncResourceRevision,
     viewResource
 } from './resource-save.js';
+import { applyConnectionSaveResult, buildConnectionSave, connectionKinds, confirmedConnectionResult,
+    createPendingConnectionSave, hasConnectionChanges, inspectPendingConnectionSave,
+    reloadConnectionFromData } from './connection-save.js';
 import {
     markConflict,
     markMaintenance,
@@ -165,7 +168,8 @@ eventBus.on('resource:reloaded', ({ kind, id }) => {
 });
 
 function conflicts() {
-    appState.resourceConflicts ||= { devices: new Map(), views: new Map() };
+    appState.resourceConflicts ||= {};
+    for (const kind of ['devices', 'views', ...connectionKinds]) appState.resourceConflicts[kind] ||= new Map();
     return appState.resourceConflicts;
 }
 
@@ -190,7 +194,9 @@ let activeResourceMutation = Promise.resolve();
 // 図面ファイルも共通保存の応答反映後に世代を読み、通信中は次の保存を待たせる。
 export async function runResourceMutation(operation) {
     const run = async () => {
-        await waitForActiveResourceSave();
+        while (activeSavePromise !== null || activeConfirmation !== null) {
+            await (activeSavePromise || activeConfirmation);
+        }
         if (pendingSave || appState.authExpired) throw new Error('保留中の保存状態を確認してください');
         let release;
         const gate = new Promise(resolve => { release = resolve; });
@@ -200,11 +206,18 @@ export async function runResourceMutation(operation) {
         try {
             return await operation();
         } finally {
-            release();
+            const shouldFlush = hasQueuedSave && !pendingSave;
+            const followUpSilent = queuedSilent;
             if (activeSavePromise === gate) activeSavePromise = null;
             appState.isSaving = activeSavePromise !== null;
+            let queuedPromise = null;
+            if (shouldFlush) {
+                hasQueuedSave = false;
+                queuedSilent = true;
+                queuedPromise = flushSaveQueue({ silent: followUpSilent, resumeMaintenance: false });
+            }
             updateSaveButtonState();
-            if (hasQueuedSave && !pendingSave) scheduleSave({ immediate: true });
+            release(queuedPromise ?? !pendingSave);
         }
     };
     const next = activeResourceMutation.then(run, run);
@@ -215,7 +228,8 @@ export async function runResourceMutation(operation) {
 export function hasSaveableChanges() {
     try {
         const payload = buildSaveableResourceSave();
-        return payload.devices.length > 0 || payload.views.length > 0 || hasFloorPlanSaves({ saveable: true });
+        return payload.devices.length > 0 || payload.views.length > 0 ||
+            hasConnectionChanges({ saveable: true }) || hasFloorPlanSaves({ saveable: true });
     } catch (_) {
         return false;
     }
@@ -223,21 +237,34 @@ export function hasSaveableChanges() {
 
 export function hasResourceChanges(kind, id) {
     try {
-        return Boolean(buildResourceSave()[kind]?.some(row => row.id === Number(id)));
+        const payload = connectionKinds.includes(kind) ? buildConnectionSave() : buildResourceSave();
+        return Boolean(payload[kind]?.some(row => row.id === Number(id)));
     } catch (_) {
         return false;
     }
 }
 
 function rememberConflicts(items, payload, message) {
-    const identified = (Array.isArray(items) ? items : []).filter(item =>
-        ['devices', 'views'].includes(item.kind) && (payload[item.kind] || []).some(row => row.id === Number(item.id)));
-    const targets = identified.length ? identified : ['devices', 'views'].flatMap(kind =>
+    const kinds = ['devices', 'views', ...connectionKinds];
+    const identified = (Array.isArray(items) ? items : []).map(item => ({ ...item, kind: item.kind ?? item.resource }))
+        .filter(item => kinds.includes(item.kind) && (payload[item.kind] || []).some(row => Number(row.id) === Number(item.id)));
+    const targets = identified.length ? identified : kinds.flatMap(kind =>
         (payload[kind] || []).map(row => ({ kind, id: row.id,
-            name: row.device?.name || row.view?.name ||
-                appState[kind].find(item => Number(item.id) === Number(row.id))?.name || `ID ${row.id}` })));
+            name: row.device?.name || row.view?.name || row.link?.label || row.port?.name ||
+                appState[kind === 'device_ports' ? 'devicePorts' : kind]?.find(item => Number(item.id) === Number(row.id))?.name || `ID ${row.id}` })));
     for (const item of targets) conflicts()[item.kind].set(Number(item.id), { ...item, message });
     markConflict(message);
+}
+
+export function recordResourceConflicts(items, payload, message) {
+    rememberConflicts(items, payload, message);
+}
+
+const connectionReloadHint = '個票の「接続・ポート」タブまたは構成図の接続パネルで対象を再読込してください。対象が表示されない場合は「読込」で最新データを取得してください';
+
+function vlanCopyTargets(copy) {
+    return { device_ports: [{ id: copy.source_port_id }, { id: copy.destination_port_id }],
+        links: [{ id: copy.link_id }] };
 }
 /**
  * 保留中の未確認保存情報を取得
@@ -259,8 +286,7 @@ export function clearPendingSave() {
     hasQueuedSave = false;
     queuedSilent = true;
     appState.isSaving = activeSavePromise !== null;
-    conflicts().devices.clear();
-    conflicts().views.clear();
+    for (const map of Object.values(conflicts())) map.clear();
     updateSaveButtonState();
 }
 
@@ -270,7 +296,7 @@ export function clearPendingSave() {
 export function hasPendingChanges() {
     try {
         const payload = buildResourceSave();
-        return payload.devices.length > 0 || payload.views.length > 0 || hasFloorPlanSaves();
+        return payload.devices.length > 0 || payload.views.length > 0 || hasConnectionChanges() || hasFloorPlanSaves();
     } catch (_) {
         return false;
     }
@@ -281,9 +307,11 @@ export function hasPendingChanges() {
  */
 export function updateSaveButtonState() {
     if (typeof document === 'undefined') return;
+    eventBus.emit('save-availability:changed');
     const saveBtn = document.getElementById('saveBtn');
     const ledgerSaveBtn = document.getElementById('ledger-save-btn');
     const ledgerSheetSaveBtn = document.getElementById('ledger-sheet-save-btn');
+    const ledgerSheetSaveStatus = document.getElementById('ledger-sheet-save-status');
 
     const buttons = [
         { el: saveBtn, name: '保存' },
@@ -291,16 +319,61 @@ export function updateSaveButtonState() {
         { el: ledgerSheetSaveBtn, name: '適用' }
     ].filter(item => Boolean(item.el));
 
+    const rawSheetId = ledgerSheetSaveBtn?.dataset?.deviceId ?? '';
+    const sheetId = Number(rawSheetId);
+    const hasValidSheetId = rawSheetId !== '' && Number.isInteger(sheetId) && sheetId !== 0;
+    const isAdmin = isCurrentUserAdmin();
+    const sheetConflict = isAdmin && hasValidSheetId && hasResourceConflict('devices', sheetId);
+    const sheetDraft = isAdmin && hasValidSheetId && hasDeviceDraftChanges('sheet', sheetId);
+    const sheetHasChanges = isAdmin && hasValidSheetId && hasResourceChanges('devices', sheetId);
+    const maintenance = pendingSave?.maintenanceRejected === true;
+    const unconfirmed = pendingSave !== null && !maintenance && (activeConfirmation !== null || !appState.isSaving);
+    const inFlight = isSaveInFlight();
+
+    if (ledgerSheetSaveStatus) {
+        let statusText = '';
+        let statusKind = '';
+        if (isAdmin && hasValidSheetId) {
+            if (sheetConflict) {
+                statusText = '! 他の変更と競合しています（強制上書き不可）';
+                statusKind = 'is-conflict';
+            } else if (unconfirmed && sheetHasChanges) {
+                statusText = '? 保存状態が未確認です（下部バーの「保存状態を確認」を実行してください）';
+                statusKind = 'is-unconfirmed';
+            } else if (maintenance && sheetHasChanges) {
+                statusText = '保守待機中（終了後に「保存」で再開できます）';
+                statusKind = 'is-warning';
+            } else if (appState.appStatus.state === 'error' && sheetHasChanges) {
+                statusText = '! 保存に失敗しました（「保存」で再試行できます）';
+                statusKind = 'is-error';
+            } else if (inFlight && sheetHasChanges) {
+                statusText = '⟳ 保存中…';
+                statusKind = 'is-saving';
+            } else if (sheetHasChanges) {
+                statusText = '… 保存待ち（「保存」で即時反映できます）';
+                statusKind = 'is-pending';
+            }
+        }
+        ledgerSheetSaveStatus.textContent = statusText;
+        ledgerSheetSaveStatus.hidden = !statusText;
+        ledgerSheetSaveStatus.className = statusKind
+            ? `ledger-sheet-save-status ${statusKind}`
+            : 'ledger-sheet-save-status';
+    }
+
     if (buttons.length === 0) return;
 
     const setButtonState = (disabled, titleFn) => {
         for (const { el, name } of buttons) {
             el.disabled = disabled;
             el.title = typeof titleFn === 'function' ? titleFn(name) : titleFn;
+            if (el === ledgerSheetSaveBtn) {
+                el.hidden = !isAdmin || (!sheetDraft && !sheetConflict && !sheetHasChanges);
+            }
         }
     };
 
-    if (!isCurrentUserAdmin() || appState.authExpired) {
+    if (!isAdmin || appState.authExpired) {
         setButtonState(
             true,
             name => appState.authExpired
@@ -311,21 +384,23 @@ export function updateSaveButtonState() {
     }
 
     const remaining = hasSaveableChanges() &&
-        (!pendingSave || !appState.isSaving || pendingSave.floorPlan || hasResourceChangesSince(pendingSave));
-    const maintenance = pendingSave?.maintenanceRejected === true;
-    const unconfirmed = pendingSave !== null && !maintenance && (activeConfirmation !== null || !appState.isSaving);
-    for (const { el, name } of buttons) {
-        const sheetId = Number(ledgerSheetSaveBtn?.dataset?.deviceId);
+        (!pendingSave || !appState.isSaving || pendingSave.floorPlan || pendingSave.connection ||
+            hasConnectionChanges({ saveable: true }) || hasResourceChangesSince(pendingSave));
+    for (const { el } of buttons) {
         const isSheet = el === ledgerSheetSaveBtn;
-        const sheetConflict = isSheet && hasResourceConflict('devices', sheetId);
         const draft = isSheet
-            ? hasDeviceDraftChanges('sheet', sheetId)
+            ? sheetDraft
             : el === ledgerSaveBtn ? hasDeviceDraftChanges('ledger') : false;
-        const retry = isSheet && !isSaveInFlight() && !unconfirmed && hasResourceChanges('devices', sheetId);
-        const saveable = maintenance || (isSheet ? draft || sheetConflict || retry : remaining || draft || hasQueuedSave);
+        const retry = isSheet && !inFlight && !unconfirmed && sheetHasChanges;
+        const saveable = isSheet
+            ? (sheetDraft || sheetConflict || retry || (maintenance && sheetHasChanges))
+            : (maintenance || remaining || draft || hasQueuedSave);
+        if (isSheet) {
+            el.hidden = !sheetDraft && !sheetConflict && !sheetHasChanges;
+        }
         el.disabled = (unconfirmed && !draft) || !saveable ||
-            (isSheet && sheetConflict && isSaveInFlight() && !draft);
-        if (sheetConflict) {
+            (isSheet && sheetConflict && inFlight && !draft);
+        if (isSheet && sheetConflict) {
             el.textContent = '競合を再読込';
             el.title = 'この機器の編集を破棄して最新データを再読込します';
             continue;
@@ -336,10 +411,10 @@ export function updateSaveButtonState() {
             ? '保守作業で未受理の保存と入力を保持しています。保守終了後に「保存」で明示的に再開します'
             : unconfirmed
             ? '保存状態が未確認です。「保存状態を確認」を実行してください'
-            : remaining || draft
+            : (isSheet ? sheetHasChanges || draft : remaining || draft)
                 ? draft
                     ? '未適用の入力を適用し、自動保存します'
-                    : `確定済みの変更を${isSaveInFlight() ? '保存中の処理の完了後に送信' : '送信・再試行'}します。未適用の入力は確定しません`
+                    : `確定済みの変更を${inFlight ? '保存中の処理の完了後に送信' : '送信・再試行'}します。未適用の入力は確定しません`
                 : hasPendingChanges()
                     ? '競合対象と依存する変更は保留中です。対象の最新データを再読込してください'
                     : `${actionName} (変更はありません)`;
@@ -381,6 +456,21 @@ export function scheduleSave({ debounceMs = 800, immediate = false, silent = tru
 }
 
 /**
+ * 個票で確定した明示的な接続バッチだけを、共有状態に展開せず保存する。
+ * @returns {Promise<boolean>}
+ */
+export async function saveConnectionBatch(payload, { vlanCopy = null } = {}) {
+    try {
+        return await runResourceMutation(() => executeSave({ connectionBatch: payload, vlanCopy }));
+    } catch (error) {
+        showToast(error.message, 'warning');
+        return false;
+    } finally {
+        eventBus.emit('save-state:changed', appState.appStatus.state);
+    }
+}
+
+/**
  * キューに溜まっている保存要求を即時フラッシュする
  *
  * @param {Object} options
@@ -401,10 +491,17 @@ export async function flushSaveQueue({ silent = false, resumeMaintenance = !sile
         updateSaveButtonState();
         return activeSavePromise;
     }
+    let connectionBatch = null;
+    let vlanCopy = null;
     if (pendingSave?.maintenanceRejected) {
         if (!resumeMaintenance) return false;
-        // 拒否時のsnapshotはここまで保持。最新の確定入力を再構築し後続編集も送る。
-        pendingSave = null;
+        if (pendingSave.isolated) {
+            connectionBatch = pendingSave.payload;
+            vlanCopy = pendingSave.vlanCopy ?? null;
+        } else {
+            // 通常の保存は最新の確定入力を再構築し、後続編集も送る。
+            pendingSave = null;
+        }
     }
 
     activeSavePromise = (async () => {
@@ -416,7 +513,9 @@ export async function flushSaveQueue({ silent = false, resumeMaintenance = !sile
                 hasQueuedSave = false;
                 const generation = saveGeneration;
 
-                lastResult = await executeSave({ silent: currentSilent });
+                lastResult = await executeSave({ silent: currentSilent, connectionBatch, vlanCopy });
+                connectionBatch = null;
+                vlanCopy = null;
                 if (!lastResult) {
                     if (generation !== saveGeneration && hasQueuedSave && pendingSave === null) {
                         continue;
@@ -446,7 +545,7 @@ export async function flushSaveQueue({ silent = false, resumeMaintenance = !sile
 /**
  * 実際の1回分の保存処理
  */
-async function executeSave({ silent = false } = {}) {
+async function executeSave({ silent = false, connectionBatch = null, vlanCopy = null } = {}) {
     if (!requireAdminUiAction()) {
         return false;
     }
@@ -455,35 +554,56 @@ async function executeSave({ silent = false } = {}) {
         return false;
     }
 
-    if (pendingSave !== null) {
+    const resumeBatch = pendingSave?.isolated && pendingSave.maintenanceRejected && pendingSave.payload === connectionBatch;
+    if (pendingSave !== null && !resumeBatch) {
         showToast('確定状況が未確認の保存があります。「保存状態を確認」を実行してください', 'warning');
         return false;
+    }
+    if (connectionBatch && !resumeBatch) {
+        if (connectionKinds.some(kind => connectionBatch[kind].some(op =>
+            op.operation !== 'create' && hasResourceConflict(kind, op.id))) ||
+            (vlanCopy && (hasResourceConflict('links', vlanCopy.link_id) ||
+                hasResourceConflict('device_ports', vlanCopy.source_port_id)))) {
+            showToast(`保存対象の接続またはポートが競合しています。${connectionReloadHint}`, 'warning');
+            return false;
+        }
+        if (hasConnectionChanges()) {
+            showToast('共通接続に未保存の変更があります。先に構成図で変更を保存または破棄してください', 'warning');
+            return false;
+        }
     }
 
     const myGeneration = saveGeneration;
 
     try {
         appState.isSaving = true;
-        const payload = buildSaveableResourceSave();
-        validateAllDataBeforeSave(resourceSaveValidationData(payload));
+        const connections = connectionBatch ?? buildConnectionSave({ saveable: true });
+        const isConnectionSave = connectionBatch !== null || connectionKinds.some(kind => connections[kind].length > 0);
+        const payload = isConnectionSave ? connections : buildSaveableResourceSave();
+        if (!isConnectionSave) validateAllDataBeforeSave(resourceSaveValidationData(payload));
+        if (connectionBatch) markPending();
         appState.appStatus.state = 'saving';
         renderStatusBar();
         updateSaveButtonState();
 
-        if (payload.devices.length === 0 && payload.views.length === 0) {
+        if (!isConnectionSave && payload.devices.length === 0 && payload.views.length === 0) {
             const snapshot = [...floorPlanSaves.values()].find(row => !hasResourceConflict('views', row.view_id));
             if (snapshot) return await executeFloorPlanSave(snapshot);
             markSaved(appState.dataRevision, appState.appStatus.lastSavedAt);
             updateSaveButtonState();
             return true;
         }
-        const currentPending = createPendingResourceSave(payload);
+        const currentPending = resumeBatch ? pendingSave : isConnectionSave
+            ? createPendingConnectionSave(payload, { isolated: connectionBatch !== null })
+            : createPendingResourceSave(payload);
+        if (vlanCopy && !resumeBatch) currentPending.vlanCopy = { ...vlanCopy };
+        if (resumeBatch) delete currentPending.maintenanceRejected;
         pendingSave = currentPending;
         updateSaveButtonState();
-        const data = await apiFetch('save_resources', {
+        const data = await apiFetch(vlanCopy ? 'copy_port_vlan' : isConnectionSave ? 'save_connections' : 'save_resources', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(currentPending.vlanCopy ?? payload)
         });
 
         if (myGeneration !== saveGeneration || pendingSave !== currentPending) {
@@ -510,7 +630,7 @@ async function executeSave({ silent = false } = {}) {
             handleAuthExpired();
             return false;
         }
-        if (err.apiRejected && err.details?.reason === 'ip_confirmation_required') {
+        if (!connectionBatch && err.apiRejected && err.details?.reason === 'ip_confirmation_required') {
             const operations = pendingSave?.payload.devices || [];
             const warnings = err.details.warnings || [];
             pendingSave = null;
@@ -531,7 +651,7 @@ async function executeSave({ silent = false } = {}) {
             showToast('IPアドレスの重複確認を完了していません。入力内容は保持されています', 'warning');
             return false;
         }
-        if (err.apiRejected && err.status === 409) {
+        if (err.apiRejected && err.status === 409 && err.details?.reason !== 'operation_busy') {
             if (err.details?.reason === 'id_exhausted') {
                 pendingSave = null;
                 markSaveError(err.message);
@@ -539,10 +659,20 @@ async function executeSave({ silent = false } = {}) {
                 return false;
             }
             const failed = pendingSave?.payload || { devices: [], views: [] };
+            const connection = pendingSave?.connection;
+            const copy = pendingSave?.vlanCopy;
             pendingSave = null;
-            rememberConflicts(err.details?.conflicts, failed, err.message);
-            showToast(`保存競合: ${err.message}。競合対象は保留し、それ以外の変更を保存します`, 'warning');
-            return hasSaveableChanges();
+            if (copy) {
+                const copyConflicts = err.details?.reason === 'link_endpoints_changed'
+                    ? [{ resource: 'links', id: copy.link_id }] : err.details?.conflicts;
+                rememberConflicts(copyConflicts, vlanCopyTargets(copy), err.message);
+            } else {
+                rememberConflicts(err.details?.conflicts, failed, err.message);
+            }
+            showToast(connection
+                ? `接続の保存競合: ${err.message}。${connectionReloadHint}`
+                : `保存競合: ${err.message}。競合対象は保留し、それ以外の変更を保存します`, 'warning');
+            return !connectionBatch && hasSaveableChanges();
         }
 
         if ((err.apiRejected && err.status < 500) || pendingSave === null || err.requestNotSent) {
@@ -569,14 +699,17 @@ async function executeSave({ silent = false } = {}) {
  * 保存成功時のステート反映とイベント通知
  */
 function finishResourceSave(data, pending = pendingSave, { silent = false } = {}) {
-    const maps = applyResourceSaveResult(data, pending);
-    eventBus.emit('resources:ids-remapped', maps);
+    const maps = pending.connection ? applyConnectionSaveResult(data, pending) : applyResourceSaveResult(data, pending);
+    if (!pending.isolated || connectionKinds.some(kind => Object.keys(maps[kind]).length > 0)) {
+        eventBus.emit('resources:ids-remapped', maps);
+    }
     const monitorRevision = Number(data.monitor_revision);
     if (Number.isInteger(monitorRevision)) {
         appState.monitorRevision = monitorRevision;
     }
     markSaved(data.revision, data.saved_at || new Date());
     if (hasSaveableChanges()) markPending();
+    if (data.completed_legacy_vlan_link_id != null) eventBus.emit('legacy-vlans:changed');
     eventBus.emit('resources:saved', data);
     eventBus.emit('view:render-selector');
     eventBus.emit('ledger:render');
@@ -585,6 +718,10 @@ function finishResourceSave(data, pending = pendingSave, { silent = false } = {}
 
     if (!silent && data.post_processing_required) {
         showToast(data.message || '保存後に確認が必要な処理があります', 'warning');
+    }
+    if (data.completed_legacy_vlan_link_id != null && pending.payload.complete_legacy_vlan != null) {
+        showToast(data.audit_warning ? '未移行VLANを再設定しましたが、監査ログを記録できませんでした。' :
+            '未移行VLANを再設定しました。', data.audit_warning ? 'warning' : 'success');
     }
 }
 
@@ -611,35 +748,57 @@ export function confirmPendingSave() {
             updateSaveButtonState();
             const dbData = await apiFetch('load');
             if (!isCurrent()) return 'stale';
-            const result = pending.floorPlan ? inspectFloorPlanSave(pending, dbData) : inspectPendingResourceSave(pending, dbData);
+            const connection = pending.connection && inspectPendingConnectionSave(pending, dbData);
+            const result = pending.floorPlan ? inspectFloorPlanSave(pending, dbData)
+                : connection ? connection.outcome : inspectPendingResourceSave(pending, dbData);
             if (result === 'retry') {
                 pendingSave = null;
-                appState.appStatus.state = 'pending';
-                markPending();
-                showStatusMessage('対象リソースは更新されていませんでした。再度「保存」を実行できます');
-            } else if (result === 'saved') {
+                if (pending.isolated && !hasSaveableChanges()) {
+                    markSaved(appState.dataRevision, appState.appStatus.lastSavedAt);
+                } else {
+                    appState.appStatus.state = 'pending';
+                    markPending();
+                }
+                showStatusMessage(pending.isolated
+                    ? pending.vlanCopy
+                        ? 'コピー先は更新されていませんでした。個票で再度コピーしてください'
+                        : '対象のポート・接続は更新されていませんでした。編集画面で再度「適用」してください'
+                    : '対象リソースは更新されていませんでした。再度「保存」を実行できます');
+            } else if (result === 'saved' || result === 'matched') {
                 if (pending.floorPlan) {
                     const plan = dbData.floor_plans.find(row => Number(row.view_id) === pending.floorPlan.view_id);
                     const view = dbData.views.find(row => Number(row.id) === pending.floorPlan.view_id);
                     finishFloorPlanSave({ revision: dbData.revision, saved_at: dbData.saved_at,
                         view_revision: view.resource_revision, floor_plan_settings: plan }, pending.floorPlan);
-                } else finishResourceSave(confirmedResourceResult(pending, dbData), pending, { silent: true });
+                } else {
+                    const confirmed = pending.connection ? confirmedConnectionResult(pending, dbData) : confirmedResourceResult(pending, dbData);
+                    if (result === 'matched') confirmed.copy_state_matched = true;
+                    finishResourceSave(confirmed, pending, { silent: true });
+                }
                 pendingSave = null;
+                if (result === 'matched') {
+                    showStatusMessage('コピー先に指定の VLAN が設定されています。コピー操作の成否は確認できません');
+                }
             } else if (result === 'conflict') {
                 pendingSave = null;
                 if (pending.floorPlan) {
                     rememberConflicts(null, { devices: [], views: [{ id: pending.floorPlan.view_id }] },
                         '対象ビューが変更されています。最新データを再読込してください');
+                } else if (pending.vlanCopy) {
+                    rememberConflicts(connection.conflicts, vlanCopyTargets(pending.vlanCopy),
+                        'コピー対象の接続またはポートが変更されています。最新データを再読込してください');
                 } else {
-                    const targets = ['devices', 'views'].flatMap(kind => pending.payload[kind]
+                    const targets = (pending.connection ? connectionKinds : ['devices', 'views']).flatMap(kind => pending.payload[kind]
                         .filter(operation => {
-                            const row = (dbData[kind] || []).find(row => Number(row.id) === operation.id);
-                            return !row || Number(row.resource_revision) !== operation.expected_revision;
+                            const row = (dbData[kind] || []).find(row => Number(row.id) === Number(operation.id));
+                            return !row || Number(row.resource_revision) !== Number(operation.expected_revision);
                         }).map(operation => ({ kind, id: operation.id,
-                            name: (dbData[kind] || []).find(row => Number(row.id) === operation.id)?.name || '削除済み' })));
+                            name: (dbData[kind] || []).find(row => Number(row.id) === Number(operation.id))?.name || '削除済み' })));
                     rememberConflicts(targets, pending.payload, '対象リソースが変更されています。対象の最新データを再読込してください');
                 }
-                showToast('保存対象の競合を確認しました。競合対象の最新データを再読込してください', 'warning');
+                showToast(pending.connection
+                    ? `接続の保存競合を確認しました。${connectionReloadHint}`
+                    : '保存対象の競合を確認しました。競合対象の最新データを再読込してください', 'warning');
             } else {
                 markUnconfirmed('新規作成のID対応を確認できません。重複を避けるため再送できません。最新データを再読込してください');
                 showToast('新規作成の保存状態は確定できません。再保存せず最新データを再読込してください', 'warning');
@@ -667,7 +826,7 @@ export function confirmPendingSave() {
             activeConfirmation = null;
             updateSaveButtonState();
             eventBus.emit('save-state:changed', appState.appStatus.state);
-            if ((result === 'saved' || result === 'conflict') && hasSaveableChanges()) {
+            if ((result === 'saved' || result === 'matched' || result === 'conflict') && hasSaveableChanges()) {
                 flushSaveQueue({ silent: true });
             }
         }
@@ -689,10 +848,11 @@ export function reloadConflictedResource(kind, id) {
         try {
             const data = await apiFetch('load');
             if (generation !== saveGeneration || conflicts()[kind].get(id) !== conflict || isSaveInFlight()) return false;
-            const maps = reloadResourceFromData(kind, id, data);
+            const wasEditing = kind === 'links' && Number(appState.editingLinkId) === id;
+            const maps = connectionKinds.includes(kind) ? reloadConnectionFromData(kind, id, data) : reloadResourceFromData(kind, id, data);
             eventBus.emit('resources:ids-remapped', maps);
             conflicts()[kind].delete(id);
-            eventBus.emit('resource:reloaded', { kind, id });
+            eventBus.emit('resource:reloaded', kind === 'links' ? { kind, id, wasEditing } : { kind, id });
             if (hasSaveableChanges()) {
                 appState.appStatus.state = 'pending';
                 markPending();

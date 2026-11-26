@@ -10,7 +10,7 @@
                 <p id="link-bulk-clear-help"><strong>チェックした項目だけ変更します。</strong>空欄のまま適用すると、既存値を消去します。</p>
                 <p>「割り当て解除」で系統を解除します。変更は「適用」で自動保存します。</p>
             </div>
-            <p id="link-bulk-error" role="alert" tabindex="-1"></p>
+            <p id="link-bulk-error" class="link-bulk-error" role="alert" tabindex="-1"></p>
             <div id="link-bulk-form">
                 <h4 class="ledger-bulk-edit-section-title">1. 変更する項目と値を指定</h4>
                 <div class="link-bulk-fields">
@@ -25,12 +25,6 @@
                             </button>
                             <div id="link-bulk-system-options" class="link-system-options" role="listbox" aria-label="新しい接続系統" hidden></div>
                         </div>
-                    </div>
-                    <div class="ledger-bulk-edit-field link-bulk-field">
-                        <label><input id="link-bulk-use-vlan" type="checkbox"> VLANを変更</label>
-                        <input id="link-bulk-vlan" class="form-input" type="text" data-max-length="100" aria-label="新しいVLAN" aria-describedby="link-bulk-clear-help link-bulk-vlan-limit" disabled>
-                        <small id="link-bulk-vlan-limit" class="is-muted">100文字以内</small>
-                        <p id="link-bulk-vlan-error" class="form-error" aria-live="polite" hidden></p>
                     </div>
                     <div class="ledger-bulk-edit-field link-bulk-field">
                         <label><input id="link-bulk-use-label" type="checkbox"> ラベルを変更</label>

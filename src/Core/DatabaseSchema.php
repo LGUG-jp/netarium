@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const APP_DATABASE_SCHEMA_VERSION = 23;
+const APP_DATABASE_SCHEMA_VERSION = 29;
 
 
 function migrateDatabase(PDO $db): void
@@ -108,6 +108,24 @@ function migrateDatabase(PDO $db): void
                 break;
             case 23:
                 migrateDatabaseToVersion23($db);
+                break;
+            case 24:
+                migrateDatabaseToVersion24($db);
+                break;
+            case 25:
+                migrateDatabaseToVersion25($db);
+                break;
+            case 26:
+                migrateDatabaseToVersion26($db);
+                break;
+            case 27:
+                migrateDatabaseToVersion27($db);
+                break;
+            case 28:
+                migrateDatabaseToVersion28($db);
+                break;
+            case 29:
+                migrateDatabaseToVersion29($db);
                 break;
 
             default:
@@ -1120,6 +1138,7 @@ function migrateDatabaseToVersion14(PDO $db): void
 {
     $db->beginTransaction();
     try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
         // Adding a defaulted column preserves every existing value and revision;
         // historical schema12/13 definitions remain unchanged for ZIP validation.
         if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 14) {
@@ -1139,6 +1158,7 @@ function migrateDatabaseToVersion15(PDO $db): void
 {
     $db->beginTransaction();
     try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
         if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 15) {
             $db->exec("CREATE TABLE rack_shelves (
                 id INTEGER PRIMARY KEY,
@@ -1188,6 +1208,7 @@ function migrateDatabaseToVersion16(PDO $db): void
 {
     $db->beginTransaction();
     try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
         if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 16) {
             $db->exec("CREATE TABLE floor_rack_placements (
                 floor_view_id INTEGER NOT NULL REFERENCES views(id) ON DELETE CASCADE,
@@ -1448,6 +1469,331 @@ function migrateDatabaseToVersion23(PDO $db): void
     }
 }
 
+function migrateDatabaseToVersion24(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 24) {
+            $db->exec("CREATE TABLE buildings (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+                sort_order INTEGER NOT NULL DEFAULT 0 CHECK (typeof(sort_order) = 'integer' AND sort_order BETWEEN -999999 AND 999999)
+            )");
+            $db->exec("CREATE TABLE floors (
+                id INTEGER PRIMARY KEY,
+                building_id INTEGER NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+                name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 100),
+                sort_order INTEGER NOT NULL DEFAULT 0 CHECK (typeof(sort_order) = 'integer' AND sort_order BETWEEN -999999 AND 999999),
+                representative_view_id INTEGER NULL REFERENCES views(id) ON DELETE SET NULL,
+                scale REAL NOT NULL DEFAULT 1 CHECK (typeof(scale) IN ('integer', 'real') AND scale > 0 AND scale <= 1.7976931348623157e308),
+                offset_x REAL NOT NULL DEFAULT 0 CHECK (typeof(offset_x) IN ('integer', 'real') AND abs(offset_x) <= 1.7976931348623157e308),
+                offset_y REAL NOT NULL DEFAULT 0 CHECK (typeof(offset_y) IN ('integer', 'real') AND abs(offset_y) <= 1.7976931348623157e308),
+                rotation REAL NOT NULL DEFAULT 0 CHECK (typeof(rotation) IN ('integer', 'real') AND rotation BETWEEN -180 AND 180)
+            )");
+            $db->exec('ALTER TABLE views ADD COLUMN floor_id INTEGER NULL REFERENCES floors(id) ON DELETE SET NULL');
+            $db->exec('CREATE INDEX idx_floors_building ON floors(building_id, sort_order, id)');
+            $db->exec('CREATE INDEX idx_views_floor ON views(floor_id)');
+            foreach (['buildings', 'floors'] as $table) {
+                $db->exec("INSERT INTO resource_sequences(name, value) VALUES ('{$table}', 0)");
+                $db->exec("CREATE TRIGGER resource_id_{$table} AFTER INSERT ON {$table} BEGIN
+                    UPDATE resource_sequences SET value = MAX(value, NEW.id) WHERE name = '{$table}';
+                END");
+            }
+            $db->exec("CREATE TRIGGER resource_revision_views_floor AFTER UPDATE OF floor_id ON views
+                WHEN OLD.floor_id IS NOT NEW.floor_id BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision') WHERE id = NEW.id;
+                END");
+            $db->exec("CREATE TRIGGER clear_floor_representative AFTER UPDATE OF floor_id, view_type ON views
+                WHEN OLD.floor_id IS NOT NEW.floor_id OR OLD.view_type IS NOT NEW.view_type BEGIN
+                    UPDATE floors SET representative_view_id = NULL WHERE representative_view_id = NEW.id
+                        AND (id IS NOT NEW.floor_id OR NEW.view_type <> 'floor');
+                END");
+            $db->exec('PRAGMA user_version = 24');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion25(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 25) {
+            $db->exec('ALTER TABLE devices ADD COLUMN floor_id INTEGER NULL REFERENCES floors(id) ON DELETE SET NULL');
+            $db->exec('CREATE INDEX idx_devices_floor ON devices(floor_id)');
+            $db->exec("CREATE TRIGGER resource_revision_devices_floor AFTER UPDATE OF floor_id ON devices
+                WHEN OLD.floor_id IS NOT NEW.floor_id BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE devices SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision') WHERE id = NEW.id;
+                END");
+            \Netarium\Services\Topology\LegacyHierarchyMigration::migrate($db);
+            $db->exec('PRAGMA user_version = 25');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion26(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() < 26) {
+            $db->exec("ALTER TABLE buildings ADD COLUMN building_view_enabled INTEGER NOT NULL DEFAULT 0
+                CHECK (typeof(building_view_enabled) = 'integer' AND building_view_enabled IN (0, 1))");
+            $db->exec('UPDATE buildings SET building_view_enabled = 1');
+            $db->exec('PRAGMA user_version = 26');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion27(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() >= 27) {
+            $db->commit();
+            return;
+        }
+
+        $oldLinks = $db->query('SELECT * FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+        $converted = \Netarium\Services\Topology\LegacyLinkMigration::convert($oldLinks);
+        // 統合・保留した接続の ID も、今後の接続に再利用しない。
+        $db->exec("UPDATE resource_sequences SET value = MAX(value, (SELECT COALESCE(MAX(id), 0) FROM links))
+            WHERE name = 'links'");
+        // DROP TABLE で旧 resource_owner_links_* と旧採番トリガーも削除される。
+        $db->exec('DROP TABLE links');
+        $db->exec("ALTER TABLE views ADD COLUMN show_connections INTEGER NOT NULL DEFAULT 1
+            CHECK (typeof(show_connections) = 'integer' AND show_connections IN (0, 1))");
+        $db->exec(<<<'SQL'
+            CREATE TABLE device_ports (
+                id INTEGER PRIMARY KEY CHECK (id > 0),
+                device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 50),
+                memo TEXT NOT NULL DEFAULT '',
+                resource_revision INTEGER NOT NULL DEFAULT 1 CHECK (resource_revision > 0),
+                UNIQUE (device_id, name),
+                UNIQUE (id, device_id)
+            );
+            CREATE TABLE links (
+                id INTEGER PRIMARY KEY CHECK (id > 0),
+                from_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                to_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                from_port_id INTEGER,
+                to_port_id INTEGER,
+                system_id INTEGER REFERENCES link_systems(id) ON DELETE RESTRICT,
+                label TEXT NOT NULL DEFAULT '',
+                vlan TEXT NOT NULL DEFAULT '',
+                memo TEXT NOT NULL DEFAULT '',
+                resource_revision INTEGER NOT NULL DEFAULT 1 CHECK (resource_revision > 0),
+                CHECK (from_id <> to_id),
+                FOREIGN KEY (from_port_id, from_id) REFERENCES device_ports(id, device_id),
+                FOREIGN KEY (to_port_id, to_id) REFERENCES device_ports(id, device_id)
+            );
+            CREATE INDEX idx_links_from ON links(from_id);
+            CREATE INDEX idx_links_to ON links(to_id);
+            CREATE INDEX idx_links_from_port ON links(from_port_id);
+            CREATE INDEX idx_links_to_port ON links(to_port_id);
+            CREATE INDEX idx_links_system ON links(system_id);
+            CREATE INDEX idx_links_pair ON links(min(from_id, to_id), max(from_id, to_id));
+            CREATE TABLE view_link_routes (
+                view_id INTEGER NOT NULL REFERENCES views(id) ON DELETE CASCADE,
+                device_a_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                device_b_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                manual_route TEXT NOT NULL CHECK (json_valid(manual_route)
+                    AND json_type(manual_route) = 'array' AND json_array_length(manual_route) <= 8),
+                CHECK (device_a_id < device_b_id),
+                PRIMARY KEY (view_id, device_a_id, device_b_id)
+            );
+            CREATE INDEX idx_view_link_routes_pair ON view_link_routes(device_a_id, device_b_id);
+            CREATE INDEX idx_view_link_routes_device_b ON view_link_routes(device_b_id);
+            CREATE TABLE legacy_link_conflicts (
+                legacy_link_id INTEGER PRIMARY KEY CHECK (legacy_link_id > 0),
+                view_id INTEGER NOT NULL,
+                device_a_id INTEGER NOT NULL,
+                device_b_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                payload TEXT NOT NULL CHECK (json_valid(payload) AND json_type(payload) = 'object'),
+                CHECK (device_a_id < device_b_id)
+            );
+            CREATE INDEX idx_legacy_link_conflicts_pair ON legacy_link_conflicts(device_a_id, device_b_id);
+            INSERT INTO resource_sequences(name, value) VALUES ('device_ports', 0);
+            DROP TRIGGER resource_revision_views_update;
+            DROP TRIGGER resource_revision_views_floor;
+            SQL);
+        foreach (['views', 'device_ports', 'links'] as $table) {
+            if ($table !== 'views') {
+                $db->exec("CREATE TRIGGER resource_id_{$table} AFTER INSERT ON {$table} BEGIN
+                    UPDATE resource_sequences SET value = MAX(value, NEW.id) WHERE name = '{$table}';
+                END");
+                $db->exec("CREATE TRIGGER resource_revision_{$table}_insert AFTER INSERT ON {$table} BEGIN
+                    UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                    UPDATE {$table} SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision') WHERE id = NEW.id;
+                END");
+            }
+            createResourceRevisionUpdateTrigger($db, $table);
+        }
+        foreach (['insert' => 'NEW.view_id', 'update' => 'OLD.view_id, NEW.view_id', 'delete' => 'OLD.view_id'] as $event => $owners) {
+            $db->exec("CREATE TRIGGER resource_owner_view_link_routes_{$event} AFTER {$event} ON view_link_routes BEGIN
+                UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+                UPDATE views SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision')
+                WHERE id IN ({$owners});
+            END");
+        }
+        foreach (['device_ports', 'links', 'view_link_routes', 'legacy_link_conflicts'] as $table) {
+            if ($converted[$table] === []) { continue; }
+            $fields = array_keys($converted[$table][0]);
+            $values = implode(', ', array_fill(0, count($fields), '?'));
+            $stmt = $db->prepare("INSERT INTO {$table} (" . implode(', ', $fields) . ") VALUES ({$values})");
+            foreach ($converted[$table] as $row) {
+                foreach (['manual_route', 'payload'] as $json) {
+                    if (isset($row[$json])) {
+                        $row[$json] = json_encode($row[$json], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+                    }
+                }
+                $stmt->execute(array_values($row));
+            }
+        }
+        $stmt = $db->prepare("INSERT INTO app_meta(meta_key, meta_value) VALUES ('legacy_link_migration', ?)
+            ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value");
+        $stmt->execute([json_encode($converted['counts'], JSON_THROW_ON_ERROR)]);
+        $db->exec('PRAGMA user_version = 27');
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function createResourceRevisionUpdateTrigger(PDO $db, string $table): void
+{
+    $columns = $db->query("PRAGMA table_info({$table})")->fetchAll(PDO::FETCH_ASSOC);
+    $fields = array_diff(array_column($columns, 'name'), ['id', 'resource_revision']);
+    $changes = array_map(static fn(string $field): string => "OLD.{$field} IS NOT NEW.{$field}", $fields);
+    $db->exec("CREATE TRIGGER resource_revision_{$table}_update AFTER UPDATE OF " . implode(', ', $fields) . " ON {$table}
+        WHEN " . implode(' OR ', $changes) . " BEGIN
+        UPDATE resource_sequences SET value = value + 1 WHERE name = 'revision';
+        UPDATE {$table} SET resource_revision = (SELECT value FROM resource_sequences WHERE name = 'revision') WHERE id = NEW.id;
+    END");
+}
+
+function migrateDatabaseToVersion28(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() >= 28) {
+            $db->commit();
+            return;
+        }
+        $db->exec(<<<'SQL'
+            CREATE TABLE legacy_link_vlans (
+                link_id INTEGER PRIMARY KEY REFERENCES links(id) ON DELETE CASCADE,
+                vlan TEXT NOT NULL
+            );
+            INSERT INTO legacy_link_vlans (link_id, vlan)
+            SELECT id, vlan FROM links
+            WHERE trim(vlan, char(9, 10, 11, 12, 13, 32)) <> '';
+            ALTER TABLE device_ports ADD COLUMN vlan TEXT NOT NULL DEFAULT '';
+            DROP TRIGGER resource_revision_links_update;
+            DROP TRIGGER resource_revision_device_ports_update;
+            ALTER TABLE links DROP COLUMN vlan;
+            SQL);
+        createResourceRevisionUpdateTrigger($db, 'links');
+        createResourceRevisionUpdateTrigger($db, 'device_ports');
+        $db->exec('PRAGMA user_version = 28');
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
+function migrateDatabaseToVersion29(PDO $db): void
+{
+    $db->beginTransaction();
+    try {
+        $db->exec("UPDATE app_meta SET meta_value = meta_value WHERE meta_key = 'data_revision'");
+        if ((int)$db->query('PRAGMA user_version')->fetchColumn() >= 29) {
+            $db->commit();
+            return;
+        }
+        // スキーマ29で扱う項目。将来の設定・診断コードの変更には追従させない。
+        $textFields = ['ip', 'location', 'manufacturer', 'model', 'asset_number', 'serial_number', 'mac_address', 'memo', 'maintenance_expiry'];
+        $deviceFields = "'" . implode("', '", [...$textFields, 'floor_id']) . "'";
+        $db->exec(<<<SQL
+            CREATE TABLE quality_not_applicable (
+                device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                link_id INTEGER REFERENCES links(id) ON DELETE CASCADE,
+                field TEXT NOT NULL,
+                CHECK ((link_id IS NULL AND field IN ({$deviceFields}))
+                    OR (link_id IS NOT NULL AND field IN ('from_port', 'to_port')))
+            );
+            CREATE UNIQUE INDEX quality_not_applicable_device_field
+                ON quality_not_applicable (device_id, field) WHERE link_id IS NULL;
+            CREATE UNIQUE INDEX quality_not_applicable_link_field
+                ON quality_not_applicable (link_id, field) WHERE link_id IS NOT NULL;
+            CREATE INDEX quality_not_applicable_device ON quality_not_applicable (device_id);
+            SQL);
+
+        foreach ($textFields as $field) {
+            // SQLite の trim() は除去文字に NUL を指定できないため、NUL があれば区切って調べる。
+            $db->exec(<<<SQL
+                CREATE TRIGGER quality_not_applicable_device_{$field} AFTER UPDATE OF {$field} ON devices
+                WHEN OLD.{$field} IS NOT NEW.{$field} AND CASE
+                    WHEN instr(NEW.{$field}, char(0)) = 0 THEN trim(NEW.{$field}, char(9, 10, 11, 13, 32)) <> ''
+                    ELSE EXISTS (
+                        WITH RECURSIVE chunks(part, rest) AS (
+                            SELECT '', CAST(NEW.{$field} AS BLOB)
+                            UNION ALL
+                            SELECT CASE WHEN instr(rest, x'00') = 0 THEN rest ELSE substr(rest, 1, instr(rest, x'00') - 1) END,
+                                   CASE WHEN instr(rest, x'00') <> 0 THEN substr(rest, instr(rest, x'00') + 1) END
+                            FROM chunks WHERE rest IS NOT NULL
+                        )
+                        SELECT 1 FROM chunks WHERE trim(CAST(part AS TEXT), char(9, 10, 11, 13, 32)) <> ''
+                    )
+                END BEGIN
+                    DELETE FROM quality_not_applicable WHERE device_id = NEW.id AND link_id IS NULL AND field = '{$field}';
+                END;
+                SQL);
+        }
+        $db->exec(<<<'SQL'
+            CREATE TRIGGER quality_not_applicable_device_floor_id AFTER UPDATE OF floor_id ON devices
+            WHEN OLD.floor_id IS NOT NEW.floor_id AND NEW.floor_id IS NOT NULL BEGIN
+                DELETE FROM quality_not_applicable WHERE device_id = NEW.id AND link_id IS NULL AND field = 'floor_id';
+            END;
+            SQL);
+        foreach (['from', 'to'] as $side) {
+            $db->exec(<<<SQL
+                CREATE TRIGGER quality_not_applicable_link_{$side} AFTER UPDATE OF {$side}_id, {$side}_port_id ON links
+                WHEN OLD.{$side}_id IS NOT NEW.{$side}_id
+                    OR (OLD.{$side}_port_id IS NOT NEW.{$side}_port_id AND NEW.{$side}_port_id IS NOT NULL) BEGIN
+                    DELETE FROM quality_not_applicable WHERE link_id = NEW.id AND field = '{$side}_port';
+                END;
+                SQL);
+        }
+        $db->exec('PRAGMA user_version = 29');
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) { $db->rollBack(); }
+        throw $e;
+    }
+}
+
 function ensureDefaultView(PDO $db): void
 {
     $count = (int)$db
@@ -1460,28 +1806,55 @@ function ensureDefaultView(PDO $db): void
         return;
     }
 
-    $stmt = $db->prepare("
-        INSERT INTO views (
-            name,
-            facility,
-            floor,
-            view_type,
-            sort_order,
-            memo
-        ) VALUES (
-            :name,
-            '',
-            '',
-            'topology',
-            10,
-            ''
-        )
-    ");
+    $ownsTransaction = !$db->inTransaction();
+    if ($ownsTransaction) {
+        $db->exec('BEGIN IMMEDIATE');
+    }
+    try {
+        $count = (int)$db
+            ->query(
+                'SELECT COUNT(*) FROM views'
+            )
+            ->fetchColumn();
 
-    $stmt->execute([
-        ':name' =>
-            '全体ネットワーク',
-    ]);
+        if ($count > 0) {
+            if ($ownsTransaction) {
+                $db->commit();
+            }
+            return;
+        }
+
+        $stmt = $db->prepare("
+            INSERT INTO views (
+                name,
+                facility,
+                floor,
+                view_type,
+                sort_order,
+                memo
+            ) VALUES (
+                :name,
+                '',
+                '',
+                'topology',
+                10,
+                ''
+            )
+        ");
+
+        $stmt->execute([
+            ':name' =>
+                '全体ネットワーク',
+        ]);
+        if ($ownsTransaction) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownsTransaction && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function ensureSetupCompletedMarker(PDO $db): void

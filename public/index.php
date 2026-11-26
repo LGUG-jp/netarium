@@ -103,6 +103,9 @@ $isAdmin = isAdminUser();
             (string)filemtime(__DIR__ . '/style.css')
         ) ?>"
     >
+    <link rel="stylesheet" href="css/building-view.css?v=<?= rawurlencode(
+        (string)filemtime(__DIR__ . '/css/building-view.css')
+    ) ?>">
 
 </head>
 <body>

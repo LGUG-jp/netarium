@@ -16,6 +16,7 @@ import { createRackTransferConfirmation } from '../ui/rack-transfer-confirmation
 import { suppressCanvasClickOnce } from './interaction-state.js';
 import { isShelfAdding, setShelfAdding, openShelfDialog, showShelfPanel, shelfForDevice, shelfLocation, deviceRackLocation, shelfMembers } from './rack-shelves.js';
 import { renderFloorRackReturn } from '../modals/view-manager-modal.js';
+import { viewHierarchyPath } from '../core/building-hierarchy.js';
 
 let dialog = null;
 let activeDeviceInput = null;
@@ -42,8 +43,8 @@ function button(text, handler, disabled = false) {
 }
 function rackMounts(id) { return appState.rackMounts.filter(row => Number(row.view_id) === Number(id)); }
 function editable(viewIds) {
-    return isCurrentUserAdmin() && !appState.authExpired && !isSaveInFlight() &&
-        appState.appStatus.state !== 'unconfirmed' &&
+    return isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging && !isSaveInFlight() &&
+        appState.appStatus?.state !== 'unconfirmed' &&
         !viewIds.some(id => hasResourceConflict('views', id));
 }
 function closeMountDialog() {
@@ -399,7 +400,7 @@ export function renderRackView() {
         content.insertAdjacentElement('beforebegin', header);
     }
     header.replaceChildren();
-    const locationText = [view.facility, view.floor, settings.location].filter(Boolean).join(' / ');
+    const locationText = [viewHierarchyPath(view, appState), settings.location].filter(Boolean).join(' / ');
     if (locationText) header.appendChild(element('p', '', locationText));
     if (hasResourceConflict('views', view.id)) header.appendChild(button('このラックを再読込', () => eventBus.emit('rack:reload', view.id)));
     renderFloorRackReturn();
@@ -542,6 +543,8 @@ export function renderRackView() {
                 const definition = DEVICE_TYPES[device.type] || DEVICE_TYPES.other;
                 const deviceIcon = element('img', 'rack-shelf-device-icon');
                 deviceIcon.src = definition.icon;
+                if (appState.legacyLinkCreation && (Number(device.id) === appState.linkSourceId ||
+                    Number(device.id) === appState.linkTargetId)) deviceIcon.classList.add('legacy-link-endpoint');
                 deviceIcon.alt = '';
                 deviceIcon.title = `${device.name} (${definition.label})`;
                 icons.appendChild(deviceIcon);
@@ -573,6 +576,8 @@ export function renderRackView() {
         for (const mount of mounts.filter(row => rackFaces(row.face).includes(face))) {
             const device = getDeviceById(mount.device_id); if (!device) continue;
             const block = element('button', 'rack-device'); block.type = 'button';
+            if (appState.legacyLinkCreation && (Number(device.id) === appState.linkSourceId ||
+                Number(device.id) === appState.linkTargetId)) block.classList.add('legacy-link-endpoint');
             const definition = DEVICE_TYPES[device.type] || DEVICE_TYPES.other;
             block.style.setProperty('--rack-device-color', definition.color);
             const slot = rackDisplaySlot(mount.width_slot, face);
@@ -647,7 +652,10 @@ export function renderRackView() {
                 const startX = Number.isFinite(event.clientX) ? event.clientX : 0;
                 const startY = Number.isFinite(event.clientY) ? event.clientY : 0;
                 drag = { pointerId: event.pointerId, startX, startY, origStartU: mount.start_u, origSlot: mount.width_slot, curStartU: mount.start_u, curPhysicalSlot: mount.width_slot, revision: view.resource_revision, moved: false, valid: true, gridRect, totalU: settings.total_u };
-                cancelMountDrag = resetDrag; block.setPointerCapture?.(event.pointerId);
+                cancelMountDrag = resetDrag;
+                try {
+                    block.setPointerCapture?.(event.pointerId);
+                } catch {}
             });
             block.addEventListener('pointermove', preview);
             block.addEventListener('pointerup', event => {

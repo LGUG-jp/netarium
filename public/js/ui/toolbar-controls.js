@@ -13,21 +13,23 @@ import {
 } from './placement-mode.js';
 
 export function syncViewCapabilities() {
-    const rack = getCurrentView()?.view_type === 'rack';
+    const view = getCurrentView();
+    const rack = view?.view_type === 'rack';
     const shelf = document.getElementById('palette-shelf-btn');
     if (shelf) {
         shelf.hidden = !rack || !isCurrentUserAdmin();
         shelf.disabled = !isCurrentUserAdmin() || appState.authExpired || appState.isPinging || isSaveInFlight() ||
-            appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', appState.currentViewId);
+            appState.appStatus?.state === 'unconfirmed' || hasResourceConflict('views', appState.currentViewId);
     }
     const floorPlan = document.getElementById('floor-plan-manage-btn');
     if (floorPlan) floorPlan.hidden = rack || !isCurrentUserAdmin();
     for (const id of ['palette-place-btn', 'linkBtn', 'palette-note-btn']) {
         const control = document.getElementById(id);
         if (!control) continue;
+        const wiring = id === 'linkBtn';
         control.hidden = rack || !isCurrentUserAdmin();
         control.disabled = rack || !isCurrentUserAdmin() || appState.authExpired || appState.isPinging ||
-            hasResourceConflict('views', appState.currentViewId);
+            (!wiring && hasResourceConflict('views', appState.currentViewId));
         control.setAttribute('aria-disabled', String(control.disabled));
         if (rack) {
             if (control.dataset.titleBeforeRack == null) control.dataset.titleBeforeRack = control.title || '';
@@ -80,7 +82,7 @@ export function closeToolbarMenu() {
 
 if (typeof document !== 'undefined') {
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
+        if (event.key === 'Escape' && !document.getElementById('tool-palette')?.inert) {
             closeToolbarMenu();
             if (isPlacementModeActive()) {
                 exitPlacementMode();

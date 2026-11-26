@@ -9,10 +9,11 @@ import { registerModalClose, getTopModalContainer } from '../public/js/core/moda
 import { onKeyDown } from '../public/js/canvas/selection.js';
 import { resetResourceBaseline } from '../public/js/core/resource-save.js';
 import { clearPendingSave, flushSaveQueue } from '../public/js/core/save-queue.js';
-import { openDevicesCsvImport, closeDevicesCsvImport, resetDevicesCsvImportPreview, previewDevicesCsvImport, commitDevicesCsvImport } from '../public/js/modals/csv-modal.js';
+import { openDevicesCsvImport, closeDevicesCsvImport, resetDevicesCsvImportPreview, previewDevicesCsvImport, commitDevicesCsvImport, renderDevicesCsvImportPreview } from '../public/js/modals/csv-modal.js';
 import { openBackupRestore, closeBackupRestore, resetBackupRestorePreview, previewBackupRestore, commitBackupRestore } from '../public/js/modals/backup-modal.js';
 import { initializeLinkBulkModal, openLinkBulkModal, closeLinkBulkModal, previewLinkBulkModal, applyLinkBulkModal } from '../public/js/modals/link-bulk-modal.js';
 import { initializeAccountManagement, openUserManagement, openPasswordChange, closeAccountManagement, refreshUserList } from '../public/js/modals/account-modal.js';
+import { openLedger } from '../public/js/modals/ledger-modal.js';
 
 const response = data => new Response(JSON.stringify({ ok: true, ...data }));
 const drain = async () => { for (let i = 0; i < 4; i++) await setImmediate(); };
@@ -28,7 +29,7 @@ async function setup(t, template) {
     const globals = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     const original = { ...appState };
     const listeners = new Map([...eventBus.listeners].map(([name, callbacks]) => [name, new Set(callbacks)]));
-    const dom = installWorkspaceDom({ templates: [template], phpSetup: "$storageCapacity = ['backup' => ['max_zip_bytes' => 104857600]];" });
+    const dom = installWorkspaceDom({ templates: Array.isArray(template) ? template : [template], phpSetup: "$storageCapacity = ['backup' => ['max_zip_bytes' => 104857600]];" });
     document.readyState = 'loading';
     const { registerStaticListeners } = await import('../public/js/main.js');
     registerStaticListeners();
@@ -60,7 +61,7 @@ async function setup(t, template) {
     t.after(() => {
         window.confirm = () => true;
         closeDevicesCsvImport(); closeBackupRestore(); closeLinkBulkModal(); closeAccountManagement();
-        for (const id of ['csv_import', 'backup', 'link-bulk', 'account']) registerModalClose(id, { restoreFocus: false });
+        for (const id of ['csv_import', 'ledger', 'backup', 'link-bulk', 'account']) registerModalClose(id, { restoreFocus: false });
         clearPendingSave();
         eventBus.listeners = listeners;
         Object.assign(appState, original);
@@ -109,7 +110,8 @@ const imports = [
 
 for (const spec of imports) {
     test(`${spec.label}: file・検証結果の破棄拒否/許可、検証・確定中の閉鎖抑止と遅延応答`, async t => {
-        const { dom, requests, redirects, api } = await setup(t, spec.template);
+        const { dom, requests, redirects, api } = await setup(t, spec.label === 'CSV'
+            ? [spec.template, 'templates/modals/ledger.php'] : spec.template);
         const overlay = dom.get(spec.overlay);
         let discard = false;
         let confirmations = 0;
@@ -179,16 +181,17 @@ for (const spec of imports) {
         if (spec.label === 'CSV') {
             committingResponse.resolve(response({ revision: 2, monitor_revision: 3 }));
             await loadStarted.promise;
-            assert.equal(overlay.hidden, true, '確定成功後、再読込の応答を待たずに閉じる');
-            assert.equal(getTopModalContainer(), null);
+            assert.equal(overlay.hidden, false, '再読込が完了するまでは取込画面を維持する');
+            assert.equal(getTopModalContainer(), overlay);
             reload.resolve(response({ revision: 2, monitor_revision: 3, views: [],
                 devices: [{ id: 10, name: '合成取込機器', type: 'switch', ip: '192.0.2.10', resource_revision: 1 }] }));
             await committing;
             assert.equal(appState.devices[0].name, '合成取込機器');
             assert.equal(appState.dataRevision, 2);
             assert.equal(appState.appStatus.dirty, false);
-            assert.equal(overlay.hidden, true, '遅延再読込で閉鎖済みoverlayを復活させない');
-            assert.equal(getTopModalContainer(), null);
+            assert.equal(overlay.hidden, true, '再読込完了後に取込画面を閉じる');
+            assert.equal(dom.get('ledger-overlay').hidden, false);
+            assert.equal(getTopModalContainer(), dom.get('ledger-overlay'));
         } else {
             committingResponse.resolve(response({ session_ended: false, redirect: 'index.php' }));
             await committing;
@@ -268,6 +271,87 @@ test('CSV: 追加 IP の全削除・新規 JSON を安全に表示し、対象�
     assert.equal(dom.get('devices-csv-import-overlay').hidden, true);
 });
 
+test('CSV: 説明は開くたび展開し、検証結果で折り畳み、フロア差分だけ現在の階層名を安全に表示する', async t => {
+    const { dom } = await setup(t, 'templates/modals/csv_import.php');
+    appState.buildings = [{ id: 1, name: '<img src=x>' }];
+    appState.floors = [{ id: 12, building_id: 1, name: '1F' }, { id: 15, building_id: 1, name: '<b>2F</b>' },
+        { id: 16, building_id: 99, name: '参照なし' }];
+    openDevicesCsvImport();
+    const spec = dom.get('devices-csv-import-spec');
+    assert.notEqual(spec.getAttribute('open'), null);
+    renderDevicesCsvImportPreview({
+        can_commit: false, summary: { total: 3 },
+        rows: [
+            { operation: 'update', changed_fields: ['floor_id', 'memo'], changes: [
+                { field: 'floor_id', before: '12', after: 15 },
+                { field: 'memo', before: '', after: '<b>メモ</b>' }
+            ] },
+            { operation: 'update', changed_fields: ['floor_id'], changes: [{ field: 'floor_id', before: null, after: '' }] },
+            { operation: 'update', changed_fields: ['floor_id'], changes: [{ field: 'floor_id', before: '999', after: '16' }] }
+        ]
+    });
+    assert.equal(spec.getAttribute('open'), null);
+    assert.equal(dom.get('devices-csv-import-result').hidden, false);
+    const rows = dom.get('devices-csv-import-rows').children;
+    const before = row => row.querySelectorAll('.csv-import-change-before').map(node => node.textContent);
+    const after = row => row.querySelectorAll('.csv-import-change-after').map(node => node.textContent);
+    assert.deepEqual(before(rows[0]), ['12（<img src=x> / 1F）', '(空欄)']);
+    assert.deepEqual(after(rows[0]), ['15（<img src=x> / <b>2F</b>）', '<b>メモ</b>']);
+    assert.deepEqual(before(rows[1]), ['未設定']);
+    assert.deepEqual(after(rows[1]), ['未設定']);
+    assert.deepEqual(before(rows[2]), ['999']);
+    assert.deepEqual(after(rows[2]), ['16']);
+    assert.equal(dom.get('devices-csv-import-rows').querySelector('img, b'), null);
+    closeDevicesCsvImport();
+    openDevicesCsvImport();
+    assert.notEqual(spec.getAttribute('open'), null);
+});
+
+test('CSV: 再読込完了後に台帳へ戻り、検索・ビュー絞込を維持する', async t => {
+    const { dom, api } = await setup(t, ['templates/modals/csv_import.php', 'templates/modals/ledger.php']);
+    appState.views = [{ id: 1, name: '保持ビュー', sort_order: 1 }];
+    resetResourceBaseline(appState);
+    openLedger();
+    const search = dom.get('ledger-search');
+    search.value = '確定機器';
+    const viewFilter = dom.get('ledger-view-filter');
+    viewFilter.options.find(option => option.value === '1').selected = true;
+    openDevicesCsvImport();
+    renderDevicesCsvImportPreview(imports[0].previewData);
+    const reload = deferred();
+    api(action => action === 'load' ? reload.promise : response({ revision: 2 }));
+    const committing = commitDevicesCsvImport();
+    await drain();
+    assert.equal(dom.get('devices-csv-import-overlay').hidden, false, '再読込待機中はCSVを閉じない');
+    reload.resolve(response({ revision: 2, views: appState.views,
+        devices: [{ id: 1, name: '確定機器', type: 'other' }],
+        placements: [{ id: 1, view_id: 1, device_id: 1 }] }));
+    await committing;
+    assert.equal(dom.get('devices-csv-import-overlay').hidden, true);
+    assert.equal(dom.get('ledger-overlay').hidden, false);
+    assert.equal(getTopModalContainer(), dom.get('ledger-overlay'));
+    assert.equal(document.activeElement, search);
+    assert.equal(search.value, '確定機器');
+    assert.equal(viewFilter.options.find(option => option.value === '1').selected, true);
+    assert.equal(dom.get('ledger-table-body').querySelector('[data-field="name"]').value, '確定機器');
+});
+
+for (const failedAction of ['commit_devices_csv_import', 'load']) {
+    test(`CSV: ${failedAction}失敗時はCSV画面を維持し、台帳を開かない`, async t => {
+        const { dom, api } = await setup(t, ['templates/modals/csv_import.php', 'templates/modals/ledger.php']);
+        openDevicesCsvImport();
+        renderDevicesCsvImportPreview(imports[0].previewData);
+        api(action => action === failedAction
+            ? new Response(JSON.stringify({ ok: false, error: '合成失敗' }), { status: 500 })
+            : response({ revision: 2 }));
+        await commitDevicesCsvImport();
+        assert.equal(dom.get('devices-csv-import-overlay').hidden, false);
+        assert.equal(dom.get('ledger-overlay').hidden, true);
+        assert.equal(getTopModalContainer(), dom.get('devices-csv-import-overlay'));
+        if (failedAction === 'load') assert.equal(dom.get('devices-csv-commit-btn').disabled, true, '確定済みCSVを再実行させない');
+    });
+}
+
 test('backup: 長い選択名を安全に表示し、検証拒否でも保持して選択解除で消す', async t => {
     const { dom, requests } = await setup(t, 'templates/modals/backup.php');
     openBackupRestore();
@@ -302,8 +386,10 @@ test('link-bulk: checkboxだけの入力も保護し、適用・自動保存済�
         views: [{ id: 1, name: '合成ビュー', resource_revision: 1, view_type: 'topology', sort_order: 1 }],
         devices: [{ id: 1, name: '合成SW', type: 'switch', resource_revision: 1 }, { id: 2, name: '合成AP', type: 'other', resource_revision: 1 }],
         placements: [{ id: 1, view_id: 1, device_id: 1, x: 0, y: 0 }, { id: 2, view_id: 1, device_id: 2, x: 200, y: 0 }],
-        links: [{ id: 1, view_id: 1, from_id: 1, to_id: 2, from_port: 'Gi1', to_port: 'eth0', system_id: null,
-            label: '元ラベル', vlan: '10', memo: '保持する備考', route_mode: 'auto', manual_route: [] }]
+        devicePorts: [{ id: 21, device_id: 1, name: 'Gi1' }, { id: 22, device_id: 2, name: 'eth0' }],
+        viewLinkRoutes: [],
+        links: [{ id: 1, resource_revision: 1, from_id: 1, to_id: 2, from_port_id: 21, to_port_id: 22,
+            system_id: null, label: '元ラベル', memo: '保持する備考' }]
     });
     resetResourceBaseline(appState);
     initializeLinkBulkModal();
@@ -334,12 +420,11 @@ test('link-bulk: checkboxだけの入力も保護し、適用・自動保存済�
     assert.equal(requests.length, 0);
     const persisted = [];
     api((action, input) => {
-        assert.equal(action, 'save_resources');
-        persisted.push(structuredClone(input.views[0].links));
-        return response({ revision: 2, id_maps: { devices: {}, views: {}, placements: {}, links: {}, canvas_notes: {} },
-            devices: [], views: input.views.map(view => ({ ...view.view, id: view.id, resource_revision: 2 })),
-            placements: input.views[0].placements, links: input.views[0].links, canvas_notes: [],
-            affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: [] });
+        assert.equal(action, 'save_connections');
+        persisted.push(structuredClone(input.links));
+        return response({ revision: 2, id_maps: {}, device_ports: [], views: [],
+            links: input.links.map(({ id, link }) => ({ ...link, id, resource_revision: 2 })),
+            deleted_link_ids: [], deleted_device_port_ids: [], removed_view_link_routes: [] });
     });
     await openLinkBulkModal([1]);
     dom.get('link-bulk-use-label').checked = true;
@@ -354,7 +439,7 @@ test('link-bulk: checkboxだけの入力も保護し、適用・自動保存済�
     assert.equal(confirmations, before, '適用成功の閉鎖は破棄確認を通さない');
     assert.equal(overlay.hidden, true);
     assert.equal(persisted.length, 1);
-    assert.equal(persisted[0][0].label, '確定ラベル');
+    assert.equal(persisted[0][0].link.label, '確定ラベル');
     assert.equal(appState.links[0].label, '確定ラベル');
     assert.equal(appState.links[0].memo, '保持する備考');
     assert.equal(appState.appStatus.dirty, false);
@@ -374,8 +459,9 @@ test('link-bulk: 系統候補のキー操作・Esc・確認から戻る・未設
         views: [{ id: 1, name: '合成ビュー', resource_revision: 1, view_type: 'topology', sort_order: 1 }],
         devices: [{ id: 1, name: '合成SW', type: 'switch', resource_revision: 1 }, { id: 2, name: '合成AP', type: 'other', resource_revision: 1 }],
         placements: [{ id: 1, view_id: 1, device_id: 1, x: 0, y: 0 }, { id: 2, view_id: 1, device_id: 2, x: 200, y: 0 }],
-        links: [{ id: 1, view_id: 1, from_id: 1, to_id: 2, system_id: 3, label: '保持するラベル',
-            vlan: '10', memo: '', route_mode: 'auto', manual_route: [] }],
+        devicePorts: [], viewLinkRoutes: [],
+        links: [{ id: 1, resource_revision: 1, from_id: 1, to_id: 2, system_id: 3, label: '保持するラベル',
+            memo: '' }],
         linkSystems: [{ id: 3, name: '合成管理系統', color_key: 'teal' }, { id: 4, name: '合成業務系統', color_key: 'indigo' }]
     });
     resetResourceBaseline(appState);
@@ -423,12 +509,11 @@ test('link-bulk: 系統候補のキー操作・Esc・確認から戻る・未設
     assert.equal(dom.get('link-bulk-use-system_id').checked, true);
     assert.equal(previewLinkBulkModal(), true);
     api((action, input) => {
-        assert.equal(action, 'save_resources');
-        assert.equal(input.views[0].links[0].system_id, null);
-        return response({ revision: 2, id_maps: {},
-            devices: [], views: input.views.map(view => ({ ...view.view, id: view.id, resource_revision: 2 })),
-            placements: input.views[0].placements, links: input.views[0].links, canvas_notes: [],
-            affected_view_ids: [1], deleted_device_ids: [], deleted_view_ids: [] });
+        assert.equal(action, 'save_connections');
+        assert.equal(input.links[0].link.system_id, null);
+        return response({ revision: 2, id_maps: {}, device_ports: [], views: [],
+            links: input.links.map(({ id, link }) => ({ ...link, id, resource_revision: 2 })),
+            deleted_link_ids: [], deleted_device_port_ids: [], removed_view_link_routes: [] });
     });
     assert.equal(await applyLinkBulkModal(), true);
     await flushSaveQueue({ silent: true });
@@ -444,7 +529,8 @@ test('link-bulk: 系統候補は対象外・認証失効・モーダル閉鎖で
     Object.assign(appState, {
         currentViewId: 1, views: [{ id: 1 }], devices: [{ id: 1 }, { id: 2 }],
         placements: [{ id: 1, view_id: 1, device_id: 1 }, { id: 2, view_id: 1, device_id: 2 }],
-        links: [{ id: 1, view_id: 1, from_id: 1, to_id: 2, system_id: null }],
+        devicePorts: [], viewLinkRoutes: [],
+        links: [{ id: 1, resource_revision: 1, from_id: 1, to_id: 2, system_id: null }],
         linkSystems: [{ id: 3, name: '合成管理系統', color_key: 'teal' }]
     });
     initializeLinkBulkModal();
@@ -589,6 +675,39 @@ test('利用者管理: 一覧・追加・更新API中は閉鎖を抑止し、保
     assert.equal(overlay.hidden, true);
     assert.equal(requests.filter(request => request.action === 'create_user').length, 1);
     assert.equal(requests.filter(request => request.action === 'update_user').length, 1);
+});
+
+test('利用者管理: 権限選択のaria-labelと更新・パスワード再設定後の完了ステータスを維持する', async t => {
+    const { dom, api } = await setup(t, 'templates/modals/account.php');
+    initializeAccountManagement();
+    let users = [structuredClone(initialUser)];
+    api((action, input) => {
+        if (action === 'list_users') return response({ users });
+        if (action === 'update_user') {
+            users = users.map(u => u.id === input.id ? { ...u, role: input.role, is_active: input.is_active } : u);
+            return response({ message: '権限を更新しました' });
+        }
+        assert.equal(action, 'reset_user_password');
+        return response({ message: 'パスワードを再設定しました' });
+    });
+    await openUserManagement();
+
+    const { row, role } = accountRows(dom);
+    assert.equal(role.getAttribute('aria-label'), `${initialUser.username}の権限`);
+
+    role.value = 'admin';
+    await dom.get('account-user-list-body').dispatch('click', { target: row.querySelector('[data-account-action="update"]') });
+    await drain();
+    assert.equal(dom.get('account-status').textContent, '権限を更新しました');
+    assert.equal(accountRows(dom).role.value, 'admin');
+
+    window.confirm = () => true;
+    const pw = accountRows(dom).row.querySelector('.account-reset-password');
+    pw.value = 'new-valid-password-123';
+    await dom.get('account-user-list-body').dispatch('click', { target: accountRows(dom).row.querySelector('[data-account-action="reset"]') });
+    await drain();
+    assert.equal(dom.get('account-status').textContent, 'パスワードを再設定しました');
+    assert.equal(accountRows(dom).row.querySelector('.account-reset-password').value, '');
 });
 
 test('利用者管理: 一覧更新失敗では下書きを保持し、再表示の取得失敗では古い操作行を除く', async t => {

@@ -5,10 +5,15 @@
 import {
     DASHBOARD_QUALITY_CODES,
     DATA_QUALITY_CATEGORY_LABELS,
+    DATA_QUALITY_DEVICE_FIELD_LABELS,
     DATA_QUALITY_SEVERITY_LABELS
 } from '../core/constants.js';
 
-import { appState } from '../core/state.js';
+import { apiFetch, isMaintenanceRejection } from '../core/api-client.js';
+import { appState, getCurrentLinks } from '../core/state.js';
+import { resolveViewLinks } from '../core/connection-data.js';
+import { viewHierarchyPath } from '../core/building-hierarchy.js';
+import { getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import { eventBus } from '../core/event-bus.js';
 import {
     isCurrentUserAdmin
@@ -25,7 +30,10 @@ import {
 import {
     showToast
 } from '../ui/toast.js';
+import { closeBuildingView, getOpenBuildingId } from '../ui/building-view.js';
+import { openWorkspaceNavigation } from '../ui/workspace-navigation.js';
 import {
+    getTopModalContainer,
     registerModalClose,
     registerModalOpen
 } from '../core/modal-focus.js';
@@ -40,7 +48,12 @@ import {
     enterPlacementMode
 } from '../ui/placement-mode.js';
 import { openIpManagement } from './ip-management-modal.js';
-let isDataQualityLoading = false;
+import { openLedgerDetail } from './ledger-modal.js';
+let dataQualityRefresh = null;
+let isDataQualitySaving = false;
+let latestQualityRequest = 0;
+let isDataQualityFetching = false;
+let dataQualityReturnFocus = null;
 
 /**
  * 展開状態を保持する問題キーのセット（Phase 2.7D, 2.7I）
@@ -57,7 +70,33 @@ export function getIssueKey(issue) {
         ? issue.entity_ids.join(',')
         : '';
     const message = String(issue?.message || '');
-    return `${code}:${entityType}:${entityIds}:${message}`;
+    const key = `${code}:${entityType}:${entityIds}:${message}`;
+    const details = issue?.details;
+    if (!details) return key;
+
+    let target;
+    switch (code) {
+        case 'floor_mismatch':
+        case 'rack_floor_mismatch':
+            target = details.view_id;
+            break;
+        case 'legacy_link_conflict':
+            target = details.legacy_link_id;
+            break;
+        case 'invalid_view_link_route':
+            target = details.device_ids;
+            break;
+        case 'invalid_link_port':
+            if (details.port_id != null) target = [details.port_id, details.device_id];
+            break;
+        case 'duplicate_port_use':
+        case 'orphan_device_port':
+            target = details.port_id;
+            break;
+        default:
+            if (issue.category === 'duplicate') target = details.value;
+    }
+    return target == null ? key : `${key}:${JSON.stringify(target)}`;
 }
 
 /**
@@ -78,6 +117,7 @@ export function getDataQualitySeverityIcon(severity) {
 export function getDataQualitySeverityLabel(
     severity
 ) {
+    if (severity === 'problems') return 'エラー・警告';
     return (
         DATA_QUALITY_SEVERITY_LABELS[
             String(severity || '')
@@ -173,7 +213,40 @@ export function getDataQualityDetailLines(
             ? issue.details
             : {};
 
+    if (issue?.code === 'rack_floor_mismatch') {
+        return [
+            `ラックの所属フロア: ${details.rack_path}`,
+            `配置先ビュー: ${details.view_name}（ID ${details.view_id}）`,
+            `配置先ビューの所属フロア: ${details.view_path ?? '未設定'}`
+        ];
+    }
+    if (issue?.code === 'legacy_link_vlan') {
+        return [`未移行VLAN：${details.vlan}`];
+    }
+    if (issue?.code === 'link_ports_missing') {
+        return missingLinkEndpoints(issue).map(([side, endpoint]) =>
+            `${side === 'from' ? '始点' : '終点'}ポート未指定: ${qualityEndpointName(endpoint)}`);
+    }
+
     const lines = [];
+    const appendDetail = (label, value) => {
+        if (value != null && value !== '') lines.push(`${label}: ${value}`);
+    };
+    appendDetail('保守期限', details.maintenance_expiry);
+    appendDetail('導入年月', details.install_date);
+    appendDetail('管理接続方式', details.scheme);
+    appendDetail('管理接続ポート', details.port);
+
+    if (issue?.code === 'legacy_link_conflict') {
+        appendDetail('旧接続ID', details.legacy_link_id);
+        appendDetail('保留理由', details.reason);
+    }
+    if (['invalid_link_port', 'duplicate_port_use', 'orphan_device_port'].includes(issue?.code)) {
+        appendDetail('ポートID', details.port_id);
+        const shownIds = issue.entity_type === 'link' ? normalizeDataQualityIds(issue.entity_ids) : [];
+        const linkIds = normalizeDataQualityIds(details.link_ids ?? [details.link_id]);
+        appendDetail('接続ID', linkIds.filter(id => !shownIds.includes(id)).join(', '));
+    }
 
     if (
         Array.isArray(
@@ -280,36 +353,11 @@ export function getDataQualityDetailLines(
         );
     }
 
-    if (
-        details.device_facility ||
-        details.device_floor
-    ) {
-        lines.push(
-            '機器情報: ' +
-            [
-                details.device_facility,
-                details.device_floor
-            ]
-                .filter(Boolean)
-                .map(String)
-                .join(' / ')
-        );
+    if (details.device_path || Object.hasOwn(details, 'device_floor_id')) {
+        lines.push('設置フロア: ' + (details.device_path || viewHierarchyPath({ floor_id: details.device_floor_id }, appState)));
     }
-
-    if (
-        details.view_facility ||
-        details.view_floor
-    ) {
-        lines.push(
-            '配置先: ' +
-            [
-                details.view_facility,
-                details.view_floor
-            ]
-                .filter(Boolean)
-                .map(String)
-                .join(' / ')
-        );
+    if (details.view_path || Object.hasOwn(details, 'view_floor_id')) {
+        lines.push('配置先: ' + (details.view_path || viewHierarchyPath({ floor_id: details.view_floor_id }, appState)));
     }
 
     return lines;
@@ -317,10 +365,11 @@ export function getDataQualityDetailLines(
 
 
 
-export async function fetchDataQuality() {
+async function fetchDataQuality() {
+    const url = 'api.php?action=data_quality';
     const response =
         await fetch(
-            'api.php?action=data_quality',
+            url,
             {
                 method: 'GET',
                 credentials: 'same-origin',
@@ -331,6 +380,15 @@ export async function fetchDataQuality() {
                 }
             }
         );
+
+    if (response.status === 401) {
+        if (typeof window.handleAuthExpired === 'function') {
+            window.handleAuthExpired();
+        }
+        const error = new Error('認証の有効期限が切れました');
+        error.status = 401;
+        throw error;
+    }
 
     let data = null;
 
@@ -343,15 +401,18 @@ export async function fetchDataQuality() {
         );
     }
 
+    if (isMaintenanceRejection(response, data, url)) {
+        const error = new Error('保守作業中のためデータ品質診断を実行できません。保守終了後に再試行してください');
+        error.status = response.status;
+        error.maintenanceRejected = true;
+        throw error;
+    }
+
     if (
         !response.ok ||
         !data ||
         data.ok !== true
     ) {
-        if (response.status === 401 && typeof window.handleAuthExpired === 'function') {
-            window.handleAuthExpired();
-        }
-
         const error =
             new Error(
                 String(
@@ -367,6 +428,31 @@ export async function fetchDataQuality() {
     }
 
     return data;
+}
+
+export function isDataQualityPending() {
+    return isDataQualitySaving || isDataQualityFetching;
+}
+
+export async function reloadDataQualityResult() {
+    // 「設定不要」は構成のリビジョンを進めないため、画面間では要求順に適用する。
+    const request = ++latestQualityRequest;
+    isDataQualityFetching = true;
+    eventBus.emit('data-quality:sync-changed');
+    try {
+        const result = await fetchDataQuality();
+        if (request !== latestQualityRequest) return;
+        appState.dataQualityResult = result;
+    } catch (error) {
+        if (request !== latestQualityRequest) return;
+        appState.dataQualityResult = null;
+        throw error;
+    } finally {
+        if (request === latestQualityRequest) {
+            isDataQualityFetching = false;
+            eventBus.emit('data-quality:sync-changed');
+        }
+    }
 }
 
 
@@ -389,13 +475,8 @@ export function openDataQuality() {
         return;
     }
 
-    const activeElement =
-        document.activeElement;
-
-    appState.dataQualityPreviousFocus =
-        activeElement instanceof HTMLElement
-            ? activeElement
-            : null;
+    const menuSummary = document.activeElement?.closest('.toolbar-menu[open]')?.querySelector('summary');
+    const trigger = menuSummary ?? document.activeElement;
 
     document
         .querySelectorAll('.toolbar-menu[open]')
@@ -405,14 +486,21 @@ export function openDataQuality() {
 
     appState.dataQualitySeverityFilter = '';
     appState.dataQualityCategoryFilter = '';
-    appState.dataQualityCodeFilter = [];
+    clearDataQualityCodeFilter();
+    appState.dataQualitySuppressedView = 'hidden';
 
-    overlay.hidden = false;
+    showDataQualityOverlay(overlay, trigger);
+}
 
+export function showDataQualityOverlay(overlay, trigger, refreshOptions) {
+    dataQualityReturnFocus = trigger ?? null;
     renderDataQuality();
-    registerModalOpen('data_quality', overlay, '#data-quality-refresh-btn', { onClose: closeDataQuality });
-    focusDataQualityDialog();
-    refreshDataQuality();
+    overlay.hidden = false;
+    registerModalOpen('data_quality', overlay, '#data-quality-show-suppressed', {
+        onClose: closeDataQuality,
+        restoreFocusTo: () => trigger
+    });
+    refreshDataQuality(refreshOptions);
 }
 
 
@@ -432,18 +520,6 @@ export function closeDataQuality() {
 
     overlay.hidden = true;
     registerModalClose('data_quality');
-    const previousFocus = appState.dataQualityPreviousFocus;
-    appState.dataQualityPreviousFocus = null;
-    if (
-        previousFocus instanceof HTMLElement &&
-        previousFocus.isConnected
-    ) {
-        window.requestAnimationFrame(
-            () => {
-                previousFocus.focus();
-            }
-        );
-    }
 }
 
 
@@ -457,12 +533,24 @@ export function hideDataQualityForNavigation() {
     if (overlay) {
         overlay.hidden = true;
     }
+    registerModalClose('data_quality', { restoreFocus: false });
+}
 
-    /*
-     * 遷移先が自分でフォーカスを設定するため、
-     * 元のメニューボタンへは戻さない。
-     */
-    appState.dataQualityPreviousFocus = null;
+export function focusDataQualityTrigger() {
+    const candidates = [
+        dataQualityReturnFocus,
+        document.getElementById('data-quality-btn'),
+        document.querySelector('#toolbar-manage-menu > summary')
+    ];
+    for (const target of candidates) {
+        if (target && typeof target.focus === 'function' && document.body?.contains?.(target) &&
+            !target.hidden && !target.disabled && !target.closest?.('[hidden], .hidden, [inert]') &&
+            !(target.closest?.('details') && !target.closest('details').open && !target.closest?.('summary'))) {
+            target.focus();
+            return target;
+        }
+    }
+    return null;
 }
 
 
@@ -698,10 +786,28 @@ export function getDataQualityViewName(
         : `ビューID ${view.id}`;
 }
 
+function missingLinkEndpoints(issue) {
+    return Object.entries(issue?.details?.missing_endpoints ?? {});
+}
+
+function qualityEndpointName(endpoint) {
+    return endpoint.device_name
+        ? `${endpoint.device_name}（ID ${endpoint.device_id}）`
+        : getDataQualityDeviceName(endpoint.device_id);
+}
+
 /**
  * 問題の対象を要約した短いテキストを生成する（Phase 2.7D）
  */
 export function getDataQualityTargetSummary(issue) {
+    if (issue?.code === 'rack_floor_mismatch') {
+        return `対象ラック: ${issue.details.rack_view_name}（ID ${issue.entity_ids[0]}）`;
+    }
+    if (issue?.code === 'link_ports_missing') {
+        return `接続ID ${issue.entity_ids[0]} / ポート未指定: ` +
+            missingLinkEndpoints(issue).map(([, endpoint]) => qualityEndpointName(endpoint)).join('、');
+    }
+
     const deviceIds = getDataQualityDeviceIds(issue);
     const viewIds = getDataQualityViewIds(issue);
 
@@ -747,82 +853,6 @@ export function getDataQualityTargetSummary(issue) {
     return getDataQualityEntityLabel(issue);
 }
 
-
-export function getDataQualityDialog() {
-    return document.querySelector(
-        '#data-quality-overlay ' +
-        '.data-quality-dialog'
-    );
-}
-
-
-export function getDataQualityFocusableElements() {
-    const dialog =
-        getDataQualityDialog();
-
-    if (!dialog) {
-        return [];
-    }
-
-    return Array.from(
-        dialog.querySelectorAll(
-            'button:not([disabled]), ' +
-            '[href], ' +
-            'input:not([disabled]), ' +
-            'select:not([disabled]), ' +
-            'textarea:not([disabled]), ' +
-            '[tabindex]:not([tabindex="-1"])'
-        )
-    ).filter(element => {
-        if (!(element instanceof HTMLElement)) {
-            return false;
-        }
-
-        return (
-            !element.hidden &&
-            element.offsetParent !== null &&
-            element.getAttribute(
-                'aria-hidden'
-            ) !== 'true'
-        );
-    });
-}
-
-
-export function focusDataQualityDialog() {
-    window.requestAnimationFrame(
-        () => {
-            const refreshButton =
-                document.getElementById(
-                    'data-quality-refresh-btn'
-                );
-
-            const dialog =
-                getDataQualityDialog();
-
-            if (
-                refreshButton &&
-                !refreshButton.disabled
-            ) {
-                refreshButton.focus();
-                return;
-            }
-
-            const focusable =
-                getDataQualityFocusableElements();
-
-            if (focusable.length > 0) {
-                focusable[0].focus();
-                return;
-            }
-
-            dialog?.focus();
-        }
-    );
-}
-
-
-
 export async function openDataQualityDeviceDetail(
     deviceId
 ) {
@@ -844,6 +874,7 @@ export async function openDataQualityDeviceDetail(
 
         return;
     }
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
 
     const devicePlacements =
         getPlacementsForDevice(
@@ -935,6 +966,7 @@ export async function openDataQualityDevicePlacement(
         return;
     }
 
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
     let targetPlacement = null;
 
     if (
@@ -999,6 +1031,7 @@ export async function openDataQualityView(
 
         return;
     }
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
 
     if (
         Number(appState.currentViewId) !==
@@ -1036,35 +1069,30 @@ export function openDataQualityDeviceInSheet(deviceId, field = null) {
  * 未配置機器の修正導線：配置フローへ接続（Phase 2.7F）
  */
 export async function openDataQualityDevicePlacementFlow(issue) {
-    if (!confirmDataQualityNavigation()) {
-        return;
-    }
-
     const deviceIds = getDataQualityDeviceIds(issue);
     if (deviceIds.length === 0) {
         showToast('対象機器が見つかりません', 'warning');
         return;
     }
 
-    if (!isCurrentUserAdmin()) {
-        // 一般ユーザーは台帳で確認へ安全に縮退
+    if (!isCurrentUserAdmin() || appState.currentViewId === null) {
+        // 一般ユーザーまたは現在ビュー未選択時は受け手側で確認と遷移を制御する。
         eventBus.emit('ledger:open-data-quality-device', deviceIds[0]);
         return;
     }
 
-    if (appState.currentViewId !== null) {
-        if (!await enterPlacementMode({
-            tab: 'unplaced',
-            initialDeviceIds: deviceIds
-        })) {
-            return;
-        }
-        hideDataQualityForNavigation();
-    } else {
-        // 現在ビューがない場合は台帳へ
-        hideDataQualityForNavigation();
-        eventBus.emit('ledger:open-data-quality-device', deviceIds[0]);
+    if (!confirmDataQualityNavigation()) {
+        return;
     }
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
+
+    if (!await enterPlacementMode({
+        tab: 'unplaced',
+        initialDeviceIds: deviceIds
+    })) {
+        return;
+    }
+    hideDataQualityForNavigation();
 }
 
 /**
@@ -1074,6 +1102,7 @@ export async function openDataQualityLinkFlow(issue) {
     if (!confirmDataQualityNavigation()) {
         return;
     }
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
 
     const linkId = Number(
         issue?.details?.link_id ||
@@ -1084,27 +1113,37 @@ export async function openDataQualityLinkFlow(issue) {
                 : 0))
     );
 
-    const link = linkId > 0
-        ? (appState.links || []).find(l => Number(l.id) === linkId) || null
-        : null;
-
+    const active = getCurrentLinks().find(link => Number(link.id) === linkId);
     const viewIds = getDataQualityViewIds(issue);
-    const viewId =
-        Number(link?.view_id || 0) ||
-        (viewIds.length > 0 ? viewIds[0] : Number(issue?.details?.view_id || 0));
+    const viewId = active?.view_id || (linkId > 0 && appState.links.some(link => Number(link.id) === linkId)
+        ? appState.views.find(view => resolveViewLinks(view, appState).some(link => Number(link.id) === linkId))?.id
+        : viewIds[0]);
+    const isMissingPort = issue?.code === 'link_ports_missing';
+    if (!viewId && isMissingPort) {
+        const deviceId = missingLinkEndpoints(issue)[0]?.[1]?.device_id;
+        if (!findDataQualityDevice(deviceId)) {
+            showToast('対象機器が現在の画面データに見つかりません', 'warning');
+            return;
+        }
+        await openLedgerDetail(deviceId, { tab: 'ports', linkId });
+        return;
+    }
 
     if (viewId > 0 && Number(appState.currentViewId) !== Number(viewId)) {
         if (!await switchView(Number(viewId))) return;
     }
+    const link = getCurrentLinks().find(item => Number(item.id) === linkId);
 
     if (link) {
         if (!await openLinkPanel(link)) return;
         hideDataQualityForNavigation();
+        if (isMissingPort) {
+            const side = missingLinkEndpoints(issue)[0]?.[0];
+            if (side) document.getElementById(`lp-${side}-port`)?.focus();
+        }
         render();
         return;
     }
-
-    hideDataQualityForNavigation();
 
     const deviceIds = getDataQualityDeviceIds(issue);
     if (deviceIds.length > 0) {
@@ -1114,12 +1153,36 @@ export async function openDataQualityLinkFlow(issue) {
                 p => Number(p.view_id) === Number(appState.currentViewId)
             );
             if (placement) {
-                showDeviceInPlacement(device, placement);
+                if (await showDeviceInPlacement(device, placement)) {
+                    hideDataQualityForNavigation();
+                }
                 return;
             }
         }
     }
 
+    showToast('対象の接続または機器配置が現在のビューに見つかりません', 'warning');
+}
+
+async function openDataQualityLegacyVlan(issue) {
+    const deviceIds = getDataQualityDeviceIds(issue);
+    if (deviceIds.length === 0) return;
+
+    const rackMounts = getRackDeviceMounts(appState);
+    const destinations = deviceIds.flatMap(id =>
+        getDeviceDestinations(id, appState.placements, rackMounts, appState.views)
+    );
+    const target = destinations.find(({ view }) => Number(view.id) === Number(appState.currentViewId)) ?? destinations[0];
+    if (!target) {
+        await openLedgerDetail(deviceIds[0], { tab: 'ports', linkId: Number(issue.details?.link_id ?? issue.entity_ids?.[0]) });
+        return;
+    }
+
+    if (!confirmDataQualityNavigation()) return;
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
+    if (Number(appState.currentViewId) !== Number(target.view.id) && !await switchView(target.view.id)) return;
+    hideDataQualityForNavigation();
+    openWorkspaceNavigation({ tab: 'links', reviewLegacy: true });
 }
 
 /**
@@ -1148,6 +1211,7 @@ function getDataQualityUnclassifiedIpRecords(issue) {
 async function openDataQualityIpMembership(record, allowClassified = false) {
     if (!confirmDataQualityNavigation()) return;
     hideDataQualityForNavigation();
+    focusDataQualityTrigger();
     await openIpManagement(record ? { target: record, allowClassified } : undefined);
 }
 
@@ -1157,9 +1221,33 @@ async function openDataQualityIpMembership(record, allowClassified = false) {
 export function getDataQualityPrimaryAction(issue) {
     const code = String(issue?.code || '');
     const category = String(issue?.category || '');
+    if (code === 'rack_floor_mismatch') {
+        const view = findDataQualityView(issue?.details?.view_id);
+        if (view?.view_type !== 'floor') return null;
+        return {
+            label: '配置先ビューを開く',
+            action: () => openDataQualityView(view.id),
+            title: 'ラックアイコンが配置されているビューへ移動します'
+        };
+    }
+
     const deviceIds = getDataQualityDeviceIds(issue);
     const viewIds = getDataQualityViewIds(issue);
     const isAdmin = isCurrentUserAdmin();
+    if (code === 'link_ports_missing') {
+        return {
+            label: '接続を確認',
+            action: () => openDataQualityLinkFlow(issue),
+            title: '接続情報、または機器個票の「接続・ポート」を開きます'
+        };
+    }
+    if (code === 'maintenance_expiry_missing' && deviceIds.length > 0) {
+        return {
+            label: '台帳で確認',
+            action: () => openDataQualityDeviceInSheet(deviceIds[0], 'maintenance_expiry'),
+            title: '機器個票の保守期限を開きます'
+        };
+    }
 
     if (code === 'ambiguous_ping_target') {
         return {
@@ -1225,18 +1313,18 @@ export function getDataQualityPrimaryAction(issue) {
 
     // 4. 重複系（名称、IP、資産番号、MAC）
     if (category === 'duplicate' || code.startsWith('duplicate_')) {
-        if (code === 'duplicate_link') {
+        if (code === 'duplicate_link' || code === 'duplicate_port_use') {
             return {
                 label: '接続を確認',
                 action: () => openDataQualityLinkFlow(issue),
-                title: '重複接続が存在するビューへ移動します'
+                title: '重複接続を表示できるビューへ移動します'
             };
         }
         return {
             label: isAdmin ? '台帳で修正' : '台帳で確認',
             action: () => {
                 if (deviceIds.length > 0) {
-                    openDataQualityDeviceInSheet(deviceIds[0]);
+                    openDataQualityDeviceInSheet(deviceIds[0], getDataQualityTargetField(issue));
                 }
             },
             title: isAdmin ? '機器個票で重複した機器情報を修正します' : '機器個票で重複情報を確認します'
@@ -1271,6 +1359,17 @@ export function getDataQualityPrimaryAction(issue) {
     // 6. フロア図面非表示
     if (code === 'floor_plan_hidden') {
         const targetViewId = viewIds.length > 0 ? viewIds[0] : Number(issue?.details?.view_id || 0);
+        if (!isCurrentUserAdmin()) {
+            return {
+                label: 'ビューを表示',
+                action: () => {
+                    if (targetViewId > 0) {
+                        openDataQualityView(targetViewId);
+                    }
+                },
+                title: '対象フロアビューへ移動します'
+            };
+        }
         return {
             label: '図面を確認',
             action: () => {
@@ -1310,12 +1409,32 @@ export function getDataQualityPrimaryAction(issue) {
         };
     }
 
-    // 8. 接続不整合
-    if (
-        category === 'integrity' ||
-        code.startsWith('orphan_link_') ||
-        code === 'link_endpoint_not_placed'
-    ) {
+    if (code === 'legacy_link_conflict') {
+        const view = findDataQualityView(viewIds[0]);
+        if (!view) return null;
+        return {
+            label: '旧接続を確認',
+            title: '元ビューの接続一覧を開きます',
+            action: async () => {
+                if (!confirmDataQualityNavigation()) return;
+                if (getOpenBuildingId() != null && !await closeBuildingView()) return;
+                if (Number(appState.currentViewId) !== Number(view.id) && !await switchView(view.id)) return;
+                hideDataQualityForNavigation();
+                openWorkspaceNavigation({ tab: 'links' });
+            }
+        };
+    }
+    if (code === 'legacy_link_vlan') {
+        return deviceIds.length > 0 ? {
+            label: '未移行VLANを確認',
+            title: '接続一覧または機器個票の「接続・ポート」を開きます',
+            action: () => openDataQualityLegacyVlan(issue)
+        } : null;
+    }
+    if (code === 'invalid_view_link_route' && viewIds.length > 0) {
+        return { label: 'ビューを確認', action: () => openDataQualityView(viewIds[0]), title: '手動経路のビューへ移動します' };
+    }
+    if (issue?.entity_type === 'link' && category === 'integrity') {
         return {
             label: '接続を確認',
             action: () => openDataQualityLinkFlow(issue),
@@ -1325,11 +1444,19 @@ export function getDataQualityPrimaryAction(issue) {
 
     // 9. 書式不正（MAC、管理方式、ポート、設置日、保守期限等）
     if (category === 'format') {
+        const field = getDataQualityTargetField(issue) ?? ({
+            nonstandard_mac: 'mac_address',
+            invalid_management_scheme: 'management_scheme',
+            management_port_without_scheme: 'management_port',
+            invalid_management_port: 'management_port',
+            invalid_install_date: 'install_date',
+            invalid_maintenance_expiry_date: 'maintenance_expiry'
+        })[code] ?? null;
         return {
             label: isAdmin ? '台帳で修正' : '台帳で確認',
             action: () => {
                 if (deviceIds.length > 0) {
-                    openDataQualityDeviceInSheet(deviceIds[0]);
+                    openDataQualityDeviceInSheet(deviceIds[0], field);
                 }
             },
             title: isAdmin ? '機器個票で書式エラーの項目を修正します' : '機器個票で項目を確認します'
@@ -1342,7 +1469,7 @@ export function getDataQualityPrimaryAction(issue) {
             label: '台帳で確認',
             action: () => {
                 if (deviceIds.length > 0) {
-                    openDataQualityDeviceInSheet(deviceIds[0]);
+                    openDataQualityDeviceInSheet(deviceIds[0], 'maintenance_expiry');
                 }
             },
             title: '機器個票で保守期限を確認します'
@@ -1610,6 +1737,8 @@ export function createDataQualityViewActionRow(
 export function createDataQualityIssueActions(
     issue
 ) {
+    if (issue?.code === 'rack_floor_mismatch' || issue?.code === 'legacy_link_vlan') return null;
+
     const deviceIds =
         getDataQualityDeviceIds(
             issue
@@ -1710,12 +1839,106 @@ export function createDataQualityIssueActions(
     return section;
 }
 
+async function updateDataQualityNotApplicable(issue, item, notApplicable, button) {
+    if (isDataQualitySaving || dataQualityRefresh) return;
+    const keepFocus = document.activeElement === button;
+    isDataQualitySaving = true;
+    eventBus.emit('data-quality:sync-changed');
+    updateDataQualityControls();
+    let shouldRefresh = false;
 
+    try {
+        await apiFetch('set_quality_not_applicable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                code: issue.code,
+                field: item.field,
+                device_id: item.device_id,
+                expected_revision: item.resource_revision,
+                ...(issue.entity_type === 'link' ? { link_id: issue.entity_ids[0] } : {}),
+                not_applicable: notApplicable
+            })
+        });
+        shouldRefresh = true;
+        showToast(notApplicable ? '設定不要にしました' : '設定不要を解除しました', 'success');
+    } catch (error) {
+        showToast(error.message, error.status === 409 ? 'warning' : 'error');
+        shouldRefresh = error.status === 409;
+    } finally {
+        isDataQualitySaving = false;
+    }
 
-export async function refreshDataQuality() {
-    if (isDataQualityLoading) {
+    if (!shouldRefresh) {
+        eventBus.emit('data-quality:sync-changed');
+        updateDataQualityControls();
+        if (keepFocus && document.activeElement === document.body && button.isConnected) button.focus();
         return;
     }
+    await refreshDataQuality({ afterCurrent: true });
+    if (keepFocus && (document.activeElement === button || document.activeElement === document.body) &&
+        getTopModalContainer() === document.getElementById('data-quality-overlay')) {
+        document.getElementById('data-quality-show-suppressed')?.focus();
+    }
+}
+
+function createNotApplicableActions(issue, suppressed) {
+    if (!isCurrentUserAdmin() || !issue.not_applicable_items?.length) return null;
+
+    const section = document.createElement('section');
+    section.className = 'data-quality-actions';
+    const heading = document.createElement('h5');
+    heading.textContent = suppressed ? '設定不要の項目' : '設定不要にできる項目';
+    const list = document.createElement('div');
+    list.className = 'data-quality-target-list';
+
+    for (const item of issue.not_applicable_items) {
+        const row = document.createElement('div');
+        row.className = 'data-quality-target-row';
+        const label = document.createElement('strong');
+        label.className = 'data-quality-target-label';
+        const endpoint = issue.details?.missing_endpoints?.[item.field === 'from_port' ? 'from' : 'to'];
+        label.textContent = endpoint ? `${item.label}: ${qualityEndpointName(endpoint)}` : item.label;
+        const action = suppressed ? '設定不要を解除' : '設定不要にする';
+        const button = createDataQualityActionButton(action,
+            () => updateDataQualityNotApplicable(issue, item, !suppressed, button),
+            'data-quality-not-applicable-button');
+        button.setAttribute('aria-label', `${label.textContent}：${action}`);
+        row.append(label, button);
+        list.appendChild(row);
+    }
+    section.append(heading, list);
+    return section;
+}
+
+
+
+export async function refreshDataQuality({ keepResults = false, afterCurrent = false } = {}) {
+    if (isDataQualitySaving) return;
+    if (dataQualityRefresh) {
+        if (!afterCurrent) return dataQualityRefresh;
+        await dataQualityRefresh;
+        return refreshDataQuality({ keepResults });
+    }
+    dataQualityRefresh = runDataQualityRefresh(keepResults && Boolean(appState.dataQualityResult));
+    return dataQualityRefresh;
+}
+
+export function refreshDataQualityAfterSheet() {
+    if (document.getElementById('data-quality-overlay')?.hidden !== false) return;
+    const revision = Number(appState.dataQualityResult?.revision);
+    const dataRevision = Number(appState.dataRevision);
+    if (!appState.appStatus?.dirty && revision > 0 && dataRevision > 0 && revision !== dataRevision) {
+        return refreshDataQuality({ keepResults: true, afterCurrent: true });
+    }
+    if (dataQualityRefresh) {
+        renderDataQualityNotices();
+        return;
+    }
+    renderDataQuality();
+}
+
+async function runDataQualityRefresh(keepResults) {
 
     // 再診断前のスクロール位置を退避（Phase 2.7I）
     const bodyEl = document.querySelector('.data-quality-body');
@@ -1723,15 +1946,22 @@ export async function refreshDataQuality() {
     const savedBodyScroll = bodyEl ? bodyEl.scrollTop : 0;
     const savedListScroll = listEl ? listEl.scrollTop : 0;
 
-    isDataQualityLoading = true;
-
-    updateDataQualityLoadingState(
-        true
-    );
+    updateDataQualityControls(true);
+    if (!keepResults) {
+        const status = document.getElementById('data-quality-status');
+        if (status) {
+            status.hidden = false;
+            status.className = 'data-quality-status is-loading';
+            status.textContent = 'データ品質を診断しています...';
+        }
+        if (listEl) listEl.hidden = true;
+    }
 
     try {
-        appState.dataQualityResult =
-            await fetchDataQuality();
+        await reloadDataQualityResult();
+        if (listEl?.contains(document.activeElement)) {
+            document.getElementById('data-quality-show-suppressed')?.focus();
+        }
 
         renderDataQuality();
 
@@ -1747,161 +1977,38 @@ export async function refreshDataQuality() {
     } catch (error) {
         console.error(error);
 
-        appState.dataQualityResult = null;
-
         renderDataQualityError(
             error.message ||
             'データ品質診断に失敗しました'
         );
 
     } finally {
-        isDataQualityLoading = false;
-
-        updateDataQualityLoadingState(
-            false
-        );
+        dataQualityRefresh = null;
+        updateDataQualityControls();
     }
 }
 
 
-export function updateDataQualityLoadingState(
-    loading
-) {
-    const refreshButton =
-        document.getElementById(
-            'data-quality-refresh-btn'
-        );
-
-    const status =
-        document.getElementById(
-            'data-quality-status'
-        );
-
-    const list =
-        document.getElementById(
-            'data-quality-issue-list'
-        );
-
+function updateDataQualityControls(loading = dataQualityRefresh !== null) {
+    const busy = loading || isDataQualitySaving;
+    const refreshButton = document.getElementById('data-quality-refresh-btn');
     if (refreshButton) {
-        refreshButton.disabled =
-            loading;
-
-        refreshButton.textContent =
-            loading
-                ? '診断中...'
-                : '再診断';
+        refreshButton.disabled = busy;
+        refreshButton.textContent = loading ? '診断中...' : '再診断';
     }
+    const toggle = document.getElementById('data-quality-show-suppressed');
+    if (toggle) toggle.disabled = isDataQualitySaving;
 
-    if (loading && status) {
-        status.hidden = false;
-        status.className =
-            'data-quality-status is-loading';
-        status.textContent =
-            'データ品質を診断しています...';
+    const overlay = document.getElementById('data-quality-overlay');
+    overlay?.querySelectorAll('.data-quality-action-button, .data-quality-expand-btn, .data-quality-category-button, [data-quality-severity], .data-quality-filter-chip-remove')
+        .forEach(button => { button.disabled = busy; });
+    const clear = document.getElementById('data-quality-clear-filter-btn');
+    if (clear) {
+        clear.disabled = busy || (!appState.dataQualitySeverityFilter && !appState.dataQualityCategoryFilter &&
+            appState.dataQualitySuppressedView !== 'only' &&
+            appState.dataQualityCodeFilter.length === 0);
     }
-
-    if (loading && list) {
-        list.hidden = true;
-    }
-
-    document
-        .querySelectorAll(
-            '#data-quality-overlay ' +
-            '.data-quality-action-button'
-        )
-        .forEach(button => {
-            button.disabled = loading;
-        });
-
 }
-
-
-export function handleDataQualityDialogKeydown(
-    event
-) {
-    const overlay =
-        document.getElementById(
-            'data-quality-overlay'
-        );
-
-    if (
-        !overlay ||
-        overlay.hidden
-    ) {
-        return false;
-    }
-
-    // 個票モーダルが前面に開いている場合は、個票側のEscape/キー処理に譲る
-    const sheetOverlay =
-        document.getElementById(
-            'ledger-device-sheet-overlay'
-        );
-    if (
-        sheetOverlay &&
-        !sheetOverlay.hidden
-    ) {
-        return false;
-    }
-
-    if (event.key !== 'Tab') {
-        return false;
-    }
-
-    const focusable =
-        getDataQualityFocusableElements();
-
-    if (focusable.length === 0) {
-        event.preventDefault();
-
-        getDataQualityDialog()
-            ?.focus();
-
-        return true;
-    }
-
-    const first =
-        focusable[0];
-
-    const last =
-        focusable[
-            focusable.length - 1
-        ];
-
-    const active =
-        document.activeElement;
-
-    if (
-        event.shiftKey &&
-        (
-            active === first ||
-            !getDataQualityDialog()
-                ?.contains(active)
-        )
-    ) {
-        event.preventDefault();
-        last.focus();
-
-        return true;
-    }
-
-    if (
-        !event.shiftKey &&
-        (
-            active === last ||
-            !getDataQualityDialog()
-                ?.contains(active)
-        )
-    ) {
-        event.preventDefault();
-        first.focus();
-
-        return true;
-    }
-
-    return false;
-}
-
-
 
 export function setDataQualityCount(
     id,
@@ -1943,13 +2050,19 @@ export function renderDataQualitySummary() {
         'data-quality-total-count',
         summary.total
     );
+    setDataQualityCount('data-quality-suppressed-count', appState.dataQualityResult?.suppressed_count);
+    const toggle = document.getElementById('data-quality-show-suppressed');
+    const suppressedView = appState.dataQualitySuppressedView;
+    if (toggle) toggle.checked = suppressedView !== 'hidden';
+    const toggleLabel = document.getElementById('data-quality-suppressed-label');
+    if (toggleLabel) toggleLabel.textContent = suppressedView === 'only' ? '設定不要のみ表示' : '設定不要も表示';
 
     document
         .querySelectorAll(
             '[data-quality-severity]'
         )
         .forEach(card => {
-            const active =
+            const active = suppressedView !== 'only' &&
                 String(
                     card.dataset
                         .qualitySeverity ||
@@ -2020,22 +2133,19 @@ export function getDataQualityCodeFilterLabel(
             codes
         );
 
-    if (
-        normalizedCodes.length === 1 &&
-        normalizedCodes[0] ===
-            DASHBOARD_QUALITY_CODES
-                .unplacedDevice
-    ) {
-        return '未配置機器';
-    }
-
-    if (
-        normalizedCodes.length === 1 &&
-        normalizedCodes[0] ===
-            DASHBOARD_QUALITY_CODES
-                .floorViewWithoutPlan
-    ) {
-        return '図面未登録';
+    if (normalizedCodes.length === 1) {
+        switch (normalizedCodes[0]) {
+            case DASHBOARD_QUALITY_CODES.unplacedDevice: return '未配置機器';
+            case DASHBOARD_QUALITY_CODES.floorViewWithoutPlan: return '図面未登録';
+            case DASHBOARD_QUALITY_CODES.missingRecommendedFields: return '機器の推奨項目未登録';
+            case DASHBOARD_QUALITY_CODES.maintenanceExpiryMissing: return '保守期限未登録';
+            case DASHBOARD_QUALITY_CODES.managementIpMissing: return '管理IP未登録';
+            case DASHBOARD_QUALITY_CODES.linkPortsMissing: return '接続ポート未指定';
+            case DASHBOARD_QUALITY_CODES.legacyLinkConflict: return '移行保留の旧接続';
+            case DASHBOARD_QUALITY_CODES.legacyLinkVlan: return '未移行VLAN';
+            case 'invalid_maintenance_expiry_date': return '保守期限の形式不正';
+            default: return '指定された問題';
+        }
     }
 
     const incompleteCodes =
@@ -2063,6 +2173,17 @@ export function getDataQualityCodeFilterLabel(
     return '';
 }
 
+function getActiveDataQualityCodeFilterLabel() {
+    const label = getDataQualityCodeFilterLabel();
+    const field = appState.dataQualityFieldFilter;
+    return label && field ? `${label}：${DATA_QUALITY_DEVICE_FIELD_LABELS[field] ?? field}` : label;
+}
+
+function clearDataQualityCodeFilter() {
+    appState.dataQualityCodeFilter = [];
+    appState.dataQualityFieldFilter = '';
+}
+
 /**
  * 絞り込み条件チップを描画する（Phase 2.7C）
  */
@@ -2083,6 +2204,16 @@ export function renderDataQualityFilterChips() {
     container.replaceChildren();
 
     const chips = [];
+    if (appState.dataQualitySuppressedView === 'only') {
+        chips.push({
+            type: 'suppressed',
+            label: '設定不要のみ',
+            onRemove: () => {
+                selectDataQualitySuppressed(false);
+                document.getElementById('data-quality-show-suppressed')?.focus();
+            }
+        });
+    }
 
     // Severity chip
     if (appState.dataQualitySeverityFilter) {
@@ -2096,7 +2227,8 @@ export function renderDataQualityFilterChips() {
             type: 'severity',
             label: `${icon} ${label}`.trim(),
             onRemove: () => {
-                selectDataQualitySeverity('');
+                appState.dataQualitySeverityFilter = '';
+                renderDataQuality();
             }
         });
     }
@@ -2117,21 +2249,13 @@ export function renderDataQualityFilterChips() {
         });
     }
 
-    // Code chip
-    const normalizedCodes =
-        normalizeDataQualityCodeFilter(
-            appState.dataQualityCodeFilter
-        );
-    if (normalizedCodes.length > 0) {
-        const label =
-            getDataQualityCodeFilterLabel(
-                normalizedCodes
-            ) || '問題指定';
+    const codeLabel = getActiveDataQualityCodeFilterLabel();
+    if (codeLabel) {
         chips.push({
             type: 'code',
-            label: label,
+            label: codeLabel,
             onRemove: () => {
-                appState.dataQualityCodeFilter = [];
+                clearDataQualityCodeFilter();
                 renderDataQuality();
             }
         });
@@ -2195,14 +2319,31 @@ export function renderDataQualityFilterChips() {
 
 
 
-export function getFilteredDataQualityIssues() {
-    const issues =
-        Array.isArray(
-            appState.dataQualityResult?.issues
-        )
-            ? appState.dataQualityResult.issues
-            : [];
+function dataQualityIssues(suppressed = false) {
+    const issues = suppressed ? appState.dataQualityResult?.suppressed_issues : appState.dataQualityResult?.issues;
+    return Array.isArray(issues) ? issues : [];
+}
 
+export function selectDataQualitySuppressed(checked) {
+    if (isDataQualitySaving) return;
+    appState.dataQualitySuppressedView = checked ? 'included' : 'hidden';
+    if (!dataQualityRefresh) renderDataQuality();
+}
+
+function matchesDataQualitySeverity(issue) {
+    const filter = appState.dataQualitySeverityFilter;
+    if (!filter) return true;
+    const severity = String(issue?.severity || '');
+    return filter === 'problems' ? severity === 'error' || severity === 'warning' : severity === filter;
+}
+
+function matchesDataQualityField(issue) {
+    const field = appState.dataQualityFieldFilter;
+    return !field || (issue?.code === DASHBOARD_QUALITY_CODES.missingRecommendedFields &&
+        issue.details?.fields?.includes(field));
+}
+
+export function getFilteredDataQualityIssues(issues = dataQualityIssues()) {
     const codeSet =
         new Set(
             normalizeDataQualityCodeFilter(
@@ -2210,14 +2351,8 @@ export function getFilteredDataQualityIssues() {
             )
         );
 
-    return issues.filter(issue => {
-        if (
-            appState.dataQualitySeverityFilter &&
-            String(issue?.severity || '') !==
-                appState.dataQualitySeverityFilter
-        ) {
-            return false;
-        }
+    const filtered = issues.filter(issue => {
+        if (!matchesDataQualitySeverity(issue)) return false;
 
         if (
             appState.dataQualityCategoryFilter &&
@@ -2238,8 +2373,20 @@ export function getFilteredDataQualityIssues() {
             return false;
         }
 
-        return true;
+        return matchesDataQualityField(issue);
     });
+
+    const field = appState.dataQualityFieldFilter;
+    if (!field) return filtered;
+    return filtered.map(issue => ({
+        ...issue,
+        details: {
+            ...issue.details,
+            fields: [field],
+            field_labels: [DATA_QUALITY_DEVICE_FIELD_LABELS[field] ?? field]
+        },
+        not_applicable_items: (issue.not_applicable_items ?? []).filter(item => item.field === field)
+    }));
 }
 
 
@@ -2260,32 +2407,23 @@ export function renderDataQualityCategories() {
             )
         );
 
-    const issues =
-        (
-            Array.isArray(
-                appState.dataQualityResult?.issues
-            )
-                ? appState.dataQualityResult.issues
-                : []
-        ).filter(issue =>
-            codeSet.size === 0 ||
-            codeSet.has(
-                String(
-                    issue?.code || ''
-                )
-            )
-        );
+    const suppressedView = appState.dataQualitySuppressedView;
+    const issues = suppressedView === 'only' ? [] : dataQualityIssues().filter(matchesDataQualityField);
+    const suppressed = suppressedView === 'hidden' ? [] : dataQualityIssues(true).filter(matchesDataQualityField);
+    const visibleKeys = suppressedView === 'included'
+        ? new Set(issues.filter(issue => issue.not_applicable_items?.length).map(getIssueKey))
+        : null;
+    const displayed = suppressedView === 'only'
+        ? suppressed
+        : visibleKeys
+            ? [...issues, ...suppressed.filter(issue => !visibleKeys.has(getIssueKey(issue)))]
+            : issues;
 
     const counts = {};
 
-    issues.forEach(issue => {
-        if (
-            appState.dataQualitySeverityFilter &&
-            String(issue?.severity || '') !==
-                appState.dataQualitySeverityFilter
-        ) {
-            return;
-        }
+    for (const issue of displayed) {
+        if (codeSet.size > 0 && !codeSet.has(String(issue?.code || ''))) continue;
+        if (!matchesDataQualitySeverity(issue)) continue;
 
         const category =
             String(
@@ -2296,7 +2434,7 @@ export function renderDataQualityCategories() {
         counts[category] =
             (counts[category] || 0) +
             1;
-    });
+    }
 
     // 選択中のカテゴリは件数0でも解除・確認できるよう表示を保持（Phase 2.7C）
     if (
@@ -2377,9 +2515,9 @@ export function renderDataQualityCategories() {
 
             /*
             * ダッシュボードから引き継いだ
-            * 問題コードの絞り込みを解除する。
+            * 問題コードと項目の絞り込みを解除する。
             */
-            appState.dataQualityCodeFilter = [];
+            clearDataQualityCodeFilter();
 
             renderDataQuality();
         }
@@ -2456,9 +2594,9 @@ export function renderDataQualityCategories() {
 
                 /*
                 * 通常のカテゴリ選択へ切り替えるため、
-                * ダッシュボード由来のcode条件を解除する。
+                * ダッシュボード由来の条件を解除する。
                 */
-                appState.dataQualityCodeFilter = [];
+                clearDataQualityCodeFilter();
 
                 renderDataQuality();
             }
@@ -2471,9 +2609,7 @@ export function renderDataQualityCategories() {
 }
 
 
-export function createDataQualityIssueElement(
-    issue
-) {
+export function createDataQualityIssueElement(issue, { suppressed = false, suppressedPart } = {}) {
     const article =
         document.createElement(
             'article'
@@ -2485,8 +2621,7 @@ export function createDataQualityIssueElement(
             'info'
         );
 
-    const issueKey =
-        getIssueKey(issue);
+    const issueKey = getIssueKey(issue);
     const isExpanded =
         expandedIssueKeys.has(issueKey);
 
@@ -2532,6 +2667,12 @@ export function createDataQualityIssueElement(
         severityBadge,
         categoryBadge
     );
+    if (suppressed || suppressedPart) {
+        const badge = document.createElement('span');
+        badge.className = 'data-quality-count-badge';
+        badge.textContent = suppressed ? '設定不要' : '設定不要の項目あり';
+        tagsRow.appendChild(badge);
+    }
 
     const entityIds =
         Array.isArray(issue?.entity_ids)
@@ -2673,6 +2814,12 @@ export function createDataQualityIssueElement(
             actionsSection
         );
     }
+    const notApplicableActions = createNotApplicableActions(issue, suppressed);
+    if (notApplicableActions) detailsPanel.appendChild(notApplicableActions);
+    if (suppressedPart) {
+        const suppressedActions = createNotApplicableActions(suppressedPart, true);
+        if (suppressedActions) detailsPanel.appendChild(suppressedActions);
+    }
 
     article.appendChild(detailsPanel);
 
@@ -2733,11 +2880,6 @@ export function renderDataQualityIssues() {
             'data-quality-filter-summary'
         );
 
-    const clearButton =
-        document.getElementById(
-            'data-quality-clear-filter-btn'
-        );
-
     if (
         !status ||
         !list
@@ -2748,8 +2890,12 @@ export function renderDataQualityIssues() {
     // フィルタチップの描画・更新（Phase 2.7C）
     renderDataQualityFilterChips();
 
-    const issues =
-        getFilteredDataQualityIssues();
+    const suppressedView = appState.dataQualitySuppressedView;
+    const onlySuppressed = suppressedView === 'only';
+    const issues = onlySuppressed ? [] : getFilteredDataQualityIssues();
+    const suppressed = suppressedView === 'hidden'
+        ? []
+        : getFilteredDataQualityIssues(dataQualityIssues(true));
 
     let titleText =
         appState.dataQualitySeverityFilter
@@ -2757,6 +2903,7 @@ export function renderDataQualityIssues() {
                 appState.dataQualitySeverityFilter
             )
             : 'すべての問題';
+    if (onlySuppressed) titleText = '設定不要の項目';
 
     if (appState.dataQualityCategoryFilter) {
         titleText +=
@@ -2767,7 +2914,7 @@ export function renderDataQualityIssues() {
     }
 
     const codeFilterLabel =
-        getDataQualityCodeFilterLabel();
+        getActiveDataQualityCodeFilterLabel();
 
     if (codeFilterLabel) {
         titleText +=
@@ -2781,44 +2928,40 @@ export function renderDataQualityIssues() {
     }
 
     if (filterSummary) {
-        filterSummary.textContent =
-            `${issues.length}件`;
-    }
-
-    if (clearButton) {
-        clearButton.disabled =
-            !appState.dataQualitySeverityFilter &&
-            !appState.dataQualityCategoryFilter &&
-            appState.dataQualityCodeFilter.length ===
-                0;
+        const suppressedCount = suppressed.reduce((count, issue) => count + issue.not_applicable_items.length, 0);
+        filterSummary.textContent = onlySuppressed ? `設定不要 ${suppressedCount}項目`
+            : suppressedView === 'included' ? `通常 ${issues.length}件 / 設定不要 ${suppressedCount}項目`
+                : `${issues.length}件`;
     }
 
     list.replaceChildren();
 
-    if (issues.length === 0) {
+    if (issues.length === 0 && suppressed.length === 0) {
         status.hidden = false;
         status.className =
             'data-quality-status is-empty';
 
-        status.textContent =
-            appState.dataQualitySeverityFilter ||
-            appState.dataQualityCategoryFilter ||
-            appState.dataQualityCodeFilter.length > 0
-                ? '選択した条件に該当する問題はありません。'
-                : 'データ品質上の問題は見つかりませんでした。';
+        const filtered = appState.dataQualitySeverityFilter || appState.dataQualityCategoryFilter ||
+            appState.dataQualityCodeFilter.length > 0;
+        status.textContent = onlySuppressed
+            ? '選択した条件に該当する設定不要項目はありません。'
+            : filtered ? '選択した条件に該当する問題はありません。' : 'データ品質上の問題は見つかりませんでした。';
 
         list.hidden = true;
 
         return;
     }
 
-    issues.forEach(issue => {
-        list.appendChild(
-            createDataQualityIssueElement(
-                issue
-            )
-        );
-    });
+    const suppressedByKey = new Map(suppressed.map(issue => [getIssueKey(issue), issue]));
+    // 一部を設定不要にした場合も、データ品質のカードは診断グループにつき1枚。
+    for (const issue of issues) {
+        const key = getIssueKey(issue);
+        list.appendChild(createDataQualityIssueElement(issue, { suppressedPart: suppressedByKey.get(key) }));
+        suppressedByKey.delete(key);
+    }
+    for (const issue of suppressedByKey.values()) {
+        list.appendChild(createDataQualityIssueElement(issue, { suppressed: true }));
+    }
 
     status.hidden = true;
     list.hidden = false;
@@ -2854,11 +2997,15 @@ export function renderDataQualityMeta() {
 
 
 export function renderDataQuality() {
+    if (isDataQualitySaving) return;
     renderDataQualitySummary();
     renderDataQualityCategories();
     renderDataQualityMeta();
     renderDataQualityNotices();
     renderDataQualityIssues();
+    if (isDataQualityPending() || Boolean(dataQualityRefresh)) {
+        updateDataQualityControls(true);
+    }
 }
 
 
@@ -2985,7 +3132,8 @@ export function selectDataQualitySeverity(
         normalized;
 
     appState.dataQualityCategoryFilter = '';
-    appState.dataQualityCodeFilter = [];
+    clearDataQualityCodeFilter();
+    if (appState.dataQualitySuppressedView === 'only') appState.dataQualitySuppressedView = 'hidden';
 
     renderDataQuality();
 }
@@ -2994,7 +3142,8 @@ export function selectDataQualitySeverity(
 export function clearDataQualityFilters() {
     appState.dataQualitySeverityFilter = '';
     appState.dataQualityCategoryFilter = '';
-    appState.dataQualityCodeFilter = [];
+    clearDataQualityCodeFilter();
+    if (appState.dataQualitySuppressedView === 'only') appState.dataQualitySuppressedView = 'hidden';
 
     renderDataQuality();
 }

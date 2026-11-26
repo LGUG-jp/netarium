@@ -57,6 +57,53 @@ class LoadSaveTest extends TestCase
         }
     }
 
+    public function testWholeSaveChecksNewRackPairAfterResolvingViewFloors(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $db = null;
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $db = new \PDO('sqlite:' . $server->getDbPath());
+            $db->exec("INSERT INTO buildings (id, name) VALUES (981001, '本館')");
+            $db->exec("INSERT INTO floors (id, building_id, name) VALUES (982001, 981001, '1階'), (982002, 981001, '2階')");
+            $db->exec("INSERT INTO views (id, name, view_type, floor_id)
+                VALUES (990001, 'Physical view', 'floor', 982001), (990002, 'Rack view', 'rack', 982001)");
+            $db->exec("INSERT INTO rack_settings (view_id, total_u, location) VALUES (990002, 42, '')");
+            $load = static fn(): array => $client->get('/api.php?action=load')->assertOk()->getJson();
+            $input = $load();
+            $floorIndex = array_search(990001, array_column($input['views'], 'id'), true);
+            $rackIndex = array_search(990002, array_column($input['views'], 'id'), true);
+            unset($input['views'][$rackIndex]['floor_id']);
+            $pair = ['floor_view_id' => 990001, 'rack_view_id' => 990002, 'x' => 12.5, 'y' => 45];
+            $input['floor_rack_placements'] = [$pair];
+            foreach ([null, 982002] as $targetFloorId) {
+                $input['views'][$floorIndex]['floor_id'] = $targetFloorId;
+                $client->postJson('/api.php?action=save', $input)->assertError(400, '同じフロアの物理配置図');
+                $after = $load();
+                $this->assertSame($input['revision'], $after['revision']);
+                $this->assertSame([], $after['floor_rack_placements']);
+            }
+            unset($input['views'][$floorIndex]['floor_id']);
+            $client->postJson('/api.php?action=save', $input)->assertOk();
+            $after = $load();
+            $this->assertSame([$pair], $after['floor_rack_placements']);
+
+            $floorIndex = array_search(990001, array_column($after['views'], 'id'), true);
+            $after['views'][$floorIndex]['floor_id'] = 982002;
+            $pair['y'] = -20.25;
+            $after['floor_rack_placements'] = [$pair];
+            $client->postJson('/api.php?action=save', $after)->assertOk();
+            $after = $load();
+            $this->assertSame(982002, array_column($after['views'], 'floor_id', 'id')[990001]);
+            $this->assertSame([$pair], $after['floor_rack_placements']);
+        } finally {
+            $db = null;
+            $server->stop();
+        }
+    }
+
     public function testLoadSchemaAndInitialData(): void
     {
         $res = $this->client->get('/api.php?action=load');
@@ -74,10 +121,19 @@ class LoadSaveTest extends TestCase
         $this->assertArrayHasKey('devices', $json);
         $this->assertArrayHasKey('placements', $json);
         $this->assertArrayHasKey('links', $json);
+        $this->assertArrayHasKey('device_ports', $json);
+        $this->assertArrayHasKey('view_link_routes', $json);
+        $this->assertArrayHasKey('legacy_link_conflicts', $json);
         $this->assertArrayHasKey('link_systems', $json);
         foreach ($json['links'] as $link) {
             $this->assertArrayHasKey('system_id', $link);
             $this->assertNull($link['system_id']);
+            $this->assertArrayHasKey('from_port_id', $link);
+            $this->assertArrayHasKey('to_port_id', $link);
+            $this->assertArrayHasKey('resource_revision', $link);
+            foreach (['view_id', 'from_port', 'to_port', 'route_mode', 'manual_route'] as $field) {
+                $this->assertFalse(array_key_exists($field, $link));
+            }
         }
         $this->assertArrayHasKey('canvas_notes', $json);
         $this->assertSame([], $json['canvas_notes']);
@@ -106,6 +162,7 @@ class LoadSaveTest extends TestCase
         $this->assertArrayHasKey('id', $firstView);
         $this->assertArrayHasKey('name', $firstView);
         $this->assertArrayHasKey('view_type', $firstView);
+        $this->assertSame(1, $firstView['show_connections']);
     }
 
     public function testSaveSuccessfulAndIncrementsRevision(): void
@@ -119,7 +176,7 @@ class LoadSaveTest extends TestCase
         $views = $initialData['views'];
         $devices = $initialData['devices'];
         $placements = $initialData['placements'];
-        $links = $initialData['links'];
+        $views[0]['show_connections'] = 0;
 
         // Add a new device
         $newDeviceId = 5;
@@ -160,7 +217,8 @@ class LoadSaveTest extends TestCase
             'views' => $views,
             'devices' => $devices,
             'placements' => $placements,
-            'links' => $links,
+            'links' => [['id' => 999001, 'from_id' => 5, 'to_id' => 1, 'view_id' => 1]],
+            'device_ports' => [],
             'canvas_notes' => $initialData['canvas_notes'],
         ]);
 
@@ -168,6 +226,9 @@ class LoadSaveTest extends TestCase
         $saveJson = $saveRes->getJson();
         $this->assertSame($currentRev + 1, $saveJson['revision']);
         $this->assertNotNull($saveJson['saved_at']);
+        $this->assertSame($initialData['links'], $saveJson['links']);
+        $this->assertSame($initialData['device_ports'], $saveJson['device_ports']);
+        $this->assertSame(0, $saveJson['views'][0]['show_connections']);
 
         // 3. Verify changes persist on load
         $newLoadRes = $this->client->get('/api.php?action=load');
@@ -175,6 +236,8 @@ class LoadSaveTest extends TestCase
         $newLoadJson = $newLoadRes->getJson();
         $this->assertSame($currentRev + 1, (int)$newLoadJson['revision']);
         $this->assertCount(5, $newLoadJson['devices']);
+        $this->assertSame($initialData['links'], $newLoadJson['links']);
+        $this->assertSame($initialData['device_ports'], $newLoadJson['device_ports']);
         $savedDevice = null;
         foreach ($newLoadJson['devices'] as $d) {
             if ((int)$d['id'] === $newDeviceId) {

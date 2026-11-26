@@ -35,11 +35,10 @@ import { hasAnyDeviceDraftChanges } from '../core/device-drafts.js';
 import {
     getCurrentPlacements,
     getCurrentView,
+    getDeviceById,
     getDeviceForPlacement,
-    isValidLinkObject,
     normalizeDevice,
     normalizeFloorPlan,
-    normalizeLink,
     normalizePlacement,
     normalizeStatus,
     normalizeView,
@@ -47,10 +46,10 @@ import {
     allocateLocalId,
     toNullableNumber,
     toSaveDevice,
-    toSaveLink,
     toSavePlacement,
     toSaveView
 } from '../core/state.js';
+import { connectionsFromData } from '../core/connection-data.js';
 import { normalizeCanvasNote, toSaveCanvasNote } from '../core/canvas-note-data.js';
 import { getRackDeviceMounts } from '../core/device-placement.js';
 import { toSaveRackSettings, toSaveRackMount, toSaveRackShelf, toSaveRackShelfDevice, validateRackLayout } from '../core/rack-layout.js';
@@ -62,7 +61,8 @@ import {
 import {
     apiFetch,
     getDownloadFilename,
-    handleAuthExpired
+    handleAuthExpired,
+    isMaintenanceRejection
 } from '../core/api-client.js';
 import {
     render
@@ -90,7 +90,9 @@ import {
     syncLinkModeButton,
     syncViewCapabilities
 } from './toolbar-controls.js';
-import { endLinkMode, resetLinkCreationState } from '../core/link-mode.js';
+import { endLinkMode } from '../core/link-mode.js';
+import { assertLegacyLinkReviewable } from '../core/legacy-link-review.js';
+import { resetLinkCreationState } from '../core/state.js';
 import { closeWorkspaceNavigation } from './workspace-navigation.js';
 import { finishCanvasContextToolbar } from './canvas-context-toolbar.js';
 import {
@@ -161,6 +163,8 @@ export async function loadData({ initialSearch = null } = {}) {
         appState.views = Array.isArray(data.views)
             ? data.views.map(normalizeView)
             : [];
+        appState.buildings = Array.isArray(data.buildings) ? data.buildings : [];
+        appState.floors = Array.isArray(data.floors) ? data.floors : [];
 
         appState.devices = Array.isArray(data.devices)
             ? data.devices.map(normalizeDevice)
@@ -177,11 +181,7 @@ export async function loadData({ initialSearch = null } = {}) {
         appState.addressSpaces = Array.isArray(data.address_spaces) ? data.address_spaces : [];
         appState.ipSegments = Array.isArray(data.ip_segments) ? data.ip_segments : [];
 
-        appState.links = Array.isArray(data.links)
-            ? data.links
-                .map(normalizeLink)
-                .filter(isValidLinkObject)
-            : [];
+        Object.assign(appState, connectionsFromData(data));
 
         appState.canvasNotes = Array.isArray(data.canvas_notes)
             ? data.canvas_notes.map(normalizeCanvasNote)
@@ -345,6 +345,14 @@ export async function exportBackupZip() {
         return;
     }
 
+    if (appState.authExpired) {
+        showToast(
+            '認証が失効しています。別タブで再ログインしてから画面を再読み込みしてください',
+            'warning'
+        );
+        return;
+    }
+
     if (appState.isBackupExporting) {
         return;
     }
@@ -393,8 +401,9 @@ export async function exportBackupZip() {
             'バックアップ作成中...'
         );
 
+        const exportUrl = `${API_URL}?action=export_backup_zip`;
         const response = await fetch(
-            `${API_URL}?action=export_backup_zip`,
+            exportUrl,
             {
                 method: 'POST',
                 headers: {
@@ -432,10 +441,18 @@ export async function exportBackupZip() {
                 const data =
                     await response.json();
 
-                message =
-                    data.detail ||
-                    data.error ||
-                    message;
+                if (data?.login_required === true) {
+                    handleAuthExpired();
+                    return;
+                }
+                if (isMaintenanceRejection(response, data, exportUrl)) {
+                    message = '保守作業中のため構成情報を出力できません。保守終了後に再実行してください';
+                } else {
+                    message =
+                        data.detail ||
+                        data.error ||
+                        message;
+                }
             } catch (err) {
                 console.warn(
                     'エラー応答を解析できません',
@@ -514,11 +531,11 @@ export async function exportBackupZip() {
     } finally {
         appState.isBackupExporting = false;
 
-        if (button) {
-            button.disabled = false;
-        }
-
         setBusy(false);
+
+        if (button) {
+            button.disabled = Boolean(appState.authExpired);
+        }
     }
 }
 
@@ -636,6 +653,7 @@ export async function doPing(targets) {
 
     try {
         appState.isPinging = true;
+        eventBus.emit('ping:busy-changed');
         const progressMessage = () => `Ping実行中: ${targetCount}件・経過${elapsedSeconds}秒`;
         eventBus.emit('ping:updated', {
             message: progressMessage(), running: true, targets: normalizedTargets, startedAt
@@ -803,6 +821,7 @@ export async function doPing(targets) {
             pingProgressTimer = null;
         }
         appState.isPinging = false;
+        eventBus.emit('ping:busy-changed');
         setBusy(false);
         eventBus.emit('ledger:render');
     }
@@ -1023,36 +1042,52 @@ export function addSelectedDeviceType() {
 /**
  * リンク作成モード切替
  */
-export function toggleLinkMode() {
-    if (!appState.linkMode && getCurrentView()?.view_type === 'rack') {
+export function toggleLinkMode({ legacyRow } = {}) {
+    if (legacyRow) {
+        try {
+            assertLegacyLinkReviewable(legacyRow);
+        } catch (error) {
+            showToast(error.message, 'warning');
+            return;
+        }
+        const { from_id, to_id } = legacyRow.payload;
+        if (!getDeviceById(from_id) || !getDeviceById(to_id) || Number(from_id) === Number(to_id)) {
+            showToast('旧記録の両端の機器を確認できません。接続は作成していません', 'warning');
+            return;
+        }
+    } else if (!appState.linkMode && getCurrentView()?.view_type === 'rack') {
         showToast('ラック内の接続線編集は対象外です。構成図で編集してください', 'warning');
         return;
     }
-    if (!appState.linkMode && (!requireAdminUiAction() || appState.authExpired ||
-        hasResourceConflict('views', appState.currentViewId))) {
+    if (!appState.linkMode && (!requireAdminUiAction() || appState.authExpired)) {
         return;
     }
 
-    if (!appState.linkMode) {
+    if (!appState.linkMode || legacyRow) {
         if (hasUnappliedPanelChanges() || hasUnappliedLinkPanelChanges()) {
             return (async () => {
                 if (!await closePanel() || !await closeLinkPanel()) return;
-                finishToggleLinkMode();
+                finishToggleLinkMode(legacyRow);
             })();
         }
         closePanel();
         closeLinkPanel();
     }
 
-    finishToggleLinkMode();
+    finishToggleLinkMode(legacyRow);
 }
 
-function finishToggleLinkMode() {
+function finishToggleLinkMode(legacyRow) {
     eventBus.emit('canvas-note:finish');
     appState.noteMode = false;
     appState.selectedCanvasNoteId = null;
-    appState.linkMode = !appState.linkMode;
+    appState.linkMode = Boolean(legacyRow) || !appState.linkMode;
     resetLinkCreationState();
+    if (legacyRow) {
+        appState.legacyLinkCreation = legacyRow;
+        appState.linkSourceId = Number(legacyRow.payload.from_id);
+        appState.linkTargetId = Number(legacyRow.payload.to_id);
+    }
 
     if (appState.linkMode) {
         finishCanvasContextToolbar('replace');
@@ -1065,7 +1100,7 @@ function finishToggleLinkMode() {
 
 
     render();
-    document.getElementById('linkBtn')?.focus();
+    document.getElementById(legacyRow ? 'wiring-from-port' : 'linkBtn')?.focus();
 }
 
 
@@ -1141,9 +1176,24 @@ export function setBusy(
         const element =
             document.getElementById(id);
 
-        if (element) {
-            element.disabled = busy;
+        if (!element) {
+            return;
         }
+
+        if (busy) {
+            if (!Object.prototype.hasOwnProperty.call(element.dataset, 'disabledBeforeBusy')) {
+                element.dataset.disabledBeforeBusy = element.disabled ? 'true' : 'false';
+            }
+            element.disabled = true;
+            return;
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(element.dataset, 'disabledBeforeBusy')) {
+            return;
+        }
+
+        element.disabled = element.dataset.disabledBeforeBusy === 'true';
+        delete element.dataset.disabledBeforeBusy;
     });
 
     const busyFields =
@@ -1245,7 +1295,11 @@ export function getCurrentData() {
         devices: appState.devices.map(toSaveDevice),
         placements:
             appState.placements.map(toSavePlacement),
-        links: appState.links.map(toSaveLink),
+        links: appState.links.map(row => ({ ...row })),
+        device_ports: appState.devicePorts.map(row => ({ ...row })),
+        view_link_routes: structuredClone(appState.viewLinkRoutes),
+        legacy_link_conflicts: structuredClone(appState.legacyLinkConflicts),
+        legacy_link_vlans: structuredClone(appState.legacyLinkVlans),
         canvas_notes: appState.canvasNotes.map(toSaveCanvasNote),
         rack_settings: appState.rackSettings.map(toSaveRackSettings),
         rack_mounts: appState.rackMounts.map(toSaveRackMount),
@@ -1277,4 +1331,6 @@ if (typeof eventBus !== 'undefined' && eventBus.on) {
         updateSaveButtonState();
         syncViewCapabilities();
     });
+    eventBus.on('auth:expired', syncViewCapabilities);
+    eventBus.on('ping:busy-changed', syncViewCapabilities);
 }

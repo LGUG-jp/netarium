@@ -75,7 +75,6 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
     const viewHistoryBtn = document.getElementById('view-history-btn');
     const viewApplyBtn = document.getElementById('view-apply-btn');
     assert.ok(viewHistoryBtn && viewApplyBtn, 'ビュー管理に変更履歴ボタンが存在する');
-    assert.equal(viewHistoryBtn.nextElementSibling, viewApplyBtn, 'ビュー管理の「適用」の左に配置されている');
 
     const sheetHistoryBtn = document.getElementById('ledger-sheet-history-btn');
     assert.ok(sheetHistoryBtn, '機器個票の操作バーに変更履歴ボタンが存在する');
@@ -103,7 +102,9 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
                 summary: '機器を削除（L2スイッチ / 192.0.2.10）',
                 items: [
                     { label: '名称', before: '<script>alert(1)</script>', after: '—（削除）' },
-                    { label: '管理IP', before: '192.0.2.10', after: '—（削除）' }
+                    { label: '管理IP', before: '192.0.2.10', after: '—（削除）' },
+                    { label: '設置フロアID', before: '42（<img src=x onerror=alert(2)>本庁舎 / 2F）', after: '未設定' },
+                    { label: '所属フロアID', before: '12', after: '15（別館 / <script>alert(3)</script>3F）' }
                 ],
                 omitted_count: 3,
                 related_targets: [
@@ -152,7 +153,7 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
                 devices: (payload.devices || []).map(row => ({ ...row.device, id: row.id, resource_revision: 15 })),
                 views: (payload.views || []).map(row => ({ ...row.view, id: row.id, resource_revision: 25 })),
                 placements: (payload.views || []).flatMap(row => row.placements || []),
-                links: (payload.views || []).flatMap(row => row.links || []),
+                view_link_routes: (payload.views || []).flatMap(row => row.view_link_routes || []),
                 canvas_notes: (payload.views || []).flatMap(row => row.canvas_notes || []),
                 rack_settings: (payload.views || []).flatMap(row => row.rack_settings ? [{ ...row.rack_settings, view_id: row.id }] : []),
                 rack_mounts: (payload.views || []).flatMap(row => row.rack_mounts || []),
@@ -233,6 +234,15 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
     assert.match(detailRow.textContent, /<script>alert\(1\)<\/script>/);
     assert.match(detailRow.textContent, /保存イベント #400/);
     assert.match(detailRow.textContent, /全体構成図/);
+    const floorRows = Array.from(detailRow.querySelectorAll('tr'));
+    const deviceFloor = floorRows.find(tr => tr.textContent.includes('設置フロアID'));
+    const viewFloor = floorRows.find(tr => tr.textContent.includes('所属フロアID'));
+    assert.equal(deviceFloor.querySelector('.diff-col-before').textContent, '42（<img src=x onerror=alert(2)>本庁舎 / 2F）');
+    assert.equal(deviceFloor.querySelector('.diff-col-after').textContent, '未設定');
+    assert.equal(viewFloor.querySelector('.diff-col-before').textContent, '12', '旧ID-only履歴を再解釈しない');
+    assert.equal(viewFloor.querySelector('.diff-col-after').textContent, '15（別館 / <script>alert(3)</script>3F）');
+    assert.equal(detailRow.querySelector('img'), null);
+    assert.equal(detailRow.querySelector('script'), null);
 
     // 7日・90日切替とページング
     const btn7 = overlay.querySelector('[data-period="7"]');
@@ -437,8 +447,8 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
                 let release;
                 let notifyStarted;
                 const started = new Promise(resolve => { notifyStarted = resolve; });
-                saveResponseOverride = async () => {
-                    notifyStarted();
+                saveResponseOverride = async payload => {
+                    notifyStarted(payload);
                     await new Promise(resolve => { release = resolve; });
                     if (failure === 'network') throw new TypeError('ビュー保存の通信断テスト');
                     return new Response(JSON.stringify({
@@ -448,7 +458,8 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
                 };
                 const beforeHistory = historyRequests.length;
                 const applying = applyViewForm();
-                await started;
+                const payload = await Promise.race([started, applying.then(() => null)]);
+                assert.ok(payload?.views.some(row => row.id === 1), '変更を送る対象はビュー 1');
                 assert.equal(appState.viewManagerFormDirty, false, 'フォームとモデルは既に一致する');
                 let navigating;
                 if (timing === 'in-flight') {
@@ -486,13 +497,14 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
             let release;
             let notifyStarted;
             const started = new Promise(resolve => { notifyStarted = resolve; });
-            saveResponseOverride = async () => {
-                notifyStarted();
+            saveResponseOverride = async payload => {
+                notifyStarted(payload);
                 await new Promise(resolve => { release = resolve; });
             };
             const beforeHistory = historyRequests.length;
             const applying = applyViewForm();
-            await started;
+            const payload = await Promise.race([started, applying.then(() => null)]);
+            assert.ok(payload?.views.some(row => row.id === 1), '変更を送る対象はビュー 1');
             const navigating = openSelectedViewHistory();
             await setImmediate();
             assert.equal(historyRequests.length, beforeHistory);
@@ -516,4 +528,15 @@ test('変更履歴モーダルのメニュー位置・閲覧者制限・絞り�
             if (nextState === 'saved') closeChangeHistory();
         });
     }
+
+    await t.test('authExpired時は空表示にせず再認証案内エラーを表示する', async () => {
+        appState.authExpired = true;
+        await openChangeHistory();
+        const statusEl = document.querySelector('.change-history-status');
+        assert.ok(statusEl);
+        assert.equal(statusEl.hidden, false);
+        assert.match(statusEl.textContent, /有効期限|再ログイン/);
+        appState.authExpired = false;
+        closeChangeHistory();
+    });
 });

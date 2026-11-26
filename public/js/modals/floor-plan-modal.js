@@ -6,7 +6,7 @@ import { appState } from '../core/state.js';
 import { eventBus } from '../core/event-bus.js';
 import { endLinkMode } from '../core/link-mode.js';
 import { mappedResourceId, syncResourceRevision } from '../core/resource-save.js';
-import { flushSaveQueue, hasPendingChanges, hasResourceConflict, runResourceMutation, scheduleFloorPlanSave } from '../core/save-queue.js';
+import { flushSaveQueue, hasPendingChanges, hasResourceConflict, recordResourceConflicts, runResourceMutation, scheduleFloorPlanSave } from '../core/save-queue.js';
 import { attachFloorPlanEditor, finishFloorPlanGesture, updateFloorPlanEditor } from '../canvas/floor-plan-editor.js';
 import { calculateOriginFit } from '../canvas/origin-fit.js';
 import { getFloorPlanBounds } from '../canvas/floor-plan-geometry.js';
@@ -18,6 +18,10 @@ import {
     isCurrentUserAdmin,
     requireAdminUiAction
 } from '../ui/access-control.js';
+import {
+    closeBuildingView,
+    getOpenBuildingId
+} from '../ui/building-view.js';
 import {
     setBusy
 } from '../ui/toolbar.js';
@@ -66,8 +70,13 @@ import {
 import {
     confirmDataQualityNavigation,
     findDataQualityView,
+    focusDataQualityTrigger,
     hideDataQualityForNavigation
 } from './data-quality-modal.js';
+
+function isRevisionConflict409(err) {
+    return err?.status === 409 && err.details?.reason !== 'operation_busy';
+}
 
 // 図面管理を閉じた時だけ、起動元のビュー管理へ戻る。
 let floorPlanManagerReturnViewId = null;
@@ -112,6 +121,7 @@ function finishFloorPlanFileSave(data, viewId) {
         appState.appStatus.lastSavedAt = data.saved_at || new Date();
         renderStatusBar();
     } else markSaved(data.revision, data.saved_at || new Date());
+    eventBus.emit('floor-plan:saved', { viewId });
 }
 
 export function renderFloorPlan() {
@@ -313,6 +323,7 @@ export function toggleFloorPlanAdjustMode() {
     registerModalClose('floor_plan', { restoreFocus: false });
     appState.selectedPlacementIds.clear();
     appState.editingLinkId = null;
+    appState.editingLinkGroupKey = null;
     adjustingViewId = Number(appState.currentViewId);
     appState.floorPlanAdjustMode = true;
     appState.floorPlanAutoFittedViews.add(adjustingViewId);
@@ -780,8 +791,10 @@ export async function uploadCurrentFloorPlan() {
     } catch (err) {
         console.error(err);
 
-        if (err.status === 409) {
-            markConflict(
+        if (isRevisionConflict409(err)) {
+            recordResourceConflicts(
+                err.details?.conflicts,
+                { views: [{ id: currentView.id, view: currentView }] },
                 err.message
             );
         }
@@ -882,8 +895,10 @@ export async function deleteCurrentFloorPlan() {
     } catch (err) {
         console.error(err);
 
-        if (err.status === 409) {
-            markConflict(
+        if (isRevisionConflict409(err)) {
+            recordResourceConflicts(
+                err.details?.conflicts,
+                { views: [{ id: currentView.id, view: currentView }] },
                 err.message
             );
         }
@@ -909,9 +924,9 @@ export async function deleteCurrentFloorPlan() {
 export async function openDataQualityFloorPlan(
     viewId
 ) {
-    if (appState.appStatus?.dirty) {
+    if (!isCurrentUserAdmin()) {
         showToast(
-            '保存待ちの変更があります。保存完了を待ち、保存失敗時は「保存」で再試行してください',
+            'フロア図面を管理する権限がありません',
             'warning'
         );
 
@@ -920,14 +935,6 @@ export async function openDataQualityFloorPlan(
     if (
         !confirmDataQualityNavigation()
     ) {
-        return;
-    }
-    if (!isCurrentUserAdmin()) {
-        showToast(
-            'フロア図面を管理する権限がありません',
-            'warning'
-        );
-
         return;
     }
 
@@ -957,6 +964,10 @@ export async function openDataQualityFloorPlan(
         return;
     }
 
+    if (getOpenBuildingId() != null && !await closeBuildingView()) {
+        return;
+    }
+
     if (
         Number(appState.currentViewId) !==
             Number(view.id)
@@ -968,11 +979,7 @@ export async function openDataQualityFloorPlan(
         }
     }
     hideDataQualityForNavigation();
-
-    window.requestAnimationFrame(
-        () => {
-            openFloorPlanManager();
-        }
-    );
+    focusDataQualityTrigger();
+    openFloorPlanManager();
 }
 

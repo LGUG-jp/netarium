@@ -42,7 +42,7 @@ class ResourceSaveTest extends TestCase
         return ['operation' => 'update', 'id' => $id,
             'expected_revision' => (int)$view['resource_revision'], 'view' => $view,
             'placements' => array_values(array_filter($data['placements'], static fn($p) => (int)$p['view_id'] === $id)),
-            'links' => array_values(array_filter($data['links'], static fn($l) => (int)$l['view_id'] === $id)),
+            'view_link_routes' => array_values(array_filter($data['view_link_routes'], static fn($r) => (int)$r['view_id'] === $id)),
             'rack_settings' => array_values(array_filter($data['rack_settings'] ?? [], static fn($r) => (int)$r['view_id'] === $id))[0] ?? null,
             'rack_mounts' => array_values(array_filter($data['rack_mounts'] ?? [], static fn($r) => (int)$r['view_id'] === $id)),
             'rack_shelves' => array_values(array_filter($data['rack_shelves'] ?? [], static fn($r) => (int)$r['view_id'] === $id)),
@@ -121,6 +121,30 @@ class ResourceSaveTest extends TestCase
             $viewer = new TestHttpClient($server->getBaseUrl());
             $this->assertTrue($viewer->login('viewer', 'viewer123'));
             $viewer->postJson('/api.php?action=save_resources', ['devices' => [$this->deviceOperation($device)], 'views' => []])->assertStatus(403);
+
+            $legacyLabel = "  \x00旧用途\x1F  ";
+            $db->prepare('UPDATE device_ip_addresses SET label = ? WHERE id = ?')
+                ->execute([$legacyLabel, $device['additional_ips'][0]['id']]);
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->assertSame($legacyLabel, $device['additional_ips'][0]['label']);
+
+            $changed = $device;
+            $changed['additional_ips'][0]['label'] .= '変更';
+            $added = $device;
+            $added['additional_ips'][] = ['ip' => '192.0.2.43', 'label' => "\x00new\x0B"];
+            $copied = $other;
+            $copied['additional_ips'] = [$device['additional_ips'][0]];
+            foreach ([$changed, $added, $copied] as $bad) {
+                $client->postJson('/api.php?action=save_resources', ['devices' => [$this->deviceOperation($bad)], 'views' => []])
+                    ->assertStatus(400);
+            }
+            $device['memo'] = '既存の用途を変えずに更新';
+            $this->save([$this->deviceOperation($device)], [], $client);
+            $data = $this->load($client);
+            $client->postJson('/api.php?action=save', $data)->assertOk();
+            $device = $this->find($this->load($client)['devices'], $id);
+            $this->assertSame($legacyLabel, $device['additional_ips'][0]['label']);
+
             $legacy = $device;
             unset($legacy['additional_ips']);
             $legacy['memo'] = 'Legacy client';
@@ -202,7 +226,7 @@ class ResourceSaveTest extends TestCase
             $create = static fn(int $id, string $type): array => [
                 'operation' => 'create', 'id' => $id,
                 'view' => ['name' => "Floor rack {$id}", 'view_type' => $type],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'floor_rack_placements' => [],
                 'rack_settings' => $type === 'rack' ? ['view_id' => $id, 'total_u' => 42, 'location' => ''] : null,
                 'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
@@ -220,7 +244,8 @@ class ResourceSaveTest extends TestCase
             $this->assertSame(-12.5, (float)$data['floor_rack_placements'][0]['x']);
             $other = $this->viewOperation($data, $this->find($data['views'], $otherId));
             $other['floor_rack_placements'] = [array_replace($data['floor_rack_placements'][0], ['floor_view_id' => $otherId])];
-            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$other]])->assertStatus(400);
+            $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$other]])
+                ->assertError(400, '同じラックは全体で1か所にだけ配置できます');
             $floor = $this->viewOperation($data, $this->find($data['views'], $floorId));
             foreach (['12', true, null] as $invalidX) {
                 $bad = $floor;
@@ -276,6 +301,93 @@ class ResourceSaveTest extends TestCase
         }
     }
 
+    public function testFloorRackPlacementChecksOnlyNewPairsAgainstFinalFloors(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $db = null;
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $db = new PDO('sqlite:' . $server->getDbPath());
+            $db->exec("INSERT INTO buildings (id, name) VALUES (981001, '本館')");
+            $db->exec("INSERT INTO floors (id, building_id, name) VALUES (982001, 981001, '1階'), (982002, 981001, '2階')");
+            $create = static fn(int $id, string $type, ?int $floorId): array => [
+                'operation' => 'create', 'id' => $id,
+                'view' => ['name' => "Placement {$id}", 'view_type' => $type, 'floor_id' => $floorId],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [], 'floor_rack_placements' => [],
+                'rack_settings' => $type === 'rack' ? ['view_id' => $id, 'total_u' => 42, 'location' => ''] : null,
+                'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
+            ];
+            $primary = $create(990001, 'floor', 982001);
+            $primary['floor_rack_placements'] = [
+                ['floor_view_id' => 990001, 'rack_view_id' => 990002, 'x' => 12.5, 'y' => 45],
+            ];
+            $created = $this->save([], [
+                $primary, $create(990002, 'rack', 982001), $create(990003, 'floor', 982001),
+                $create(990004, 'floor', null), $create(990005, 'floor', 982002),
+            ], $client);
+            $ids = $created['id_maps']['views'];
+            [$primaryId, $rackId, $alternateId, $unassignedId, $differentId] =
+                [$ids[990001], $ids[990002], $ids[990003], $ids[990004], $ids[990005]];
+            $db->exec("UPDATE floors SET representative_view_id = {$primaryId} WHERE id = 982001");
+            $data = $this->load($client);
+            $pair = ['floor_view_id' => $primaryId, 'rack_view_id' => $rackId, 'x' => 12.5, 'y' => 45];
+            $this->assertSame([$pair], $data['floor_rack_placements']);
+            $operation = fn(array $data, int $id): array => $this->viewOperation($data, $this->find($data['views'], $id));
+            $source = $operation($data, $primaryId);
+            $source['floor_rack_placements'] = [];
+            foreach ([$unassignedId, $differentId] as $targetId) {
+                $target = $operation($data, $targetId);
+                $target['floor_rack_placements'] = [array_replace($pair, ['floor_view_id' => $targetId])];
+                $client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$source, $target]])
+                    ->assertError(400, '同じフロアの物理配置図');
+                $after = $this->load($client);
+                $this->assertSame($data['revision'], $after['revision']);
+                $this->assertSame([$pair], $after['floor_rack_placements']);
+            }
+            $alternate = $operation($data, $alternateId);
+            $pair['floor_view_id'] = $alternateId;
+            $alternate['floor_rack_placements'] = [$pair];
+            $this->save([], [$source, $alternate], $client);
+
+            $data = $this->load($client);
+            $rack = $operation($data, $rackId);
+            $rack['view']['floor_id'] = 982002;
+            $this->save([], [$rack], $client);
+            $data = $this->load($client);
+            $this->assertSame(982002, $this->find($data['views'], $rackId)['floor_id']);
+            $this->assertSame([$pair], $data['floor_rack_placements']);
+
+            $alternate = $operation($data, $alternateId);
+            $alternate['view']['floor_id'] = null;
+            $this->save([], [$alternate], $client);
+            $data = $this->load($client);
+            $this->assertSame(null, $this->find($data['views'], $alternateId)['floor_id']);
+            $this->assertSame([$pair], $data['floor_rack_placements']);
+
+            $alternate = $operation($data, $alternateId);
+            $pair['x'] = -31.5;
+            $alternate['floor_rack_placements'] = [$pair];
+            $this->save([], [$alternate], $client);
+            $data = $this->load($client);
+            $this->assertSame([$pair], $data['floor_rack_placements']);
+
+            $rack = $operation($data, $rackId);
+            $rack['view']['floor_id'] = 982001;
+            $source = $operation($data, $alternateId);
+            $source['floor_rack_placements'] = [];
+            $primary = $operation($data, $primaryId);
+            $pair['floor_view_id'] = $primaryId;
+            $primary['floor_rack_placements'] = [$pair];
+            $this->save([], [$source, $primary, $rack], $client);
+            $this->assertSame([$pair], $this->load($client)['floor_rack_placements']);
+        } finally {
+            $db = null;
+            $server->stop();
+        }
+    }
+
     public function testFloorRackMigrationAndFiniteCoordinates(): void
     {
         require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
@@ -285,7 +397,9 @@ class ResourceSaveTest extends TestCase
         $db->exec("INSERT INTO views(id,name,view_type) VALUES (1,'Floor','floor'),(2,'Rack','rack')");
         $before = $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC);
         migrateDatabase($db);
-        $this->assertSame($before, $db->query('SELECT * FROM views')->fetchAll(PDO::FETCH_ASSOC));
+        $columns = implode(',', array_keys($before[0]));
+        $this->assertSame($before, $db->query("SELECT $columns FROM views")->fetchAll(PDO::FETCH_ASSOC));
+        $this->assertSame([null, null], $db->query('SELECT floor_id FROM views')->fetchAll(PDO::FETCH_COLUMN));
         $this->assertSame([], $db->query('SELECT * FROM floor_rack_placements')->fetchAll());
         foreach ([INF, -INF, NAN] as $x) {
             try {
@@ -313,7 +427,7 @@ class ResourceSaveTest extends TestCase
             $created = $this->save([], [[
                 'operation' => 'create', 'id' => 990001,
                 'view' => ['name' => 'Full-save shelf rack', 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'rack_settings' => ['view_id' => 990001, 'total_u' => 42, 'location' => ''],
                 'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
             ]], $client);
@@ -358,11 +472,22 @@ class ResourceSaveTest extends TestCase
         }
         migrateDatabase($db);
         foreach ($before as $table => $rows) {
-            $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-            $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
-            $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+            $where = $table === 'resource_sequences'
+                ? " WHERE name IN ('" . implode("','", array_column($rows, 'name')) . "')"
+                : ($table === 'app_meta' ? " WHERE meta_key NOT IN ('legacy_hierarchy_migration', 'legacy_link_migration')" : '');
+            $columns = $rows === [] ? '*' : implode(',', array_keys($rows[0]));
+            $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC));
         }
         $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $this->assertSame([null], $db->query('SELECT floor_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $this->assertSame([null], $db->query('SELECT floor_id FROM views ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+        $this->assertSame([], $db->query('SELECT * FROM buildings')->fetchAll());
+        $this->assertSame([], $db->query('SELECT * FROM floors')->fetchAll());
+        $this->assertSame(['buildings' => 0, 'floors' => 0],
+            $db->query("SELECT name,value FROM resource_sequences WHERE name IN ('buildings','floors') ORDER BY name")->fetchAll(PDO::FETCH_KEY_PAIR));
+        $this->assertSame(['assigned' => 0, 'explicit' => 0, 'created_buildings' => 0, 'created_floors' => 0,
+            'unclassified' => ['empty_legacy_location' => 2]],
+            json_decode($db->query("SELECT meta_value FROM app_meta WHERE meta_key='legacy_hierarchy_migration'")->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
         $db->exec("INSERT INTO rack_shelves VALUES (7,1,'Shelf','front',1,1,'half')");
         $db->exec('INSERT INTO rack_shelf_devices VALUES (1,7,0)');
         $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
@@ -385,7 +510,7 @@ class ResourceSaveTest extends TestCase
             $deviceId = (int)$this->load($client)['devices'][0]['id'];
             $create = static fn($id) => ['operation' => 'create', 'id' => $id,
                 'view' => ['name' => "Shelf rack $id", 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'rack_settings' => ['view_id' => $id, 'total_u' => 42, 'location' => ''],
                 'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => []];
             $origin = $create(990001);
@@ -495,7 +620,7 @@ class ResourceSaveTest extends TestCase
             $rack = $this->save([], [[
                 'operation' => 'create', 'id' => 990002,
                 'view' => ['name' => 'PCラック', 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'rack_settings' => ['view_id' => 990002, 'total_u' => 42, 'location' => ''],
                 'rack_mounts' => [['device_id' => $id, 'view_id' => 990002, 'face' => 'front',
                     'start_u' => 1, 'height_u' => 1, 'width_slot' => 'full']],
@@ -530,9 +655,10 @@ class ResourceSaveTest extends TestCase
         }
         migrateDatabase($db);
         foreach ($before as $table => $rows) {
-            $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-            $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
-            $this->assertSame($rows, $db->query("SELECT {$columns} FROM {$table}{$where}")->fetchAll(PDO::FETCH_ASSOC));
+            $where = $table === 'resource_sequences'
+                ? " WHERE name IN ('" . implode("','", array_column($rows, 'name')) . "')" : '';
+            $columns = $rows === [] ? '*' : implode(',', array_keys($rows[0]));
+            $this->assertSame($rows, $db->query("SELECT {$columns} FROM {$table}{$where} ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC));
         }
         $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
         $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
@@ -646,11 +772,22 @@ class ResourceSaveTest extends TestCase
                 if ($table === 'rack_mounts') {
                     $rows = array_map(static fn($row) => $row + ['depth' => 'half'], $rows);
                 }
-                $where = $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
-                $columns = $table === 'devices' ? implode(',', array_keys($rows[0])) : '*';
-                $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where")->fetchAll(PDO::FETCH_ASSOC));
+                $where = $table === 'resource_sequences'
+                    ? " WHERE name IN ('" . implode("','", array_column($rows, 'name')) . "')"
+                    : ($table === 'app_meta' ? " WHERE meta_key NOT IN ('legacy_hierarchy_migration', 'legacy_link_migration')" : '');
+                $columns = $rows === [] ? '*' : implode(',', array_keys($rows[0]));
+                $this->assertSame($rows, $db->query("SELECT $columns FROM $table$where ORDER BY rowid")->fetchAll(PDO::FETCH_ASSOC));
             }
             $this->assertSame([null], $db->query('SELECT ip_segment_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+            $this->assertSame([null], $db->query('SELECT floor_id FROM devices ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+            $this->assertSame([null], $db->query('SELECT floor_id FROM views ORDER BY id')->fetchAll(PDO::FETCH_COLUMN));
+            $this->assertSame([], $db->query('SELECT * FROM buildings')->fetchAll());
+            $this->assertSame([], $db->query('SELECT * FROM floors')->fetchAll());
+            $this->assertSame(['buildings' => 0, 'floors' => 0],
+                $db->query("SELECT name,value FROM resource_sequences WHERE name IN ('buildings','floors') ORDER BY name")->fetchAll(PDO::FETCH_KEY_PAIR));
+            $this->assertSame(['assigned' => 0, 'explicit' => 0, 'created_buildings' => 0, 'created_floors' => 0,
+                'unclassified' => ['empty_legacy_location' => 2]],
+                json_decode($db->query("SELECT meta_value FROM app_meta WHERE meta_key='legacy_hierarchy_migration'")->fetchColumn(), true, 512, JSON_THROW_ON_ERROR));
             $this->assertSame(APP_DATABASE_SCHEMA_VERSION, (int)$db->query('PRAGMA user_version')->fetchColumn());
             $this->assertSame([], $db->query('PRAGMA foreign_key_check')->fetchAll());
             $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id=1')->fetchColumn();
@@ -681,7 +818,7 @@ class ResourceSaveTest extends TestCase
             $this->assertTrue($this->client->login('admin', 'admin123'));
             $create = static fn($id) => ['operation' => 'create', 'id' => $id,
                 'view' => ['name' => "Rack-$id", 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'rack_settings' => ['view_id' => $id, 'total_u' => 42, 'location' => 'Room'],
                 'rack_mounts' => []];
             $created = $this->save([], [$create(990001), $create(990002)]);
@@ -783,7 +920,7 @@ class ResourceSaveTest extends TestCase
             $created = $this->save([], [[
                 'operation' => 'create', 'id' => 990001,
                 'view' => ['name' => 'Rack notes', 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'rack_mounts' => [],
+                'placements' => [], 'view_link_routes' => [], 'rack_mounts' => [],
                 'rack_settings' => ['view_id' => 990001, 'total_u' => 42, 'location' => 'Room'],
                 'canvas_notes' => [['id' => 990002, 'view_id' => 990001, 'text' => " ラック\n<b>注釈</b> ",
                     'x' => 12.5, 'y' => 22, 'width' => 360, 'height' => 180,
@@ -869,7 +1006,7 @@ class ResourceSaveTest extends TestCase
             $rack = [
                 'operation' => 'create', 'id' => $localId,
                 'view' => ['name' => 'Concurrent Rack', 'view_type' => 'rack'],
-                'placements' => [], 'links' => [], 'canvas_notes' => [],
+                'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                 'rack_settings' => ['view_id' => $localId, 'total_u' => 42, 'location' => 'Room'],
                 'rack_mounts' => [['device_id' => 1, 'view_id' => $localId, 'face' => 'rear',
                     'start_u' => 2, 'height_u' => 2, 'width_slot' => 'left']],
@@ -881,7 +1018,7 @@ class ResourceSaveTest extends TestCase
             $normal = ['operation' => 'create', 'id' => $localId,
                 'view' => ['name' => 'Independent View', 'view_type' => 'topology'],
                 'placements' => [['id' => 900001, 'view_id' => $localId, 'device_id' => 2, 'x' => 10, 'y' => 20]],
-                'links' => [], 'canvas_notes' => []];
+                'view_link_routes' => [], 'canvas_notes' => []];
             $saved = $this->save([], [$normal], $other);
             $normalId = (int)$saved['id_maps']['views'][$localId];
             $this->assertNotSame($rackId, $normalId);
@@ -1001,7 +1138,7 @@ class ResourceSaveTest extends TestCase
                 $id = 970001 + $offset;
                 $creates[] = ['operation' => 'create', 'id' => $id,
                     'view' => ['id' => $id, 'name' => $name, 'view_type' => 'topology'],
-                    'placements' => [], 'links' => [], 'canvas_notes' => []];
+                    'placements' => [], 'view_link_routes' => [], 'canvas_notes' => []];
             }
             $this->save([], $creates);
             $before = $this->load();
@@ -1075,7 +1212,7 @@ class ResourceSaveTest extends TestCase
             $created = $this->save([], [
                 ['operation' => 'create', 'id' => 970001,
                     'view' => ['id' => 970001, 'name' => '  __PENDING_1  ', 'view_type' => 'topology'],
-                    'placements' => [], 'links' => [], 'canvas_notes' => []],
+                    'placements' => [], 'view_link_routes' => [], 'canvas_notes' => []],
                 $this->viewOperation($swapped, $first), $this->viewOperation($swapped, $second),
             ]);
             $current = $this->load();
@@ -1128,7 +1265,7 @@ class ResourceSaveTest extends TestCase
             $operations = [
                 ['operation' => 'create', 'id' => 970001,
                     'view' => ['id' => 970001, 'name' => '__pending_1', 'view_type' => 'topology'],
-                    'placements' => [], 'links' => [], 'canvas_notes' => []],
+                    'placements' => [], 'view_link_routes' => [], 'canvas_notes' => []],
                 $this->viewOperation($before, $first), $this->viewOperation($before, $second),
             ];
             // 名前の退避・確定と既存配置の削除が済んだ後に失敗させる。
@@ -1207,7 +1344,7 @@ class ResourceSaveTest extends TestCase
             'device' => ['id' => 900001, 'name' => $name, 'type' => 'switch', 'ip' => '']];
         $view = ['operation' => 'create', 'id' => 900001,
             'view' => ['id' => 900001, 'name' => '採番確認ビュー', 'view_type' => 'topology'],
-            'placements' => [['id' => 900001, 'device_id' => 900001, 'view_id' => 900001, 'x' => 10, 'y' => 20]], 'links' => [], 'canvas_notes' => []];
+            'placements' => [['id' => 900001, 'device_id' => 900001, 'view_id' => 900001, 'x' => 10, 'y' => 20]], 'view_link_routes' => [], 'canvas_notes' => []];
         $a = $this->save([$make('採番確認A')], [$view]);
         $b = $this->save([$make('採番確認B')], [], $other);
         $idA = (int)$a['id_maps']['devices'][900001];
@@ -1290,8 +1427,8 @@ class ResourceSaveTest extends TestCase
         $device = $data['devices'][0];
         $device['memo'] = '不正な配線と同時に保存しない';
         $view = $this->viewOperation($data, $data['views'][0]);
-        $view['links'][] = ['id' => 800001, 'view_id' => $view['id'],
-            'from_id' => (int)$device['id'], 'to_id' => (int)$device['id']];
+        $view['view_link_routes'][] = ['view_id' => $view['id'], 'device_a_id' => (int)$device['id'],
+            'device_b_id' => (int)$device['id'], 'manual_route' => []];
         $this->client->postJson('/api.php?action=save_resources', [
             'devices' => [$this->deviceOperation($device)], 'views' => [$view],
         ])->assertStatus(400);
@@ -1306,55 +1443,65 @@ class ResourceSaveTest extends TestCase
         $device = $data['devices'][0];
         $device['memo'] = '孤立参照を含むバッチでは保存しない';
         $missingId = max(array_map('intval', array_column($data['devices'], 'id'))) + 1000;
-        foreach (['placement', 'link'] as $kind) {
+        foreach (['placement', 'route'] as $kind) {
             $view = $this->viewOperation($data, $data['views'][0]);
             if ($kind === 'placement') {
                 $view['placements'][] = ['id' => 800001, 'view_id' => $view['id'],
                     'device_id' => $missingId, 'x' => 10, 'y' => 20];
             } else {
-                $view['links'][] = ['id' => 800001, 'view_id' => $view['id'],
-                    'from_id' => (int)$device['id'], 'to_id' => $missingId];
+                $view['view_link_routes'][] = ['view_id' => $view['id'], 'device_a_id' => (int)$device['id'],
+                    'device_b_id' => $missingId, 'manual_route' => []];
             }
             $this->client->postJson('/api.php?action=save_resources', [
                 'devices' => [$this->deviceOperation($device)], 'views' => [$view],
             ])->assertStatus(400);
             $current = $this->load();
-            foreach (['revision', 'monitor_revision', 'devices', 'views', 'placements', 'links', 'canvas_notes'] as $key) {
+            foreach (['revision', 'monitor_revision', 'devices', 'views', 'placements', 'links', 'view_link_routes', 'canvas_notes'] as $key) {
                 $this->assertSame($data[$key], $current[$key]);
             }
         }
     }
 
-    public function testTwoNewViewTopologiesCanUseSameLocalPlacementAndLinkIds(): void
+    public function testTwoNewViewTopologiesCanUseSameLocalPlacementAndPair(): void
     {
-        $data = $this->load();
-        $first = (int)$data['devices'][0]['id'];
-        $second = (int)$data['devices'][1]['id'];
-        $make = static fn(string $name): array => ['operation' => 'create', 'id' => 700001,
-            'view' => ['id' => 700001, 'name' => $name, 'view_type' => 'topology'],
-            'placements' => [
-                ['id' => 700001, 'view_id' => 700001, 'device_id' => $first, 'x' => 10, 'y' => 20],
-                ['id' => 700002, 'view_id' => 700001, 'device_id' => $second, 'x' => 30, 'y' => 40],
-            ],
-            'links' => [['id' => 700001, 'view_id' => 700001, 'from_id' => $first, 'to_id' => $second, 'label' => $name]], 'canvas_notes' => []];
-        $a = $this->save([], [$make('独立構成A')]);
-        $b = $this->save([], [$make('独立構成B')], $this->secondClient());
-        $idA = (int)$a['id_maps']['views'][700001];
-        $idB = (int)$b['id_maps']['views'][700001];
-        $this->assertNotSame($idA, $idB);
-        $this->assertNotSame((int)$a['placements'][0]['id'], (int)$b['placements'][0]['id']);
-        $this->assertNotSame((int)$a['links'][0]['id'], (int)$b['links'][0]['id']);
-        $current = $this->load();
-        foreach ([$idA => '独立構成A', $idB => '独立構成B'] as $id => $name) {
-            $links = array_values(array_filter($current['links'], static fn($l) => (int)$l['view_id'] === $id));
-            $this->assertSame($name, $links[0]['label']);
-            $this->assertSame($first, (int)$links[0]['from_id']);
-            $this->assertSame($second, (int)$links[0]['to_id']);
+        $fixture = $this->routeFixture('共有接続テスト');
+        try {
+            $data = $this->load();
+            $link = $fixture['connection'];
+            $first = min($link['from_id'], $link['to_id']);
+            $second = max($link['from_id'], $link['to_id']);
+            $make = static fn(string $name, int $routeX): array => ['operation' => 'create', 'id' => 700001,
+                'view' => ['id' => 700001, 'name' => $name, 'view_type' => 'topology'],
+                'placements' => [
+                    ['id' => 700001, 'view_id' => 700001, 'device_id' => $first, 'x' => 10, 'y' => 20],
+                    ['id' => 700002, 'view_id' => 700001, 'device_id' => $second, 'x' => 30, 'y' => 40],
+                ],
+                'view_link_routes' => [['view_id' => 700001, 'device_a_id' => $first, 'device_b_id' => $second,
+                    'manual_route' => [['x' => $routeX, 'y' => 20]]]],
+                'canvas_notes' => []];
+            $a = $this->save([], [$make('独立構成A', 10)]);
+            $b = $this->save([], [$make('独立構成B', 30)], $this->secondClient());
+            $idA = (int)$a['id_maps']['views'][700001];
+            $idB = (int)$b['id_maps']['views'][700001];
+            $this->assertNotSame($idA, $idB);
+            $this->assertNotSame((int)$a['placements'][0]['id'], (int)$b['placements'][0]['id']);
+            $this->assertFalse(array_key_exists('links', $a));
+            $this->assertFalse(array_key_exists('links', $b));
+            $current = $this->load();
+            $this->assertSame($data['links'], $current['links']);
+            foreach ([$idA => 10, $idB => 30] as $id => $routeX) {
+                $routes = array_values(array_filter($current['view_link_routes'], static fn($r) => $r['view_id'] === $id));
+                $this->assertSame([['view_id' => $id, 'device_a_id' => $first, 'device_b_id' => $second,
+                    'manual_route' => [['x' => $routeX, 'y' => 20]]]], $routes);
+            }
+            $this->save([], [
+                ['operation' => 'delete', 'id' => $idA, 'expected_revision' => (int)$this->find($current['views'], $idA)['resource_revision']],
+                ['operation' => 'delete', 'id' => $idB, 'expected_revision' => (int)$this->find($current['views'], $idB)['resource_revision']],
+            ]);
+            $this->assertSame($data['links'], $this->load()['links']);
+        } finally {
+            $this->removeRouteFixture($fixture);
         }
-        $this->save([], [
-            ['operation' => 'delete', 'id' => $idA, 'expected_revision' => (int)$this->find($current['views'], $idA)['resource_revision']],
-            ['operation' => 'delete', 'id' => $idB, 'expected_revision' => (int)$this->find($current['views'], $idB)['resource_revision']],
-        ]);
     }
 
     public function testConcurrentWritersUseResourceRevisions(): void
@@ -1509,7 +1656,7 @@ class ResourceSaveTest extends TestCase
 
     private function routeFixture(string $name): array
     {
-        return $this->save([
+        $fixture = $this->save([
             ['operation' => 'create', 'id' => 910001, 'device' => ['id' => 910001, 'name' => $name . ' A', 'type' => 'switch']],
             ['operation' => 'create', 'id' => 910002, 'device' => ['id' => 910002, 'name' => $name . ' B', 'type' => 'switch']],
         ], [[
@@ -1519,18 +1666,26 @@ class ResourceSaveTest extends TestCase
                 ['id' => 910001, 'device_id' => 910001, 'view_id' => 910000, 'x' => 100, 'y' => 100],
                 ['id' => 910002, 'device_id' => 910002, 'view_id' => 910000, 'x' => 500, 'y' => 400],
             ],
-            'links' => [['id' => 910001, 'view_id' => 910000, 'from_id' => 910001, 'to_id' => 910002]],
             'canvas_notes' => [],
         ]]);
+        $fixture['connection'] = $this->client->postJson('/api.php?action=save_connections', ['links' => [[
+            'operation' => 'create',
+            'link' => ['from_id' => $fixture['id_maps']['devices'][910001], 'to_id' => $fixture['id_maps']['devices'][910002],
+                'from_port_name' => 'Port A', 'to_port_name' => 'Port B', 'label' => $name],
+        ]]])->assertOk()->getJson()['links'][0];
+        return $fixture;
     }
 
     private function removeRouteFixture(array $fixture): void
     {
         $data = $this->load();
         $view = $this->find($data['views'], (int)$fixture['views'][0]['id']);
+        $currentDevices = array_column($data['devices'], null, 'id');
         $devices = [];
         foreach ($fixture['devices'] as $device) {
-            $devices[] = $this->deviceOperation($this->find($data['devices'], (int)$device['id']), 'delete');
+            if (isset($currentDevices[$device['id']])) {
+                $devices[] = $this->deviceOperation($currentDevices[$device['id']], 'delete');
+            }
         }
         $this->save($devices, [['operation' => 'delete', 'id' => (int)$view['id'], 'expected_revision' => (int)$view['resource_revision']]]);
     }
@@ -1540,9 +1695,10 @@ class ResourceSaveTest extends TestCase
         $fixture = $this->routeFixture('手動経路保持');
         try {
             $viewId = (int)$fixture['views'][0]['id'];
-            $linkId = (int)$fixture['links'][0]['id'];
-            $this->assertSame('auto', $fixture['links'][0]['route_mode']);
-            $this->assertSame([], $fixture['links'][0]['manual_route']);
+            $link = $fixture['connection'];
+            $a = min($link['from_id'], $link['to_id']);
+            $b = max($link['from_id'], $link['to_id']);
+            $this->assertSame([], $fixture['view_link_routes']);
             $operation = $this->viewOperation($fixture, $fixture['views'][0]);
             $stale = $operation;
             $points = [
@@ -1551,39 +1707,55 @@ class ResourceSaveTest extends TestCase
                 ['x' => 360, 'y' => 160], ['x' => 360, 'y' => 240],
                 ['x' => 480, 'y' => 240], ['x' => 480, 'y' => 320],
             ];
-            $operation['links'][0]['route_mode'] = 'manual';
-            $operation['links'][0]['manual_route'] = $points;
+            $operation['view']['show_connections'] = 0;
+            $operation['view_link_routes'] = [[
+                'device_a_id' => $b, 'device_b_id' => $a, 'manual_route' => array_reverse($points),
+            ]];
+            // A stale view-owned link payload must not alter the common connection.
+            $operation['links'] = [array_replace($link, ['label' => '旧形式からは変更できない'])];
             $saved = $this->save([], [$operation]);
-            $this->assertSame($points, $this->find($saved['links'], $linkId)['manual_route']);
+            $route = ['view_id' => $viewId, 'device_a_id' => $a, 'device_b_id' => $b, 'manual_route' => $points];
+            $this->assertSame([$route], $saved['view_link_routes']);
+            $this->assertSame(0, $saved['views'][0]['show_connections']);
+            $this->assertSame([], $saved['deleted_link_ids']);
             $this->assertTrue((int)$saved['views'][0]['resource_revision'] > (int)$operation['expected_revision']);
             $this->client->postJson('/api.php?action=save_resources', ['devices' => [], 'views' => [$stale]])->assertStatus(409);
             $current = $this->load();
-            $this->assertSame($points, $this->find($current['links'], $linkId)['manual_route']);
+            $this->assertSame($link, $this->find($current['links'], (int)$link['id']));
             $moved = $this->viewOperation($current, $this->find($current['views'], $viewId));
-            $moved['placements'][0]['x'] = 650;
+            $moved['placements'] = [];
+            unset($moved['view_link_routes'], $moved['view']['show_connections']);
             $this->save([], [$moved]);
             $current = $this->load();
-            $this->assertSame($points, $this->find($current['links'], $linkId)['manual_route']);
+            $this->assertSame([$route], array_values(array_filter($current['view_link_routes'], static fn($r) => $r['view_id'] === $viewId)));
+            $this->assertSame(0, $this->find($current['views'], $viewId)['show_connections']);
+            $this->assertSame($link, $this->find($current['links'], (int)$link['id']));
             $automatic = $this->viewOperation($current, $this->find($current['views'], $viewId));
-            $automatic['links'][0]['route_mode'] = 'auto';
-            $automatic['links'][0]['manual_route'] = [];
+            $automatic['view_link_routes'] = [];
             $this->save([], [$automatic]);
             $current = $this->load();
-            $this->assertSame('auto', $this->find($current['links'], $linkId)['route_mode']);
-            $this->assertSame([], $this->find($current['links'], $linkId)['manual_route']);
-            // 全体保存経路でも配列のまま往復し、DBのJSON文字列を漏らさない。
-            foreach ($current['links'] as &$link) {
-                if ((int)$link['id'] === $linkId) {
-                    $link['route_mode'] = 'manual';
-                    $link['manual_route'] = [['x' => -0.5, 'y' => 25], ['x' => -0.5, 'y' => 75]];
-                }
-            }
-            unset($link);
-            $this->client->postJson('/api.php?action=save', array_intersect_key($current,
-                array_flip(['revision', 'devices', 'views', 'placements', 'links', 'canvas_notes'])))->assertOk();
-            $loaded = $this->find($this->load()['links'], $linkId);
-            $this->assertSame('manual', $loaded['route_mode']);
-            $this->assertSame([['x' => -0.5, 'y' => 25], ['x' => -0.5, 'y' => 75]], $loaded['manual_route']);
+            $this->assertSame([], array_values(array_filter($current['view_link_routes'], static fn($r) => $r['view_id'] === $viewId)));
+            // Both generations of the full-save client preserve common links and unrelated routes.
+            $route['manual_route'] = [['x' => -0.5, 'y' => 25], ['x' => -0.5, 'y' => 75]];
+            $current['view_link_routes'][] = $route;
+            $full = $this->client->postJson('/api.php?action=save', $current)->assertOk()->getJson();
+            $this->assertSame([$route], array_values(array_filter($full['view_link_routes'], static fn($r) => $r['view_id'] === $viewId)));
+            $this->assertSame($link, $this->find($full['links'], (int)$link['id']));
+            unset($full['view_link_routes']);
+            $full['links'] = [];
+            $legacy = $this->client->postJson('/api.php?action=save', $full)->assertOk()->getJson();
+            $this->assertSame([$route], array_values(array_filter($legacy['view_link_routes'], static fn($r) => $r['view_id'] === $viewId)));
+            $this->assertSame($link, $this->find($legacy['links'], (int)$link['id']));
+
+            $currentView = $this->find($legacy['views'], $viewId);
+            $deleted = $this->save([$this->deviceOperation($this->find($legacy['devices'], $link['from_id']), 'delete')]);
+            $this->assertSame([$link['id']], $deleted['deleted_link_ids']);
+            $this->assertSame([$link['from_port_id']], $deleted['deleted_device_port_ids']);
+            // No placements remain, but deleting the device must still return its affected route owner.
+            $this->assertSame([$viewId], $deleted['affected_view_ids']);
+            $this->assertSame([], $deleted['view_link_routes']);
+            $this->assertTrue($deleted['views'][0]['resource_revision'] > $currentView['resource_revision']);
+            $this->assertSame($link['to_id'], $this->find($this->load()['device_ports'], $link['to_port_id'])['device_id']);
         } finally {
             $this->removeRouteFixture($fixture);
         }
@@ -1599,33 +1771,53 @@ class ResourceSaveTest extends TestCase
             $operation = $this->viewOperation($fixture, $fixture['views'][0]);
             $revision = (int)$fixture['views'][0]['resource_revision'];
             $invalid = [
-                ['route_mode' => 'unknown', 'manual_route' => []],
-                ['route_mode' => null, 'manual_route' => []],
-                ['route_mode' => 'manual'],
-                ['route_mode' => 'manual', 'manual_route' => null],
-                ['route_mode' => 'manual', 'manual_route' => '[]'],
-                ['route_mode' => 'manual', 'manual_route' => new \stdClass()],
-                ['route_mode' => 'manual', 'manual_route' => (object)[0 => ['x' => 1, 'y' => 2]]],
-                ['route_mode' => 'auto', 'manual_route' => [['x' => 1, 'y' => 2]]],
-                ['route_mode' => 'manual', 'manual_route' => array_fill(0, 9, ['x' => 1, 'y' => 2])],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => '1', 'y' => 2]]],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => true, 'y' => 2]]],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => 1, 'y' => null]]],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => 1]]],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => 1, 'y' => 2, 'z' => 3]]],
-                ['route_mode' => 'manual', 'manual_route' => [['x' => 0, 'y' => 0], ['x' => 1, 'y' => 1]]],
+                [],
+                ['manual_route' => null],
+                ['manual_route' => '[]'],
+                ['manual_route' => new \stdClass()],
+                ['manual_route' => (object)[0 => ['x' => 1, 'y' => 2]]],
+                ['manual_route' => array_fill(0, 9, ['x' => 1, 'y' => 2])],
+                ['manual_route' => [['x' => '1', 'y' => 2]]],
+                ['manual_route' => [['x' => true, 'y' => 2]]],
+                ['manual_route' => [['x' => 1, 'y' => null]]],
+                ['manual_route' => [['x' => 1]]],
+                ['manual_route' => [['x' => 1, 'y' => 2, 'z' => 3]]],
+                ['manual_route' => [['x' => 0, 'y' => 0], ['x' => 1, 'y' => 1]]],
             ];
             foreach ($invalid as $route) {
                 $candidate = $operation;
-                $candidate['links'][0] = array_merge(array_diff_key($candidate['links'][0],
-                    array_flip(['route_mode', 'manual_route'])), $route);
+                $candidate['view_link_routes'] = [$route + [
+                    'device_a_id' => $fixture['connection']['from_id'], 'device_b_id' => $fixture['connection']['to_id'],
+                ]];
                 $this->client->postJson('/api.php?action=save_resources', [
                     'devices' => [$this->deviceOperation($device)], 'views' => [$candidate],
                 ])->assertStatus(400);
                 $loaded = $this->load();
                 $this->assertSame($originalMemo, $this->find($loaded['devices'], (int)$device['id'])['memo']);
                 $this->assertSame($revision, (int)$this->find($loaded['views'], (int)$operation['id'])['resource_revision']);
-                $this->assertSame('auto', $this->find($loaded['links'], (int)$fixture['links'][0]['id'])['route_mode']);
+                $this->assertSame([], array_values(array_filter($loaded['view_link_routes'],
+                    static fn($r) => $r['view_id'] === $operation['id'])));
+            }
+
+            $pair = [
+                'device_a_id' => $fixture['connection']['from_id'], 'device_b_id' => $fixture['connection']['to_id'],
+                'manual_route' => [['x' => 12, 'y' => 20]],
+            ];
+            $otherId = $this->load()['devices'][0]['id'];
+            $wrongPair = array_replace($pair, ['device_b_id' => $otherId]);
+            $reject = function (array $candidate): void {
+                $this->client->postJson('/api.php?action=save_resources', [
+                    'devices' => [], 'views' => [$candidate],
+                ])->assertStatus(400);
+            };
+            $reject(array_replace($operation, ['view_link_routes' => [$wrongPair]]));
+            $reject(array_replace($operation, ['view_link_routes' => [$pair, $pair]]));
+            $reject(array_replace($operation, [
+                'view' => array_replace($operation['view'], ['view_type' => 'rack']),
+                'placements' => [], 'view_link_routes' => [$pair],
+            ]));
+            foreach ([-1, 2, true, '0', null] as $showConnections) {
+                $reject(array_replace($operation, ['view' => array_replace($operation['view'], ['show_connections' => $showConnections])]));
             }
         } finally {
             $this->removeRouteFixture($fixture);
@@ -1647,7 +1839,7 @@ class ResourceSaveTest extends TestCase
         $db->exec("INSERT INTO views (id, name) VALUES (1, '旧経路')");
         $db->exec("INSERT INTO links (id, view_id, from_id, to_id, label) VALUES (1, 1, 1, 2, '既存リンク')");
         $revision = (int)$db->query('SELECT resource_revision FROM views WHERE id = 1')->fetchColumn();
-        migrateDatabase($db);
+        migrateDatabaseToVersion7($db);
         $link = $db->query('SELECT * FROM links WHERE id = 1')->fetch(PDO::FETCH_ASSOC);
         $this->assertSame('既存リンク', $link['label']);
         $this->assertSame('auto', $link['route_mode']);
@@ -1696,7 +1888,7 @@ class ResourceSaveTest extends TestCase
         return $this->save([], [[
             'operation' => 'create', 'id' => 920000,
             'view' => ['id' => 920000, 'name' => $name, 'view_type' => 'floor'],
-            'placements' => [], 'links' => [],
+            'placements' => [], 'view_link_routes' => [],
             'canvas_notes' => [['id' => 920001, 'view_id' => 920000, 'text' => " 行1\n行2 <b>文字</b> ",
                 'background_color' => '#fff3b0', 'text_color' => '#abcdef']],
         ]]);
@@ -1985,6 +2177,10 @@ class ResourceSaveTest extends TestCase
         ])->assertOk()->getJson();
         $system = $created['link_systems'][count($created['link_systems']) - 1];
         $id = (int)$system['id'];
+        $updateLinkSystem = fn(array $link, mixed $systemId) => $this->client->postJson('/api.php?action=save_connections', [
+            'links' => [['operation' => 'update', 'id' => $link['id'], 'expected_revision' => $link['resource_revision'],
+                'link' => ['system_id' => $systemId]]],
+        ]);
         try {
             $this->assertSame('基幹接続', $system['name']);
             $this->assertSame(0, (int)$system['usage_count']);
@@ -2004,12 +2200,10 @@ class ResourceSaveTest extends TestCase
             }
             $data = $this->load();
             $link = $data['links'][0];
-            $view = $this->find($data['views'], (int)$link['view_id']);
-            $operation = $this->viewOperation($data, $view);
-            $operation['links'][0]['system_id'] = $id;
-            $saved = $this->save([], [$operation]);
-            $this->assertSame($id, (int)$saved['links'][0]['system_id']);
-            $this->assertTrue((int)$saved['views'][0]['resource_revision'] > (int)$view['resource_revision']);
+            $saved = $updateLinkSystem($link, $id)->assertOk()->getJson();
+            $this->assertSame($id, $saved['links'][0]['system_id']);
+            $this->assertTrue($saved['links'][0]['resource_revision'] > $link['resource_revision']);
+            $this->assertSame($data['views'], $this->load()['views']);
             $this->assertSame(1, (int)$this->find($this->client->get('/api.php?action=list_link_systems')->assertOk()->getJson()['link_systems'], $id)['usage_count']);
             $this->client->postJson('/api.php?action=delete_link_system', [
                 'id' => $id, 'expected_revision' => (int)$currentSystem['resource_revision'],
@@ -2017,32 +2211,21 @@ class ResourceSaveTest extends TestCase
 
             $data = $this->load();
             foreach ([0, -1, '1', 1.5, true, [], 2147483647] as $invalid) {
-                $op = $this->viewOperation($data, $this->find($data['views'], (int)$link['view_id']));
-                $op['links'][0]['system_id'] = $invalid;
-                $device = $data['devices'][0];
-                $device['memo'] = '失敗するbatch';
-                $this->client->postJson('/api.php?action=save_resources', [
-                    'devices' => [$this->deviceOperation($device)], 'views' => [$op],
-                ])->assertStatus(400);
-                $this->assertSame($data, $this->load(), '未知・不正参照でbatch全体をrollback');
-                $full = $data;
-                $full['links'][0]['system_id'] = $invalid;
-                $this->client->postJson('/api.php?action=save', $full)->assertStatus(400);
-                $this->assertSame($data, $this->load());
+                $updateLinkSystem($saved['links'][0], $invalid)->assertStatus(400);
+                $this->assertSame($data, $this->load(), '未知・不正参照では共通接続を保存しない');
             }
             $data['links'][0]['system_id'] = null;
             $full = $this->client->postJson('/api.php?action=save', $data)->assertOk()->getJson();
-            $this->assertNull($full['links'][0]['system_id']);
+            $this->assertSame($id, $full['links'][0]['system_id']);
             $this->assertSame($currentSystem['resource_revision'], $this->find($full['link_systems'], $id)['resource_revision']);
         } finally {
             $data = $this->load();
-            foreach ($data['links'] as &$link) {
+            foreach ($data['links'] as $link) {
                 if (($link['system_id'] ?? null) === $id) {
-                    $link['system_id'] = null;
+                    $cleared = $updateLinkSystem($link, null)->assertOk()->getJson();
+                    $this->assertNull($cleared['links'][0]['system_id']);
                 }
             }
-            unset($link);
-            $this->client->postJson('/api.php?action=save', $data)->assertOk();
             $systems = $this->client->get('/api.php?action=list_link_systems')->assertOk()->getJson()['link_systems'];
             $system = $this->find($systems, $id);
             $this->client->postJson('/api.php?action=delete_link_system', [
@@ -2100,7 +2283,7 @@ class ResourceSaveTest extends TestCase
         $db->exec("INSERT INTO links (id, view_id, from_id, to_id, label) VALUES (1, 1, 1, 2, '既存接続')");
         $before = $db->query('SELECT * FROM links')->fetchAll(PDO::FETCH_ASSOC);
         $revision = $db->query('SELECT resource_revision FROM views WHERE id = 1')->fetchColumn();
-        migrateDatabase($db);
+        migrateDatabaseToVersion9($db);
         $after = $db->query('SELECT * FROM links')->fetchAll(PDO::FETCH_ASSOC);
         $this->assertNull($after[0]['system_id']);
         unset($after[0]['system_id']);
@@ -2284,4 +2467,56 @@ PHP;
         }
     }
 
+    public function testSaveResourcesCleansLegacyLinkConflictsAndRejectsControlCharsInIpLabel(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $originalClient = $this->client;
+        try {
+            $server->start();
+            $this->client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($this->client->login('admin', 'admin123'));
+            $db = new PDO('sqlite:' . $server->getDbPath());
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $data = $this->load();
+            $view1 = $data['views'][0];
+            $view2 = $this->save([], [[
+                'operation' => 'create',
+                'id' => 991001,
+                'view' => ['name' => 'Conflict Cleanup View', 'view_type' => 'topology'],
+                'placements' => [],
+                'view_link_routes' => [],
+                'canvas_notes' => [],
+            ]])['views'][0];
+            $dev1 = $data['devices'][0];
+            $dev2 = $data['devices'][1];
+            $dev3 = $data['devices'][2];
+
+            // 追加IP用途に制御文字を含む場合は HTTP 400 で拒否する。
+            $badDev = $dev1;
+            $badDev['additional_ips'] = [['ip' => '192.0.2.211', 'label' => "bad\x00label", 'sort_order' => 0]];
+            $this->client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $badDev['id'], 'expected_revision' => $badDev['resource_revision'], 'device' => $badDev]],
+                'views' => [],
+            ])->assertStatus(400);
+
+            // legacy_link_conflicts がビュー削除／機器削除に追随して掃除される。
+            $stmt = $db->prepare('INSERT INTO legacy_link_conflicts (legacy_link_id, view_id, device_a_id, device_b_id, reason, payload) VALUES (?, ?, ?, ?, ?, ?)');
+            $stmt->execute([501, $view2['id'], min($dev1['id'], $dev2['id']), max($dev1['id'], $dev2['id']), 'port_collision', '{}']);
+            $stmt->execute([502, $view1['id'], min($dev1['id'], $dev3['id']), max($dev1['id'], $dev3['id']), 'port_collision', '{}']);
+            $stmt->execute([503, $view1['id'], min($dev1['id'], $dev2['id']), max($dev1['id'], $dev2['id']), 'port_collision', '{}']);
+
+            $this->save(
+                [['operation' => 'delete', 'id' => $dev3['id'], 'expected_revision' => $dev3['resource_revision']]],
+                [['operation' => 'delete', 'id' => $view2['id'], 'expected_revision' => $view2['resource_revision']]]
+            );
+
+            $remaining = $db->query('SELECT legacy_link_id FROM legacy_link_conflicts ORDER BY legacy_link_id')->fetchAll(PDO::FETCH_COLUMN);
+            $this->assertSame([503], $remaining);
+        } finally {
+            $db = null;
+            $this->client = $originalClient;
+            $server->stop();
+        }
+    }
 }

@@ -551,4 +551,357 @@ class DeviceImageTest extends TestCase
             @rmdir($root);
         }
     }
+
+    public function testImageOperationsReturnDeviceRevisionAndAllowSubsequentResourceSave(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+
+            $pngA = $server->getTempDir() . '/rev_a.png';
+            $pngB = $server->getTempDir() . '/rev_b.png';
+            foreach ([$pngA, $pngB] as $path) {
+                $im = imagecreatetruecolor(2, 2);
+                imagepng($im, $path);
+                unset($im);
+            }
+
+            $findDevice = function (array $loadData, int $deviceId): array {
+                foreach ($loadData['devices'] as $dev) {
+                    if ((int)$dev['id'] === $deviceId) {
+                        return $dev;
+                    }
+                }
+                $this->fail("機器ID {$deviceId} が見つかりません");
+            };
+
+            $deviceId = 1;
+            $load0 = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $dataRev = (int)$load0['revision'];
+            $dev = $findDevice($load0, $deviceId);
+            $initialDevRev = (int)$dev['resource_revision'];
+            $devRev = $initialDevRev;
+
+            // 1. 新規追加 (upload_device_image) が device_revision を返し、再読込なしで save_resources できる
+            $up1 = $client->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => (string)$deviceId,
+                    'revision' => (string)$dataRev,
+                    'expected_device_revision' => (string)$devRev,
+                    'caption' => '1枚目',
+                ],
+                ['image' => ['path' => $pngA, 'filename' => 'a.png', 'type' => 'image/png']]
+            )->assertOk()->getJson();
+            $this->assertSame($devRev, $up1['previous_device_revision']);
+            $this->assertTrue(is_int($up1['device_revision']) && $up1['device_revision'] > $devRev);
+            $dataRev = (int)$up1['revision'];
+            $devRev = $up1['device_revision'];
+            $img1Id = (int)$up1['images'][0]['id'];
+            $loadedAfterUp1 = $findDevice($client->get('/api.php?action=load')->assertOk()->getJson(), $deviceId);
+            $this->assertSame($devRev, (int)$loadedAfterUp1['resource_revision']);
+
+            // 画像追加前の古い expected_revision では save_resources が 409 になる
+            $staleSave = $dev;
+            $staleSave['memo'] = 'stale-should-409';
+            $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $initialDevRev, 'device' => $staleSave]],
+                'views' => [],
+            ])->assertStatus(409);
+
+            // 返却された device_revision を expected_revision に使えば save_resources が成功する
+            $dev['memo'] = 'after-upload';
+            $saveAfterUp1 = $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $devRev, 'device' => $dev]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $dataRev = (int)$saveAfterUp1['revision'];
+            $dev = $saveAfterUp1['devices'][0];
+            $this->assertSame('after-upload', $dev['memo']);
+            $this->assertTrue((int)$dev['resource_revision'] > $devRev);
+            $devRev = (int)$dev['resource_revision'];
+
+            // 2. 2枚目を追加して差替え・並替の前提を作る
+            $up2 = $client->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => (string)$deviceId,
+                    'revision' => (string)$dataRev,
+                    'expected_device_revision' => (string)$devRev,
+                    'caption' => '2枚目',
+                ],
+                ['image' => ['path' => $pngB, 'filename' => 'b.png', 'type' => 'image/png']]
+            )->assertOk()->getJson();
+            $this->assertSame($devRev, $up2['previous_device_revision']);
+            $this->assertTrue(is_int($up2['device_revision']) && $up2['device_revision'] > $devRev);
+            $dataRev = (int)$up2['revision'];
+            $devRev = $up2['device_revision'];
+            $img2Id = (int)$up2['images'][1]['id'];
+
+            // 3. 画像差替え (replace_image_id) も device_revision を返し、即 save_resources できる
+            $rep = $client->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => (string)$deviceId,
+                    'revision' => (string)$dataRev,
+                    'expected_device_revision' => (string)$devRev,
+                    'replace_image_id' => (string)$img1Id,
+                    'caption' => '1枚目差替',
+                ],
+                ['image' => ['path' => $pngB, 'filename' => 'b2.png', 'type' => 'image/png']]
+            )->assertOk()->getJson();
+            $this->assertSame($devRev, $rep['previous_device_revision']);
+            $this->assertTrue(is_int($rep['device_revision']) && $rep['device_revision'] > $devRev);
+            $dataRev = (int)$rep['revision'];
+            $devRev = $rep['device_revision'];
+            $loadedAfterRep = $findDevice($client->get('/api.php?action=load')->assertOk()->getJson(), $deviceId);
+            $this->assertSame($devRev, (int)$loadedAfterRep['resource_revision']);
+
+            $dev['name'] = 'After-Replace-Name';
+            $saveAfterRep = $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $devRev, 'device' => $dev]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $dataRev = (int)$saveAfterRep['revision'];
+            $dev = $saveAfterRep['devices'][0];
+            $this->assertSame('After-Replace-Name', $dev['name']);
+            $devRev = (int)$dev['resource_revision'];
+
+            // 4. 順序入替・説明文更新 (update_device_images) も device_revision を返し、即 save_resources できる
+            $upd = $client->postJson('/api.php?action=update_device_images', [
+                'device_id' => $deviceId,
+                'revision' => $dataRev,
+                'expected_device_revision' => $devRev,
+                'images' => [
+                    ['id' => $img2Id, 'caption' => '説明更新1'],
+                    ['id' => $img1Id, 'caption' => '説明更新2'],
+                ],
+            ])->assertOk()->getJson();
+            $this->assertSame($devRev, $upd['previous_device_revision']);
+            $this->assertTrue(is_int($upd['device_revision']) && $upd['device_revision'] > $devRev);
+            $dataRev = (int)$upd['revision'];
+            $devRev = $upd['device_revision'];
+            $loadedAfterUpd = $findDevice($client->get('/api.php?action=load')->assertOk()->getJson(), $deviceId);
+            $this->assertSame($devRev, (int)$loadedAfterUpd['resource_revision']);
+
+            $dev['memo'] = 'after-update-images';
+            $saveAfterUpd = $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $devRev, 'device' => $dev]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $dataRev = (int)$saveAfterUpd['revision'];
+            $dev = $saveAfterUpd['devices'][0];
+            $devRev = (int)$dev['resource_revision'];
+
+            // 5. 画像削除 (delete_device_image) も device_revision を返し、即 save_resources と別クライアント競合検知が成立する
+            $del = $client->postJson('/api.php?action=delete_device_image', [
+                'device_id' => $deviceId,
+                'image_id' => $img1Id,
+                'revision' => $dataRev,
+                'expected_device_revision' => $devRev,
+            ])->assertOk()->getJson();
+            $this->assertSame($devRev, $del['previous_device_revision']);
+            $this->assertTrue(is_int($del['device_revision']) && $del['device_revision'] > $devRev);
+            $revBeforeConcurrentSave = $devRev;
+            $devRev = $del['device_revision'];
+            $loadedAfterDel = $findDevice($client->get('/api.php?action=load')->assertOk()->getJson(), $deviceId);
+            $this->assertSame($devRev, (int)$loadedAfterDel['resource_revision']);
+
+            // 削除前の expected_revision では 409 になる
+            $staleAfterDel = $dev;
+            $staleAfterDel['memo'] = 'stale-after-delete';
+            $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $revBeforeConcurrentSave, 'device' => $staleAfterDel]],
+                'views' => [],
+            ])->assertStatus(409);
+
+            // 別クライアントとの同時更新競合では 409 になり後勝ち上書きしない
+            $otherClient = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($otherClient->login('admin', 'admin123'));
+            $otherLoad = $otherClient->get('/api.php?action=load')->assertOk()->getJson();
+            $otherDev = $findDevice($otherLoad, $deviceId);
+            $this->assertSame($devRev, (int)$otherDev['resource_revision']);
+
+            $dev['name'] = 'First-Client-Wins';
+            $client->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $devRev, 'device' => $dev]],
+                'views' => [],
+            ])->assertOk();
+
+            $otherDev['name'] = 'Second-Client-Must-Conflict';
+            $otherClient->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $deviceId, 'expected_revision' => $devRev, 'device' => $otherDev]],
+                'views' => [],
+            ])->assertStatus(409);
+
+            $finalDev = $findDevice($client->get('/api.php?action=load')->assertOk()->getJson(), $deviceId);
+            $this->assertSame('First-Client-Wins', $finalDev['name']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testStaleExpectedDeviceRevisionRejectedEvenWithCurrentDataRevision(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $clientA = new TestHttpClient($server->getBaseUrl());
+            $clientB = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($clientA->login('admin', 'admin123'));
+            $this->assertTrue($clientB->login('admin', 'admin123'));
+
+            $png = $server->getTempDir() . '/stale_dev_rev.png';
+            $im = imagecreatetruecolor(2, 2);
+            imagepng($im, $png);
+            unset($im);
+
+            $findDevice = function (array $loadData, int $deviceId): array {
+                foreach ($loadData['devices'] as $dev) {
+                    if ((int)$dev['id'] === $deviceId) {
+                        return $dev;
+                    }
+                }
+                $this->fail("機器ID {$deviceId} が見つかりません");
+            };
+
+            // 機器1に初期画像を1枚登録し、無関係な機器2も作成した状態で両クライアントがロード
+            $loadInit = $clientA->get('/api.php?action=load')->assertOk()->getJson();
+            $dev1 = $findDevice($loadInit, 1);
+            $upInit = $clientA->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => '1',
+                    'revision' => (string)$loadInit['revision'],
+                    'expected_device_revision' => (string)$dev1['resource_revision'],
+                    'caption' => 'initial',
+                ],
+                ['image' => ['path' => $png, 'filename' => 'init.png', 'type' => 'image/png']]
+            )->assertOk()->getJson();
+            $img1Id = (int)$upInit['images'][0]['id'];
+
+            $newDev2 = $dev1;
+            unset($newDev2['id'], $newDev2['resource_revision']);
+            $newDev2['name'] = 'Unrelated-Device-B';
+            $newDev2['ip'] = '192.168.99.2';
+            $saveDev2 = $clientA->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'create', 'id' => 980001, 'device' => $newDev2]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $dev2 = $saveDev2['devices'][0];
+            $dev2Id = (int)$dev2['id'];
+
+            $loadA = $clientA->get('/api.php?action=load')->assertOk()->getJson();
+            $loadB = $clientB->get('/api.php?action=load')->assertOk()->getJson();
+            $dev1A = $findDevice($loadA, 1);
+            $dev1B = $findDevice($loadB, 1);
+            $staleDev1RevA = (int)$dev1A['resource_revision'];
+
+            // 1. クライアントBが機器1の属性を更新（機器1の resource_revision が進む）
+            $dev1B['name'] = 'ClientB-Updated-DeviceA';
+            $saveB = $clientB->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => 1, 'expected_revision' => (int)$dev1B['resource_revision'], 'device' => $dev1B]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $remoteDev1Rev = (int)$saveB['devices'][0]['resource_revision'];
+
+            // 2. クライアントAは無関係な機器2だけを保存して最新の全体 data_revision を得る（機器1は古いまま）
+            $dev2['memo'] = 'ClientA-Saved-DeviceB';
+            $saveDev2A = $clientA->postJson('/api.php?action=save_resources', [
+                'devices' => [['operation' => 'update', 'id' => $dev2Id, 'expected_revision' => (int)$dev2['resource_revision'], 'device' => $dev2]],
+                'views' => [],
+            ])->assertOk()->getJson();
+            $currentGlobalRevA = (int)$saveDev2A['revision'];
+
+            // 不正な expected_device_revision (0) は 400 で拒否
+            $clientA->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => '1',
+                    'revision' => (string)$currentGlobalRevA,
+                    'expected_device_revision' => '0',
+                ],
+                ['image' => ['path' => $png, 'filename' => 'bad.png', 'type' => 'image/png']]
+            )->assertStatus(400);
+
+            // 3. クライアントAは最新の全体 data_revision を持っていても、古い expected_device_revision では全画像APIが 409 になる
+            $clientA->postMultipart(
+                '/image_upload.php?action=upload_device_image',
+                [
+                    'device_id' => '1',
+                    'revision' => (string)$currentGlobalRevA,
+                    'expected_device_revision' => (string)$staleDev1RevA,
+                    'caption' => 'stale-upload',
+                ],
+                ['image' => ['path' => $png, 'filename' => 'stale.png', 'type' => 'image/png']]
+            )->assertStatus(409);
+
+            $clientA->postJson('/api.php?action=update_device_images', [
+                'device_id' => 1,
+                'revision' => $currentGlobalRevA,
+                'expected_device_revision' => $staleDev1RevA,
+                'images' => [['id' => $img1Id, 'caption' => 'stale-caption']],
+            ])->assertStatus(409);
+
+            $clientA->postJson('/api.php?action=delete_device_image', [
+                'device_id' => 1,
+                'image_id' => $img1Id,
+                'revision' => $currentGlobalRevA,
+                'expected_device_revision' => $staleDev1RevA,
+            ])->assertStatus(409);
+
+            // 4. サーバー上の機器1の名前・resource_revision・画像は一切変更・上書きされていない
+            $afterCheck = $clientB->get('/api.php?action=load')->assertOk()->getJson();
+            $afterDev1 = $findDevice($afterCheck, 1);
+            $this->assertSame('ClientB-Updated-DeviceA', $afterDev1['name']);
+            $this->assertSame($remoteDev1Rev, (int)$afterDev1['resource_revision']);
+            $this->assertCount(1, $afterCheck['device_images']);
+            $this->assertSame('initial', $afterCheck['device_images'][0]['caption']);
+        } finally {
+            $server->stop();
+        }
+    }
+
+    public function testThumbEndpointRegeneratesCorruptedZeroByteCacheFile(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+
+            $path = $server->getTempDir() . '/source-thumb.png';
+            $img = imagecreatetruecolor(640, 480);
+            imagepng($img, $path);
+            unset($img);
+
+            $before = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $uploaded = $client->postMultipart('/image_upload.php?action=upload_device_image', [
+                'device_id' => '1',
+                'revision' => (string)$before['revision'],
+            ], ['image' => ['path' => $path, 'type' => 'image/png']])->assertOk()->getJson();
+
+            $db = new PDO('sqlite:' . $server->getDbPath());
+            $storedName = (string)$db->query('SELECT stored_name FROM device_images WHERE id = ' . (int)$uploaded['images'][0]['id'])->fetchColumn();
+            $thumbDir = $server->getTempDir() . '/cache/thumbnails';
+            if (!is_dir($thumbDir)) {
+                mkdir($thumbDir, 0755, true);
+            }
+            $thumbPath = $thumbDir . '/thumb_320_' . $storedName;
+            file_put_contents($thumbPath, '');
+            $this->assertSame(0, filesize($thumbPath));
+
+            $response = $client->get('/' . $uploaded['images'][0]['image_url'] . '&size=thumb')->assertStatus(200);
+            $body = $response->getBody();
+            $this->assertTrue(strlen($body) > 0);
+            $this->assertTrue(getimagesizefromstring($body) !== false);
+            clearstatcache(true, $thumbPath);
+            $this->assertTrue(filesize($thumbPath) > 0);
+        } finally {
+            $db = null;
+            $server->stop();
+        }
+    }
 }

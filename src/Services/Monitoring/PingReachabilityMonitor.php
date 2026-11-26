@@ -35,11 +35,25 @@ final class PingReachabilityMonitor
 
     public function reconcile(array $before, bool $incrementRevision = true): array
     {
+        $after = $this->snapshot();
         $results = [];
-        foreach ($this->snapshot() as $id => $decision) {
-            if ($decision['allowed'] || (isset($before[$id]) && self::identity($before[$id], (int)$id) === self::identity($decision, (int)$id))) { continue; }
+        foreach ($after as $id => $decision) {
+            if ($decision['allowed']) {
+                if (isset($before[$id]) && !$before[$id]['allowed']) {
+                    $results[] = ['id' => $id, 'status' => 'unknown', 'checked_at' => null,
+                        'response_ms' => null, 'error' => null];
+                }
+                continue;
+            }
+            if (isset($before[$id]) && self::identity($before[$id], (int)$id) === self::identity($decision, (int)$id)) { continue; }
             $results[] = ['id' => $id, 'status' => 'unknown', 'checked_at' => null,
                 'response_ms' => null, 'error' => $decision['error']];
+        }
+        foreach ($before as $id => $prev) {
+            if (!$prev['allowed'] && !isset($after[$id])) {
+                $results[] = ['id' => $id, 'status' => 'unknown', 'checked_at' => null,
+                    'response_ms' => null, 'error' => null];
+            }
         }
         $count = (new DeviceRepository($this->db))->updateMonitorStatuses($results);
         if ($count > 0 && $incrementRevision) { (new AppMetaRepository($this->db))->incrementMonitorRevision(); }

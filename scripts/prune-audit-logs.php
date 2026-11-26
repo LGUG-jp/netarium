@@ -28,15 +28,20 @@ if (isset($options['audit-log-dir']) && is_string($options['audit-log-dir']) && 
 } elseif (isset($options['storage-dir']) && is_string($options['storage-dir']) && trim($options['storage-dir']) !== '') {
     $storageDir = rtrim(trim($options['storage-dir']), '\\/');
     $config['audit_log_directory'] = $storageDir . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR . 'audit';
+    $config['operation_lock_file'] = $storageDir . DIRECTORY_SEPARATOR . 'temp' . DIRECTORY_SEPARATOR . 'operation.lock';
 }
-$operationGate = new \Netarium\Core\OperationGate((string)$config['operation_lock_file']);
-$operationGate->acquireShared();
 
+$operationGate = null;
+$exitCode = 0;
 try {
+    $operationGate = new \Netarium\Core\OperationGate((string)$config['operation_lock_file']);
+    $operationGate->acquireShared();
     AuditLog::prune($config);
     fwrite(STDOUT, "監査ログの期限超過ファイルの整理が完了しました。\n");
-    exit(0);
 } catch (Throwable $e) {
     fwrite(STDERR, '監査ログの整理に失敗しました: ' . $e->getMessage() . "\n");
-    exit(1);
+    $exitCode = 1;
+} finally {
+    $operationGate?->release();
 }
+exit($exitCode);

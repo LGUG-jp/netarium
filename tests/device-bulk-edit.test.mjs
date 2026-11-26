@@ -8,9 +8,11 @@ import { resetResourceBaseline, buildResourceSave } from '../public/js/core/reso
 beforeEach(() => {
     discardDeviceDrafts();
     appState.devices = [
-        normalizeDevice({ id: 1, name: '架空機器A', ip: '192.0.2.1', facility: '庁舎A', floor: '1F', model: ' 型番A ', install_date: '2024-01-01', resource_revision: 2 }),
-        normalizeDevice({ id: 2, name: '架空機器B', ip: '192.0.2.2', facility: '', floor: '1F', install_date: '2025-03-01', resource_revision: 3 })
+        normalizeDevice({ id: 1, name: '架空機器A', ip: '192.0.2.1', floor_id: 11, facility: '庁舎A', floor: '1F', model: ' 型番A ', install_date: '2024-01-01', resource_revision: 2 }),
+        normalizeDevice({ id: 2, name: '架空機器B', ip: '192.0.2.2', floor_id: null, facility: '', floor: '1F', install_date: '2025-03-01', resource_revision: 3 })
     ];
+    appState.buildings = [{ id: 1, name: '庁舎A' }, { id: 2, name: '庁舎B' }];
+    appState.floors = [{ id: 11, building_id: 1, name: '1F' }, { id: 21, building_id: 2, name: '1F' }];
     appState.views = [{ id: 10, name: '架空ビュー', resource_revision: 4 }];
     appState.placements = [{ id: 1, view_id: 10, device_id: 1, x: 10, y: 20 }];
     appState.links = [];
@@ -23,8 +25,8 @@ test('選択IDを固定し、共通値・複数値・未設定を区別する', 
     const session = startDeviceBulkEdit(selected);
     selected.pop();
     assert.deepEqual(session.ids, [1, 2]);
-    assert.equal(summarizeBulkValues(session, 'floor'), '1F');
-    assert.equal(summarizeBulkValues(session, 'facility'), '複数の値（未設定を含む）');
+    assert.equal(summarizeBulkValues(startDeviceBulkEdit([1]), 'floor_id'), '庁舎A / 1F');
+    assert.equal(summarizeBulkValues(session, 'floor_id'), '複数の値（未設定を含む）');
     assert.equal(summarizeBulkValues(session, 'department'), '未設定');
     assert.throws(() => startDeviceBulkEdit([]), /選択/);
 });
@@ -32,23 +34,37 @@ test('選択IDを固定し、共通値・複数値・未設定を区別する', 
 test('指定項目だけ正規化して空欄化し、配置と未選択属性を維持する', () => {
     const session = startDeviceBulkEdit([1, 2]);
     const placements = structuredClone(appState.placements);
-    const updates = { facility: ' 庁舎B ', floor: '', location: 'EPS', department: '情報担当', maintenance_vendor: '架空ベンダー', maintenance_expiry: '2026-12-31', manufacturer: '架空メーカー', install_date: '2025-04-01' };
+    const updates = { floor_id: null, location: 'EPS', department: '情報担当', maintenance_vendor: '架空ベンダー', maintenance_expiry: '2026-12-31', manufacturer: '架空メーカー', install_date: '2025-04-01' };
     const plan = prepareDeviceBulkEdit(session, updates);
     assert.equal(plan.placedCount, 1);
     assert.equal(appState.devices[0].facility, '庁舎A');
     assert.equal(applyDeviceBulkEdit(session, updates), true);
     for (const device of appState.devices) {
-        assert.equal(device.facility, '庁舎B'); assert.equal(device.floor, '');
+        assert.equal(device.floor_id, null);
+        assert.equal(device.floor, '1F');
         assert.equal(device.install_date, '2025-04-01'); assert.equal(device.maintenance_expiry, '2026-12-31');
         assert.equal(device.location, 'EPS'); assert.equal(device.department, '情報担当');
         assert.equal(device.maintenance_vendor, '架空ベンダー'); assert.equal(device.manufacturer, '架空メーカー');
     }
+    assert.equal(appState.devices[0].facility, '庁舎A');
+    assert.equal(appState.devices[1].facility, '');
     assert.equal(appState.devices[0].model, ' 型番A ');
     assert.equal(appState.devices[0].ip, '192.0.2.1');
     assert.deepEqual(appState.placements, placements);
     const payload = buildResourceSave();
     assert.deepEqual(payload.devices.map(row => row.expected_revision), [2, 3]);
     assert.deepEqual(payload.views, []);
+});
+
+test('設置フロアIDの一括設定は同名フロアを区別し旧文字列を保持する', () => {
+    const legacy = appState.devices.map(({ facility, floor }) => ({ facility, floor }));
+    const session = startDeviceBulkEdit([1, 2]);
+    applyDeviceBulkEdit(session, { floor_id: 21 });
+    assert.deepEqual(appState.devices.map(device => device.floor_id), [21, 21]);
+    assert.deepEqual(appState.devices.map(({ facility, floor }) => ({ facility, floor })), legacy);
+    assert.throws(() => prepareDeviceBulkEdit(startDeviceBulkEdit([1]), { facility: '旧施設' }), /対象外/);
+    getDeviceDraft('sheet', 1).floor_id = null;
+    assert.throws(() => startDeviceBulkEdit([1]), /未適用/);
 });
 test('後半の機器で日付順序違反となる場合も全件を保持する', () => {
     const session = startDeviceBulkEdit([1, 2]);

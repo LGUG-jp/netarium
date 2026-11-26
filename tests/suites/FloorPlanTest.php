@@ -97,9 +97,27 @@ class FloorPlanTest extends TestCase
             ])->assertStatus(409)->getJson();
             $this->assertSame('views', $conflict['details']['conflicts'][0]['kind']);
             $this->assertSame($viewId, $conflict['details']['conflicts'][0]['id']);
+            $this->assertSame(null, $conflict['details']['reason'] ?? null);
             $floorPlans = $this->client->get('/api.php?action=load')->assertOk()->getJson()['floor_plans'];
             $this->assertSame(50.0, (float)$floorPlans[0]['x']);
             $this->assertSame(80.0, (float)$floorPlans[0]['y']);
+
+            $uploadConflict = $this->client->postMultipart(
+                '/image_upload.php?action=upload_floor_plan',
+                ['view_id' => (string)$viewId, 'expected_revision' => (string)$staleViewRevision],
+                ['floor_plan' => ['path' => $tempPng, 'filename' => 'floor1.png', 'type' => 'image/png']]
+            )->assertStatus(409)->getJson();
+            $this->assertSame('views', $uploadConflict['details']['conflicts'][0]['kind']);
+            $this->assertSame($viewId, $uploadConflict['details']['conflicts'][0]['id']);
+            $this->assertSame(null, $uploadConflict['details']['reason'] ?? null);
+
+            $deleteConflict = $this->client->postJson('/api.php?action=delete_floor_plan', [
+                'view_id' => $viewId,
+                'expected_revision' => $staleViewRevision,
+            ])->assertStatus(409)->getJson();
+            $this->assertSame('views', $deleteConflict['details']['conflicts'][0]['kind']);
+            $this->assertSame($viewId, $deleteConflict['details']['conflicts'][0]['id']);
+            $this->assertSame(null, $deleteConflict['details']['reason'] ?? null);
 
             // 6. Delete floor plan
             $deleteRes = $this->client->postJson('/api.php?action=delete_floor_plan', [
@@ -170,7 +188,7 @@ class FloorPlanTest extends TestCase
                 'operation' => 'update', 'id' => 2, 'expected_revision' => (int)$view['resource_revision'],
                 'view' => $view,
                 'placements' => array_values(array_filter($before['placements'], static fn($row) => (int)$row['view_id'] === 2)),
-                'links' => array_values(array_filter($before['links'], static fn($row) => (int)$row['view_id'] === 2)),
+                'view_link_routes' => array_values(array_filter($before['view_link_routes'], static fn($row) => (int)$row['view_id'] === 2)),
                 'canvas_notes' => [],
             ]]])->assertOk();
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
@@ -207,6 +225,7 @@ class FloorPlanTest extends TestCase
             $db->exec('UPDATE view_floor_plans SET x = x WHERE view_id = 2');
             $busy = $client->postJson('/api.php?action=update_floor_plan_settings', $settings)
                 ->assertStatus(409)->getJson();
+            $this->assertSame('operation_busy', $busy['details']['reason']);
             $this->assertSame([], $busy['details']['conflicts'] ?? []);
             $this->assertStringContains('少し待って', $busy['error']);
             $db->rollBack();

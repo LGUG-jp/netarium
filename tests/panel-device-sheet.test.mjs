@@ -26,7 +26,7 @@ test('機器詳細から個票へ移動する際は未適用入力と対象機�
         requests.push(payload);
         return new Response(JSON.stringify({ ok: true, revision: 2, id_maps: {},
             devices: payload.devices.map(row => ({ ...row.device, resource_revision: 2 })),
-            views: [], placements: [], links: [], canvas_notes: [], affected_view_ids: [], deleted_device_ids: [], deleted_view_ids: [] }), { status: 200 });
+            views: [], placements: [], view_link_routes: [], canvas_notes: [], affected_view_ids: [], deleted_device_ids: [], deleted_view_ids: [] }), { status: 200 });
     };
     const reset = async (viewType = 'topology', admin = true) => {
         queue.clearPendingSave();

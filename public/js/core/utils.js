@@ -19,8 +19,10 @@ export function normalizeText(value) {
     return value == null ? '' : String(value);
 }
 
-
-
+// PHP trim() の既定文字集合。全角空白やフォームフィードは値の一部として残す。
+export function trimPhpText(value) {
+    return normalizeText(value).replace(/^[ \t\n\r\0\x0b]+|[ \t\n\r\0\x0b]+$/g, '');
+}
 
 export function setInputValue(id, value) {
     const element = document.getElementById(id);
@@ -167,12 +169,6 @@ export function normalizeMatchText(value) {
         .trim()
         .replace(/\s+/g, ' ')
         .toLocaleLowerCase('ja');
-}
-
-
-export function normalizeFloorForMatch(value) {
-    return normalizeMatchText(value)
-        .replace(/階$/, 'f');
 }
 
 

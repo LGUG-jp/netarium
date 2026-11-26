@@ -1,6 +1,8 @@
 /**
  * キャンバス上部の共通ツールバー。操作内容と終了後の処理は各機能が持つ。
  */
+import { eventBus } from '../core/event-bus.js';
+
 let activeContext = null;
 const initializedToolbars = new WeakSet();
 
@@ -32,6 +34,7 @@ export function showCanvasContextToolbar(id, onFinish) {
     toolbar.setAttribute('aria-label', panel.getAttribute('aria-label'));
     toolbar.setAttribute('aria-hidden', 'false');
     toolbar.hidden = false;
+    eventBus.emit('canvas-context:changed');
     panel.querySelector('button:not(:disabled)')?.focus();
 }
 
@@ -47,6 +50,7 @@ export function hideCanvasContextToolbar(id) {
     for (const panel of toolbar.querySelectorAll('[data-canvas-context]')) {
         panel.hidden = true;
     }
+    eventBus.emit('canvas-context:changed');
 }
 
 export function finishCanvasContextToolbar(reason = 'finish') {

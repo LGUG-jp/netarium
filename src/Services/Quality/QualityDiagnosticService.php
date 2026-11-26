@@ -9,9 +9,11 @@ use LogicException;
 use Normalizer;
 use PDO;
 use Throwable;
+use Netarium\Core\ApiException;
 use Netarium\Repositories\AppMetaRepository;
 use Netarium\Repositories\DeviceIpAddressRepository;
 use Netarium\Services\Topology\DeviceFields;
+use Netarium\Services\Topology\LinkRoute;
 use Netarium\Services\Monitoring\PingReachabilityPolicy;
 
 class QualityDiagnosticService
@@ -114,34 +116,6 @@ class QualityDiagnosticService
     }
 
     /**
-     * 施設・フロア比較用に文字列を正規化する。
-     */
-    public function normalizeDataQualityLocation(string $value): string
-    {
-        $value = trim($value);
-
-        if ($value === '') {
-            return '';
-        }
-
-        if (class_exists('Normalizer')) {
-            $normalized = Normalizer::normalize($value, Normalizer::FORM_KC);
-
-            if (is_string($normalized)) {
-                $value = $normalized;
-            }
-        }
-
-        $value = preg_replace('/\s+/u', '', $value) ?? $value;
-
-        if (function_exists('mb_strtoupper')) {
-            return mb_strtoupper($value, 'UTF-8');
-        }
-
-        return strtoupper($value);
-    }
-
-    /**
      * 診断結果に表示する機器項目名を返す。
      */
     public function getDataQualityDeviceFieldLabels(): array
@@ -150,8 +124,7 @@ class QualityDiagnosticService
             'name' => '名称',
             'type' => '種別',
             'ip' => 'IPアドレス',
-            'facility' => '施設',
-            'floor' => 'フロア',
+            'floor_id' => '設置フロア',
             'location' => '設置場所',
             'manufacturer' => 'メーカー',
             'model' => '型番',
@@ -173,35 +146,7 @@ class QualityDiagnosticService
      */
     public function getDataQualityRecommendedDeviceFields(array $config): array
     {
-        $allowedFields = [
-            'facility',
-            'floor',
-            'location',
-            'manufacturer',
-            'model',
-            'asset_number',
-            'serial_number',
-            'mac_address',
-            'memo',
-        ];
-
-        $configuredFields = $config['quality_recommended_device_fields'] ?? [];
-
-        if (!is_array($configuredFields)) {
-            return [];
-        }
-
-        $fields = [];
-
-        foreach ($configuredFields as $field) {
-            $field = (string)$field;
-
-            if (in_array($field, $allowedFields, true)) {
-                $fields[] = $field;
-            }
-        }
-
-        return array_values(array_unique($fields));
+        return QualityNotApplicable::recommendedDeviceFields($config);
     }
 
     /**
@@ -348,7 +293,7 @@ class QualityDiagnosticService
             $missingRecommendedFields = [];
 
             foreach ($recommendedFields as $field) {
-                if (trim((string)($device[$field] ?? '')) === '') {
+                if (QualityNotApplicable::isMissing($device, $field)) {
                     $missingRecommendedFields[] = $field;
                 }
             }
@@ -388,6 +333,7 @@ class QualityDiagnosticService
                 name,
                 facility,
                 floor,
+                floor_id,
                 view_type
             FROM views
             ORDER BY id
@@ -401,6 +347,7 @@ class QualityDiagnosticService
                 ip,
                 facility,
                 floor,
+                floor_id,
                 location,
                 manufacturer,
                 model,
@@ -413,7 +360,8 @@ class QualityDiagnosticService
                 department,
                 maintenance_vendor,
                 install_date,
-                maintenance_expiry
+                maintenance_expiry,
+                resource_revision
             FROM devices
             ORDER BY id
         ")->fetchAll(PDO::FETCH_ASSOC);
@@ -440,20 +388,7 @@ class QualityDiagnosticService
             ORDER BY id
         ")->fetchAll(PDO::FETCH_ASSOC);
 
-        $links = $this->db->query("
-            SELECT
-                id,
-                view_id,
-                from_id,
-                to_id,
-                label,
-                from_port,
-                to_port,
-                vlan,
-                memo
-            FROM links
-            ORDER BY id
-        ")->fetchAll(PDO::FETCH_ASSOC);
+        $links = $this->db->query('SELECT id, from_id, to_id, from_port_id, to_port_id, resource_revision FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
 
         $floorPlans = $this->db->query("
             SELECT *
@@ -467,6 +402,12 @@ class QualityDiagnosticService
             'monitor_statuses' => $monitorStatuses,
             'placements' => $placements,
             'links' => $links,
+            'device_ports' => $this->db->query('SELECT id, device_id FROM device_ports ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            'view_link_routes' => $this->db->query('SELECT * FROM view_link_routes ORDER BY view_id, device_a_id, device_b_id')->fetchAll(PDO::FETCH_ASSOC),
+            'legacy_link_conflicts' => $this->db->query('SELECT legacy_link_id, view_id, device_a_id, device_b_id, reason
+                FROM legacy_link_conflicts ORDER BY legacy_link_id')->fetchAll(PDO::FETCH_ASSOC),
+            'legacy_link_vlans' => $this->db->query('SELECT v.link_id, v.vlan, l.from_id, l.to_id
+                FROM legacy_link_vlans v JOIN links l ON l.id = v.link_id ORDER BY v.link_id')->fetchAll(PDO::FETCH_ASSOC),
             'floor_plans' => $floorPlans,
             'rack_mounts' => $this->db->query("SELECT m.device_id, m.view_id FROM rack_mounts m
                 JOIN views v ON v.id = m.view_id WHERE v.view_type = 'rack'
@@ -540,13 +481,15 @@ class QualityDiagnosticService
      */
     public function diagnoseDataQuality(array $config): array
     {
-        $source = $this->fetchDataQualitySource();
+        return $this->diagnoseSource($this->fetchDataQualitySource(), $config);
+    }
 
+    private function diagnoseSource(array $source, array $config): array
+    {
         $views = $source['views'];
         $devices = $source['devices'];
         $monitorStatuses = $source['monitor_statuses'];
         $placements = $source['placements'];
-        $links = $source['links'];
         $floorPlans = $source['floor_plans'];
         $rackMountedDeviceIds = array_fill_keys(array_column($source['rack_mounts'], 'device_id'), true);
 
@@ -556,7 +499,6 @@ class QualityDiagnosticService
         $devicesById = [];
         $monitorByDeviceId = [];
         $placementsByDeviceId = [];
-        $placementPairs = [];
         $floorPlanViewIds = [];
 
         foreach ($views as $view) {
@@ -640,127 +582,10 @@ class QualityDiagnosticService
 
             if (isset($devicesById[$deviceId]) && isset($viewsById[$viewId])) {
                 $placementsByDeviceId[$deviceId][] = $placement;
-                $placementPairs[$viewId . ':' . $deviceId] = true;
             }
         }
 
-        /*
-         * 接続の参照整合性と重複。
-         */
-        $linkGroups = [];
-
-        foreach ($links as $link) {
-            $linkId = (int)$link['id'];
-            $viewId = (int)$link['view_id'];
-            $fromId = (int)$link['from_id'];
-            $toId = (int)$link['to_id'];
-
-            $hasView = isset($viewsById[$viewId]);
-            $hasFromDevice = isset($devicesById[$fromId]);
-            $hasToDevice = isset($devicesById[$toId]);
-
-            if (!$hasView) {
-                $issues[] = $this->createDataQualityIssue(
-                    'orphan_link_view',
-                    'error',
-                    'integrity',
-                    'link',
-                    [$linkId],
-                    '接続が存在しないビューを参照しています',
-                    [
-                        'link_id' => $linkId,
-                        'view_id' => $viewId,
-                    ]
-                );
-            }
-
-            if (!$hasFromDevice) {
-                $issues[] = $this->createDataQualityIssue(
-                    'orphan_link_from_device',
-                    'error',
-                    'integrity',
-                    'link',
-                    [$linkId],
-                    '接続の始点が存在しない機器を参照しています',
-                    [
-                        'link_id' => $linkId,
-                        'device_id' => $fromId,
-                    ]
-                );
-            }
-
-            if (!$hasToDevice) {
-                $issues[] = $this->createDataQualityIssue(
-                    'orphan_link_to_device',
-                    'error',
-                    'integrity',
-                    'link',
-                    [$linkId],
-                    '接続の終点が存在しない機器を参照しています',
-                    [
-                        'link_id' => $linkId,
-                        'device_id' => $toId,
-                    ]
-                );
-            }
-
-            if ($hasView && $hasFromDevice && $hasToDevice) {
-                $missingEndpointIds = [];
-
-                if (!isset($placementPairs[$viewId . ':' . $fromId])) {
-                    $missingEndpointIds[] = $fromId;
-                }
-
-                if (!isset($placementPairs[$viewId . ':' . $toId])) {
-                    $missingEndpointIds[] = $toId;
-                }
-
-                if ($missingEndpointIds !== []) {
-                    $issues[] = $this->createDataQualityIssue(
-                        'link_endpoint_not_placed',
-                        'error',
-                        'integrity',
-                        'link',
-                        [$linkId],
-                        '接続の両端が同じビューへ配置されていません',
-                        [
-                            'link_id' => $linkId,
-                            'view_id' => $viewId,
-                            'device_ids' => [$fromId, $toId],
-                            'missing_device_ids' => array_values(array_unique($missingEndpointIds)),
-                        ]
-                    );
-                }
-            }
-
-            /*
-             * 始点・終点の順序を入れ替えても
-             * 同じ接続として扱う。
-             */
-            $lowId = min($fromId, $toId);
-            $highId = max($fromId, $toId);
-
-            $linkKey = $viewId . ':' . $lowId . ':' . $highId;
-            $linkGroups[$linkKey][] = $linkId;
-        }
-
-        foreach ($linkGroups as $linkIds) {
-            if (count($linkIds) < 2) {
-                continue;
-            }
-
-            $issues[] = $this->createDataQualityIssue(
-                'duplicate_link',
-                'error',
-                'integrity',
-                'link',
-                $linkIds,
-                '同一ビュー内に重複接続があります',
-                [
-                    'link_ids' => $linkIds,
-                ]
-            );
-        }
+        $this->appendConnectionIssues($issues, $source, $viewsById, $devicesById);
 
         /*
          * 重複値。
@@ -890,6 +715,11 @@ class QualityDiagnosticService
         $tokyoTz = new DateTimeZone('Asia/Tokyo');
         $todayTokyo = new DateTimeImmutable('today', $tokyoTz);
         $approachingThreshold = $todayTokyo->modify('+30 days');
+        $floorPathsById = array_column(
+            $this->db->query("SELECT f.id, b.name || ' / ' || f.name AS path FROM floors f JOIN buildings b ON b.id = f.building_id")->fetchAll(PDO::FETCH_ASSOC),
+            'path',
+            'id'
+        );
 
         foreach ($devices as $device) {
             $deviceId = (int)$device['id'];
@@ -976,7 +806,17 @@ class QualityDiagnosticService
                 }
             }
 
-            if ($maintenanceExpiry !== '') {
+            if ($maintenanceExpiry === '') {
+                $issues[] = $this->createDataQualityIssue(
+                    'maintenance_expiry_missing',
+                    'info',
+                    'maintenance',
+                    'device',
+                    [$deviceId],
+                    '保守期限が登録されていません',
+                    ['field' => 'maintenance_expiry']
+                );
+            } else {
                 if (!DeviceFields::isValidDateString($maintenanceExpiry)) {
                     $isExpiryValid = false;
                     $issues[] = $this->createDataQualityIssue(
@@ -1113,12 +953,8 @@ class QualityDiagnosticService
                 }
             }
 
-            /*
-             * フロア不一致。
-             *
-             * floorビューで、双方の施設・フロアが
-             * 入力済みの場合だけ比較する。
-             */
+            // Physical installation is independent of diagram placement.
+            // Report only explicit floor-ID differences on physical diagrams.
             foreach ($placementsByDeviceId[$deviceId] ?? [] as $placement) {
                 $viewId = (int)$placement['view_id'];
                 $view = $viewsById[$viewId] ?? null;
@@ -1127,28 +963,11 @@ class QualityDiagnosticService
                     continue;
                 }
 
-                $deviceFacility = trim((string)($device['facility'] ?? ''));
-                $deviceFloor = trim((string)($device['floor'] ?? ''));
-                $viewFacility = trim((string)($view['facility'] ?? ''));
-                $viewFloor = trim((string)($view['floor'] ?? ''));
-
-                if (
-                    $deviceFacility === '' ||
-                    $deviceFloor === '' ||
-                    $viewFacility === '' ||
-                    $viewFloor === ''
-                ) {
-                    continue;
-                }
-
-                if (
-                    $this->normalizeDataQualityLocation($deviceFacility) ===
-                        $this->normalizeDataQualityLocation($viewFacility) &&
-                    $this->normalizeDataQualityLocation($deviceFloor) ===
-                        $this->normalizeDataQualityLocation($viewFloor)
-                ) {
-                    continue;
-                }
+                $deviceFloorId = $device['floor_id'] ?? null;
+                $viewFloorId = $view['floor_id'] ?? null;
+                if ($deviceFloorId === null || $viewFloorId === null || (int)$deviceFloorId === (int)$viewFloorId) { continue; }
+                $devicePath = $floorPathsById[(int)$deviceFloorId] ?? (string)$deviceFloorId;
+                $viewPath = $floorPathsById[(int)$viewFloorId] ?? (string)$viewFloorId;
 
                 $issues[] = $this->createDataQualityIssue(
                     'floor_mismatch',
@@ -1156,16 +975,50 @@ class QualityDiagnosticService
                     'placement',
                     'device',
                     [$deviceId],
-                    '機器情報と配置先ビューの施設・フロアが一致しません',
+                    '機器の設置フロアと配置先ビューの所属フロアが異なります',
                     [
                         'view_id' => $viewId,
-                        'device_facility' => $deviceFacility,
-                        'device_floor' => $deviceFloor,
-                        'view_facility' => $viewFacility,
-                        'view_floor' => $viewFloor,
+                        'device_floor_id' => $deviceFloorId,
+                        'view_floor_id' => $viewFloorId,
+                        'device_path' => $devicePath,
+                        'view_path' => $viewPath,
                     ]
                 );
             }
+        }
+
+        $rackFloorMismatches = $this->db->query("
+            SELECT rack.id AS rack_view_id, rack.name AS rack_view_name, rack.floor_id AS rack_floor_id,
+                   physical.id AS view_id, physical.name AS view_name, physical.floor_id AS view_floor_id
+            FROM floor_rack_placements p
+            JOIN views rack ON rack.id = p.rack_view_id AND rack.view_type = 'rack'
+            JOIN views physical ON physical.id = p.floor_view_id AND physical.view_type = 'floor'
+            WHERE rack.floor_id IS NOT NULL AND rack.floor_id IS NOT physical.floor_id
+        ");
+        while ($placement = $rackFloorMismatches->fetch(PDO::FETCH_ASSOC)) {
+            $rackViewId = (int)$placement['rack_view_id'];
+            $rackFloorId = (int)$placement['rack_floor_id'];
+            $viewFloorId = $placement['view_floor_id'] === null ? null : (int)$placement['view_floor_id'];
+
+            $issues[] = $this->createDataQualityIssue(
+                'rack_floor_mismatch',
+                'warning',
+                'placement',
+                'view',
+                [$rackViewId],
+                $viewFloorId === null
+                    ? 'ラックの配置先ビューに所属フロアが設定されていません'
+                    : 'ラックと配置先ビューの所属フロアが異なります',
+                [
+                    'view_id' => (int)$placement['view_id'],
+                    'rack_view_name' => (string)$placement['rack_view_name'],
+                    'view_name' => (string)$placement['view_name'],
+                    'rack_floor_id' => $rackFloorId,
+                    'view_floor_id' => $viewFloorId,
+                    'rack_path' => $floorPathsById[$rackFloorId] ?? (string)$rackFloorId,
+                    'view_path' => $viewFloorId === null ? null : ($floorPathsById[$viewFloorId] ?? (string)$viewFloorId),
+                ]
+            );
         }
 
         /*
@@ -1225,6 +1078,128 @@ class QualityDiagnosticService
         return $issues;
     }
 
+    private function appendConnectionIssues(array &$issues, array $source, array $viewsById, array $devicesById): void
+    {
+        $portOwners = array_column($source['device_ports'], 'device_id', 'id');
+        foreach ($portOwners as $portId => $deviceId) {
+            if (!isset($devicesById[$deviceId])) {
+                $issues[] = $this->createDataQualityIssue(
+                    'orphan_device_port', 'error', 'integrity', 'device', [$deviceId],
+                    'ポートが存在しない機器を参照しています', ['port_id' => $portId, 'device_id' => $deviceId]
+                );
+            }
+        }
+
+        $pairs = [];
+        foreach ($source['legacy_link_conflicts'] as $row) {
+            $pairs[$row['device_a_id'] . ':' . $row['device_b_id']] = true;
+            $issues[] = $this->createDataQualityIssue(
+                'legacy_link_conflict', 'warning', 'integrity', 'view', [$row['view_id']],
+                '移行保留の旧接続があります。確認が必要です', $row
+            );
+        }
+
+        foreach ($source['legacy_link_vlans'] as $row) {
+            $linkId = (int)$row['link_id'];
+            $issues[] = $this->createDataQualityIssue(
+                'legacy_link_vlan', 'warning', 'integrity', 'link', [$linkId],
+                '未移行VLANは、再設定または削除してください。',
+                ['link_id' => $linkId, 'device_ids' => [(int)$row['from_id'], (int)$row['to_id']], 'vlan' => $row['vlan']]
+            );
+        }
+
+        $linkGroups = [];
+        $portGroups = [];
+        foreach ($source['links'] as $link) {
+            $linkId = $link['id'];
+            $from = $link['from_id'];
+            $to = $link['to_id'];
+            $pair = min($from, $to) . ':' . max($from, $to);
+            $pairs[$pair] = true;
+            if ($from === $to) {
+                $issues[] = $this->createDataQualityIssue(
+                    'self_link', 'error', 'integrity', 'link', [$linkId],
+                    '同一機器の自己接続があります', ['link_id' => $linkId, 'device_id' => $from]
+                );
+            }
+            if ($link['from_port_id'] === null && $link['to_port_id'] === null) {
+                $linkGroups[$pair][] = $linkId;
+            }
+            $missingEndpoints = [];
+            foreach (['from', 'to'] as $endpoint) {
+                $deviceId = $link[$endpoint . '_id'];
+                $portId = $link[$endpoint . '_port_id'];
+                if (!isset($devicesById[$deviceId])) {
+                    $issues[] = $this->createDataQualityIssue(
+                        'orphan_link_' . $endpoint . '_device', 'error', 'integrity', 'link', [$linkId],
+                        '接続の端点が存在しない機器を参照しています', ['link_id' => $linkId, 'device_id' => $deviceId]
+                    );
+                } elseif ($portId === null) {
+                    $missingEndpoints[$endpoint] = [
+                        'device_id' => (int)$deviceId,
+                        'device_name' => (string)$devicesById[$deviceId]['name'],
+                    ];
+                }
+                if ($portId !== null) {
+                    $portGroups[$portId][] = $linkId;
+                    if (($portOwners[$portId] ?? null) !== $deviceId) {
+                        $issues[] = $this->createDataQualityIssue(
+                            'invalid_link_port', 'error', 'integrity', 'link', [$linkId],
+                            '接続のポートが端点機器の台帳にありません',
+                            ['link_id' => $linkId, 'device_id' => $deviceId, 'port_id' => $portId]
+                        );
+                    }
+                }
+            }
+            if ($missingEndpoints !== []) {
+                $issues[] = $this->createDataQualityIssue(
+                    'link_ports_missing', 'info', 'completeness', 'link', [$linkId],
+                    '接続端点のポートが指定されていません', ['missing_endpoints' => $missingEndpoints]
+                );
+            }
+        }
+
+        foreach ($linkGroups as $linkIds) {
+            if (count($linkIds) > 1) {
+                $issues[] = $this->createDataQualityIssue(
+                    'duplicate_link', 'error', 'integrity', 'link', $linkIds,
+                    '同じ機器ペアに両端ポート未指定の接続が重複しています', ['link_ids' => $linkIds]
+                );
+            }
+        }
+        foreach ($portGroups as $portId => $linkIds) {
+            if (count($linkIds) > 1) {
+                $issues[] = $this->createDataQualityIssue(
+                    'duplicate_port_use', 'error', 'integrity', 'link', array_values(array_unique($linkIds)),
+                    '同じ機器ポートが複数の端点で使用されています', ['port_id' => $portId, 'link_ids' => $linkIds]
+                );
+            }
+        }
+
+        foreach ($source['view_link_routes'] as $row) {
+            $viewId = $row['view_id'];
+            $a = $row['device_a_id'];
+            $b = $row['device_b_id'];
+            $type = $viewsById[$viewId]['view_type'] ?? null;
+            $valid = $type !== null && $type !== 'rack' && $a < $b
+                && isset($devicesById[$a], $devicesById[$b], $pairs["{$a}:{$b}"]);
+            if ($valid) {
+                try {
+                    LinkRoute::normalize(['route_mode' => 'manual', 'manual_route' => json_decode($row['manual_route'], true)]);
+                } catch (ApiException $e) {
+                    $valid = false;
+                }
+            }
+            if (!$valid) {
+                $issues[] = $this->createDataQualityIssue(
+                    'invalid_view_link_route', 'error', 'integrity', 'view', [$viewId],
+                    'ビューの手動経路の参照先または中間点が不正です',
+                    ['view_id' => $viewId, 'device_ids' => [$a, $b]]
+                );
+            }
+        }
+    }
+
     /**
      * severity別の問題件数を集計する。
      */
@@ -1250,19 +1225,131 @@ class QualityDiagnosticService
         return $summary;
     }
 
+    private function getNotApplicableItems(array $issue, array $labels, array $resourceRevisions): array
+    {
+        $details = $issue['details'];
+        if ($issue['code'] === 'link_ports_missing') {
+            $items = [];
+            foreach ($details['missing_endpoints'] as $side => $endpoint) {
+                $items[] = [
+                    'field' => $side . '_port',
+                    'device_id' => $endpoint['device_id'],
+                    'label' => $side === 'from' ? '始点ポート' : '終点ポート',
+                    'resource_revision' => (int)$resourceRevisions['link'][$issue['entity_ids'][0]],
+                ];
+            }
+            return $items;
+        }
+
+        $fields = match ($issue['code']) {
+            'monitoring_not_applicable' => ($details['reason'] === 'ip_not_set') ? ['ip'] : [],
+            'missing_recommended_fields' => $details['fields'],
+            'maintenance_expiry_missing' => ['maintenance_expiry'],
+            default => [],
+        };
+        return array_map(static fn(string $field): array => [
+            'field' => $field, 'device_id' => $issue['entity_ids'][0], 'label' => $labels[$field],
+            'resource_revision' => (int)$resourceRevisions['device'][$issue['entity_ids'][0]],
+        ], $fields);
+    }
+
+    private function withNotApplicableItems(array $issue, array $items): array
+    {
+        $issue['not_applicable_items'] = $items;
+        if ($issue['code'] === 'missing_recommended_fields') {
+            $issue['details']['fields'] = array_column($items, 'field');
+            $issue['details']['field_labels'] = array_column($items, 'label');
+        } elseif ($issue['code'] === 'link_ports_missing') {
+            $sides = array_map(static fn(array $item): string => substr($item['field'], 0, -5), $items);
+            $issue['details']['missing_endpoints'] = array_intersect_key($issue['details']['missing_endpoints'], array_flip($sides));
+        }
+        return $issue;
+    }
+
+    private function splitNotApplicableIssues(array $issues, array $rows, array $resourceRevisions): array
+    {
+        $deviceFields = $linkFields = [];
+        foreach ($rows as $row) {
+            if ($row['link_id'] === null) {
+                $deviceFields[$row['device_id']][$row['field']] = true;
+            } else {
+                $linkFields[$row['link_id']][$row['field']] = (int)$row['device_id'];
+            }
+        }
+
+        $labels = $this->getDataQualityDeviceFieldLabels();
+        $visible = $suppressed = [];
+        $suppressedCount = 0;
+        foreach ($issues as $issue) {
+            $items = $this->getNotApplicableItems($issue, $labels, $resourceRevisions);
+            if ($items === []) {
+                $visible[] = $issue;
+                continue;
+            }
+            $visibleItems = $suppressedItems = [];
+            foreach ($items as $item) {
+                $isSuppressed = $issue['entity_type'] === 'link'
+                    ? ($linkFields[$issue['entity_ids'][0]][$item['field']] ?? null) === $item['device_id']
+                    : isset($deviceFields[$item['device_id']][$item['field']]);
+                if ($isSuppressed) {
+                    $suppressedItems[] = $item;
+                } else {
+                    $visibleItems[] = $item;
+                }
+            }
+            if ($visibleItems !== []) {
+                $visible[] = $this->withNotApplicableItems($issue, $visibleItems);
+            }
+            if ($suppressedItems !== []) {
+                $suppressed[] = $this->withNotApplicableItems($issue, $suppressedItems);
+                $suppressedCount += count($suppressedItems);
+            }
+        }
+        return [$visible, $suppressed, $suppressedCount];
+    }
+
     /**
      * データ品質診断を実行し、完全なレスポンスデータを生成する
      */
     public function runDiagnosis(array $config): array
     {
-        $revision = $this->appMetaRepo->getDataRevision();
-        $issues = $this->diagnoseDataQuality($config);
+        $ownsTransaction = !$this->db->inTransaction();
+        if ($ownsTransaction) {
+            $this->db->beginTransaction();
+        }
+        try {
+            $revision = $this->appMetaRepo->getDataRevision();
+            $source = $this->fetchDataQualitySource();
+            $issues = $this->diagnoseSource($source, $config);
+            $resourceRevisions = [
+                'device' => array_column($source['devices'], 'resource_revision', 'id'),
+                'link' => array_column($source['links'], 'resource_revision', 'id'),
+            ];
+            $hierarchy = [
+                'views' => $source['views'],
+                'devices' => $source['devices'],
+            ];
+            unset($source);
+            $notApplicableRows = $this->db->query('SELECT device_id, link_id, field FROM quality_not_applicable')->fetchAll(PDO::FETCH_ASSOC);
+            foreach (['buildings', 'floors'] as $table) {
+                $hierarchy[$table] = $this->db->query("SELECT * FROM {$table} ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+            }
+            if ($ownsTransaction) {
+                $this->db->commit();
+            }
+        } catch (Throwable $e) {
+            if ($ownsTransaction && $this->db->inTransaction()) { $this->db->rollBack(); }
+            throw $e;
+        }
+        [$issues, $suppressedIssues, $suppressedCount] = $this->splitNotApplicableIssues($issues, $notApplicableRows, $resourceRevisions);
+        $migration = \Netarium\Services\Topology\LegacyHierarchyMigration::convert($hierarchy);
 
         return [
             'ok' => true,
             'generated_at' => (new DateTimeImmutable())->format(DATE_ATOM),
             'revision' => $revision,
             'summary' => $this->summarizeDataQualityIssues($issues),
+            'legacy_hierarchy' => $migration,
             'settings' => [
                 'stale_monitor_days' => max(1, (int)($config['quality_stale_monitor_days'] ?? 30)),
                 'identifier_case_insensitive' => (bool)($config['quality_identifier_case_insensitive'] ?? true),
@@ -1270,6 +1357,8 @@ class QualityDiagnosticService
                 'similar_name_enabled' => (bool)($config['quality_similar_name_enabled'] ?? true),
             ],
             'issues' => $issues,
+            'suppressed_issues' => $suppressedIssues,
+            'suppressed_count' => $suppressedCount,
         ];
     }
 }

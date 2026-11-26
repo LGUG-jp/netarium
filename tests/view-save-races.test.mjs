@@ -38,6 +38,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         }
         removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
         async dispatch(type, event = {}) {
+            if (event && typeof event === 'object' && event.type === undefined) event.type = type;
             for (const fn of [...(this.listeners.get(type) || [])]) await fn(event);
         }
         appendChild(child) { child.remove(); child.parentElement = this; this.children.push(child); return child; }
@@ -134,7 +135,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     let answers = [];
     globalThis.confirm = message => { confirmations.push(message); return answers.shift() ?? true; };
     window.confirm = (...args) => globalThis.confirm(...args);
-    const { appState } = await import('../public/js/core/state.js');
+    const { appState, getCurrentLinks, normalizeLink } = await import('../public/js/core/state.js');
     const resource = await import('../public/js/core/resource-save.js');
     const queue = await import('../public/js/core/save-queue.js');
     const { normalizeCanvasNote } = await import('../public/js/core/canvas-note-data.js');
@@ -156,7 +157,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     const responseFor = (payload, newIds) => {
         // 応答はこのリクエストで新規作成したIDだけを採番する。
         // 未送信の次の複製IDを先に返すと、次回送信の仮IDとfixtureの対応がずれる。
-        const configured = { devices: {}, views: viewIds, placements: placementIds, links: {}, canvas_notes: {} };
+        const configured = { devices: {}, views: viewIds, placements: placementIds, canvas_notes: {} };
         const maps = Object.fromEntries(Object.entries(newIds).map(([kind, ids]) => [
             kind, Object.fromEntries(ids.map(id => [id, Number(configured[kind][id] ?? id + 1000)]))
         ]));
@@ -173,9 +174,9 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
             placements: payload.views.flatMap(row => (row.placements || []).map(item => ({
                 ...item, id: map('placements', item.id), view_id: map('views', item.view_id)
             }))),
-            links: payload.views.flatMap(row => (row.links || []).map(item => ({
-                ...item, id: map('links', item.id), view_id: map('views', item.view_id),
-                from_id: map('devices', item.from_id), to_id: map('devices', item.to_id)
+            view_link_routes: payload.views.flatMap(row => (row.view_link_routes || []).map(route => ({
+                ...route, view_id: map('views', route.view_id),
+                device_a_id: map('devices', route.device_a_id), device_b_id: map('devices', route.device_b_id)
             }))),
             canvas_notes: payload.views.flatMap(row => (row.canvas_notes || []).map(note => ({
                 ...note, id: map('canvas_notes', note.id), view_id: map('views', note.view_id)
@@ -228,6 +229,7 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         appState.devices = [{ id: 10, resource_revision: 1, name: 'SW', type: 'switch', ip: '' }];
         appState.placements = [{ id: 100, device_id: 10, view_id: 1, x: 100, y: 100 }];
         appState.links = []; appState.floorPlans = []; appState.deviceImages = [];
+        appState.devicePorts = []; appState.viewLinkRoutes = [];
         appState.canvasNotes = []; appState.selectedCanvasNoteId = null; appState.nextCanvasNoteId = 1; appState.noteMode = false;
         appState.rackSettings = []; appState.rackMounts = [];
         appState.rackShelves = []; appState.rackShelfDevices = [];
@@ -335,9 +337,17 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
     await t.test('ビュー切替でリンク未適用入力のキャンセル・破棄を処理し自動適用しない', async () => {
         await reset();
         appState.devices.push({ id: 11, resource_revision: 1, name: 'SW2', type: 'switch', ip: '' });
-        appState.links = [{ id: 200, view_id: 1, from_id: 10, to_id: 11, label: '確定リンク', from_port: '', to_port: '', vlan: '', memo: '' }];
+        appState.placements.push(
+            { id: 101, device_id: 11, view_id: 1, x: 200, y: 100 },
+            { id: 102, device_id: 10, view_id: 2, x: 100, y: 100 },
+            { id: 103, device_id: 11, view_id: 2, x: 200, y: 100 }
+        );
+        appState.links = [normalizeLink({ id: 200, from_id: 10, to_id: 11, label: '確定リンク', resource_revision: 1 })];
+        const route = { view_id: 1, device_a_id: 10, device_b_id: 11, manual_route: [{ x: 150, y: 80 }] };
+        appState.viewLinkRoutes = [route];
         resource.resetResourceBaseline(appState);
-        assert.equal(await panels.openLinkPanel(appState.links[0]), true);
+        assert.deepEqual(getCurrentLinks()[0].manual_route, route.manual_route);
+        assert.equal(await panels.openLinkPanel(getCurrentLinks()[0]), true);
         el('lp-label').value = '未適用リンク';
         await choose(selectToolbarView(2), 'cancel');
         assert.equal(appState.currentViewId, 1);
@@ -352,6 +362,8 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(appState.editingLinkId, null);
         assert.equal(el('link-panel').hidden, true);
         assert.equal(appState.links[0].label, '確定リンク');
+        assert.deepEqual(appState.viewLinkRoutes, [route]);
+        assert.deepEqual(getCurrentLinks().map(({ id, view_id, route_mode }) => [id, view_id, route_mode]), [[200, 2, 'auto']]);
         assert.equal(calls.length, 0);
     });
 
@@ -374,14 +386,32 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(el('view-apply-btn').disabled, true);
         assert.equal(calls.length, 0);
     });
+    await t.test('論理・物理ビューの接続線表示は適用時だけビューに保存する', async () => {
+        await reset();
+        const checkbox = el('vm-show-connections');
+        assert.equal(el('vm-connections-setting').hidden, false);
+        assert.equal(checkbox.checked, true);
+        checkbox.checked = false;
+        manager.updateViewManagerFormState();
+        assert.equal(calls.length, 0);
+        assert.equal(el('view-apply-btn').disabled, false);
+        assert.equal(await manager.applyViewForm(), true);
+        assert.equal(calls[0].views[0].view.show_connections, 0);
+        assert.equal(appState.views[0].show_connections, 0);
+
+        enter('vm-type', 'floor');
+        checkbox.checked = true;
+        assert.equal(await manager.applyViewForm(), true);
+        assert.equal(calls[1].views[0].view.show_connections, 1);
+    });
     await t.test('全項目検証前にモデルを部分更新しない', async () => {
         await reset();
-        enter('vm-name', '変更後'); enter('vm-facility', '施'.repeat(101));
+        enter('vm-name', '変更後'); enter('vm-memo', '備'.repeat(1001));
         assert.equal(await manager.applyViewForm(), false);
         assert.equal(appState.views[0].name, '本館');
         assert.equal(appState.views[0].facility, '');
         assert.equal(calls.length, 0);
-        enter('vm-facility', ''); enter('vm-sort-order', '1.5');
+        enter('vm-memo', ''); enter('vm-sort-order', '1.5');
         assert.equal(await manager.applyViewForm(), false);
         assert.equal(appState.views[0].name, '本館');
     });
@@ -743,11 +773,14 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.deepEqual(appState.placements.map(row => row.view_id).sort(), [1, 2]);
         assert.equal(queue.hasPendingChanges(), false);
     });
-    await t.test('閉鎖時に反映を選んでも配置・リンク削除の確認取消なら入力を保持する', async () => {
+    await t.test('閉鎖時に反映を選んでも配置解除の確認取消なら入力を保持する', async () => {
         await reset();
         appState.devices.push({ id: 11, resource_revision: 1, name: 'SW2', type: 'switch', ip: '' });
         appState.placements.push({ id: 101, device_id: 11, view_id: 1, x: 200, y: 100 });
-        appState.links = [{ id: 200, view_id: 1, from_id: 10, to_id: 11, label: '', from_port: '', to_port: '', vlan: '', memo: '' }];
+        const link = normalizeLink({ id: 200, from_id: 10, to_id: 11, resource_revision: 1 });
+        const route = { view_id: 1, device_a_id: 10, device_b_id: 11, manual_route: [{ x: 150, y: 80 }] };
+        appState.links = [link];
+        appState.viewLinkRoutes = [route];
         resource.resetResourceBaseline(appState);
         placementManager.openPlacementManager(10);
         const checkbox = placementManager.createPlacementManagerOption(appState.views[0], false).children[0];
@@ -758,24 +791,46 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.equal(el('placement-manager-overlay').hidden, false);
         assert.deepEqual(placementManager.getPlacementManagerChanges().removedViewIds, [1]);
         assert.deepEqual(appState.placements.map(row => row.id), [100, 101]);
-        assert.deepEqual(appState.links.map(row => row.id), [200]);
+        assert.deepEqual(appState.links, [link]);
+        assert.deepEqual(getCurrentLinks()[0].manual_route, route.manual_route);
         assert.equal(calls.length, 0);
         answers = [true];
         assert.equal(await choose(placementManager.closePlacementManager(), 'save'), true);
         assert.equal(calls.length, 1);
+        assert.deepEqual(calls[0].views[0].view_link_routes, [route]);
+        assert.equal(Object.hasOwn(calls[0].views[0], 'links'), false);
         await queue.flushSaveQueue({ silent: true });
         assert.deepEqual(appState.placements.map(row => row.device_id), [11]);
-        assert.deepEqual(appState.links, []);
+        assert.deepEqual(appState.links, [link]);
+        assert.deepEqual(appState.viewLinkRoutes, [route]);
+        assert.deepEqual(getCurrentLinks(), []);
     });
 
-    await t.test('ビュー複製はメモ本文と装飾を新規IDで保存し原本と参照を共有しない', async () => {
+    await t.test('ビュー複製はメモと手動経路を独立して保存し共通接続を複製しない', async () => {
         await reset();
+        appState.devices.push({ id: 11, resource_revision: 1, name: 'SW2', type: 'switch', ip: '' });
+        appState.placements.push({ id: 101, device_id: 11, view_id: 1, x: 200, y: 100 });
+        const link = normalizeLink({ id: 200, from_id: 10, to_id: 11, resource_revision: 1 });
+        const route = { view_id: 1, device_a_id: 10, device_b_id: 11, manual_route: [{ x: 150, y: 80 }] };
+        appState.links = [link];
+        appState.viewLinkRoutes = [route];
+        appState.views[0].show_connections = 0;
+        manager.loadSelectedViewIntoForm();
         appState.canvasNotes = [normalizeCanvasNote({ id: 50, view_id: 1, text: '  原本\n本文  ', x: 45, width: 320, background_color: '#123456', font_size: 20 })];
         appState.nextCanvasNoteId = 51;
         resource.resetResourceBaseline(appState);
         await manager.duplicateSelectedView();
         await queue.flushSaveQueue({ silent: true });
         const payload = calls[0].views.find(row => row.operation === 'create');
+        assert.equal(calls.length, 1);
+        assert.equal(payload.view.show_connections, 0);
+        assert.equal(Object.hasOwn(payload, 'links'), false);
+        assert.deepEqual(payload.view_link_routes, [{ ...route, view_id: payload.id }]);
+        const copiedView = appState.views.find(view => view.name === '本館 のコピー');
+        const copiedRoute = appState.viewLinkRoutes.find(row => row.view_id === copiedView.id);
+        assert.deepEqual(copiedRoute, { ...route, view_id: copiedView.id });
+        assert.notEqual(copiedRoute.manual_route[0], appState.viewLinkRoutes.find(row => row.view_id === 1).manual_route[0]);
+        assert.deepEqual(appState.links, [link]);
         assert.equal(payload.canvas_notes[0].id, 51);
         assert.equal(payload.canvas_notes[0].view_id, payload.id);
         assert.equal(payload.canvas_notes[0].text, '  原本\n本文  ');
@@ -1041,6 +1096,11 @@ test('ビュー確定保存とドラッグの競合境界', async t => {
         assert.deepEqual(calls[0].views[0].rack_shelf_devices, [{ device_id: created.id, shelf_id: 4, sort_order: 0 }]);
         assert.equal(appState.rackShelfDevices[0].device_id, appState.devices.find(row => row.type === 'router').id);
         assert.equal(appState.editingDeviceId, null);
+    });
+    await t.test('ラック編集には接続線の表示設定がない', async () => {
+        await rackFixture();
+        assert.equal(el('vm-connections-setting').hidden, true);
+        assert.equal(el('vm-show-connections').disabled, true);
     });
     await t.test('ラック編集のU境界・文字数・搭載範囲を保存前に検証する', async () => {
         await rackFixture();

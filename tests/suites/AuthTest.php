@@ -508,6 +508,47 @@ class AuthTest extends TestCase
         }
     }
 
+    public function testApiGateRejectsBeforeSqliteRefreshOnlyAfterSessionAndCsrfChecks(): void
+    {
+        $server = new \Netarium\Tests\TestServer();
+        $gate = new \Netarium\Core\OperationGate($server->getTempDir() . '/temp/operation.lock');
+        $db = null;
+        $locked = false;
+        try {
+            $server->start();
+            $client = new TestHttpClient($server->getBaseUrl());
+            $this->assertTrue($client->login('admin', 'admin123'));
+            $url = '/api.php?action=save_resources';
+            $gate->acquireExclusive();
+            $db = new \PDO('sqlite:' . $server->getDbPath());
+            $db->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            $db->exec('BEGIN EXCLUSIVE');
+            $locked = true;
+
+            $anonymous = new TestHttpClient($server->getBaseUrl());
+            $unauthenticated = $anonymous->postJson($url, [])->assertStatus(401)->getJson();
+            $this->assertTrue($unauthenticated['login_required']);
+            $invalidCsrf = $client->request('POST', $url, '{}', [
+                'Content-Type' => 'application/json', 'X-CSRF-Token' => 'invalid',
+            ])->assertStatus(403)->getJson();
+            $this->assertStringContains('セキュリティトークンが無効です', $invalidCsrf['error']);
+            $busy = $client->postJson($url, [])->assertStatus(409)->getJson();
+            $this->assertSame('operation_busy', $busy['details']['reason']);
+            $db->exec('ROLLBACK');
+            $locked = false;
+
+            $client->get('/api.php?action=upload_floor_plan')->assertStatus(404);
+            $gate->release();
+            $client->get('/api.php?action=load')->assertOk();
+            $gate->acquireExclusive();
+        } finally {
+            if ($locked) $db->exec('ROLLBACK');
+            $db = null;
+            $gate->release();
+            $server->stop();
+        }
+    }
+
     public function testUnauthenticatedAccessFails(): void
     {
         $unauthClient = new TestHttpClient($this->client->getBaseUrl());

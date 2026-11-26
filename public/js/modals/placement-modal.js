@@ -1,4 +1,5 @@
 import { getRackDeviceMounts } from '../core/device-placement.js';
+import { sharesPlacementFloor, viewHierarchyPath } from '../core/building-hierarchy.js';
 /**
  * Netarium - modals/placement-modal.js
  */
@@ -16,6 +17,7 @@ import { chooseUnsavedChanges } from '../core/unsaved-changes-dialog.js';
 import {
     requireAdminUiAction
 } from '../ui/access-control.js';
+import { getOpenBuildingId } from '../ui/building-view.js';
 import {
     screenToWorld
 } from '../canvas/pan-zoom.js';
@@ -40,7 +42,6 @@ import {
     registerModalOpen
 } from '../core/modal-focus.js';
 import {
-    normalizeFloorForMatch,
     normalizeMatchText,
     setInputValue,
     setTextContent
@@ -55,80 +56,6 @@ import { scheduleSave } from '../core/save-queue.js';
 let placementManagerDeviceId = null;
 let placementManagerInitialViewIds = new Set();
 let placementManagerSelectedViewIds = new Set();
-
-export function getViewRecommendationScore(
-    device,
-    view
-) {
-    const deviceFacility =
-        normalizeMatchText(
-            device.facility
-        );
-
-    const deviceFloor =
-        normalizeFloorForMatch(
-            device.floor
-        );
-
-    const viewFacility =
-        normalizeMatchText(
-            view.facility
-        );
-
-    const viewFloor =
-        normalizeFloorForMatch(
-            view.floor
-        );
-
-    const facilityMatches =
-        deviceFacility !== '' &&
-        deviceFacility === viewFacility;
-
-    const floorMatches =
-        deviceFloor !== '' &&
-        deviceFloor === viewFloor;
-
-    if (
-        view.view_type === 'floor' &&
-        facilityMatches &&
-        floorMatches
-    ) {
-        return 100;
-    }
-
-    if (
-        view.view_type === 'topology' &&
-        facilityMatches &&
-        (
-            viewFloor === '' ||
-            floorMatches
-        )
-    ) {
-        return 80;
-    }
-
-    if (
-        view.view_type === 'floor' &&
-        facilityMatches &&
-        viewFloor === ''
-    ) {
-        return 70;
-    }
-
-    if (
-        view.view_type === 'topology' &&
-        viewFacility === '' &&
-        viewFloor === ''
-    ) {
-        return 60;
-    }
-
-    if (facilityMatches) {
-        return 40;
-    }
-
-    return 0;
-}
 
 
 export function openPlacementManager(deviceId) {
@@ -180,15 +107,7 @@ export function openPlacementManager(deviceId) {
         }`
     );
 
-    setTextContent(
-        'pm-device-facility',
-        device.facility || '-'
-    );
-
-    setTextContent(
-        'pm-device-floor',
-        device.floor || '-'
-    );
+    setTextContent('pm-device-floor', viewHierarchyPath(device, appState));
 
     setInputValue(
         'placement-manager-search',
@@ -260,11 +179,7 @@ export function renderPlacementManager() {
     const candidates = appState.views
         .map(view => ({
             view,
-            score:
-                getViewRecommendationScore(
-                    device,
-                    view
-                )
+            recommended: sharesPlacementFloor(device, view)
         }))
         .filter(item => {
             if (!keyword) {
@@ -274,8 +189,7 @@ export function renderPlacementManager() {
             const searchable =
                 normalizeMatchText([
                     item.view.name,
-                    item.view.facility,
-                    item.view.floor,
+                    viewHierarchyPath(item.view, appState),
                     item.view.view_type,
                     item.view.memo
                 ].join(' '));
@@ -284,26 +198,16 @@ export function renderPlacementManager() {
                 keyword
             );
         })
-        .sort((a, b) => {
-            const scoreDifference =
-                b.score - a.score;
-
-            return scoreDifference !== 0
-                ? scoreDifference
-                : compareViews(
-                    a.view,
-                    b.view
-                );
-        });
+        .sort((a, b) => compareViews(a.view, b.view));
 
     const recommended =
         candidates.filter(
-            item => item.score > 0
+            item => item.recommended
         );
 
     const others =
         candidates.filter(
-            item => item.score === 0
+            item => !item.recommended
         );
 
     list.replaceChildren();
@@ -451,8 +355,7 @@ export function createPlacementManagerOption(
         document.createElement('span');
 
     detail.textContent = [
-        view.facility,
-        view.floor,
+        viewHierarchyPath(view, appState),
         typeLabel
     ]
         .filter(Boolean)
@@ -462,7 +365,7 @@ export function createPlacementManagerOption(
         detail.textContent = mountedHere
             ? `ラック / 搭載済み・${mount.start_u}〜${Number(mount.start_u) + Number(mount.height_u) - 1}U`
             : `ラック / 未搭載${totalU == null ? '' : `・${totalU}U`}`;
-        label.title = [view.name, view.facility, view.floor, detail.textContent,
+        label.title = [view.name, viewHierarchyPath(view, appState), detail.textContent,
             mountedHere && mount.shelf_id ? `棚板「${mount.shelf_name}」` : ''].filter(Boolean).join(' / ');
     }
 
@@ -523,27 +426,6 @@ export function getPlacementManagerChanges() {
 }
 
 
-export function countLinksRemovedByPlacementChange(
-    deviceId,
-    removedViewIds
-) {
-    const removedViewIdSet =
-        new Set(
-            removedViewIds.map(Number)
-        );
-
-    return appState.links.filter(link =>
-        removedViewIdSet.has(
-            Number(link.view_id)
-        ) &&
-        (
-            Number(link.from_id) ===
-                Number(deviceId) ||
-            Number(link.to_id) ===
-                Number(deviceId)
-        )
-    ).length;
-}
 
 
 export function updatePlacementManagerImpact() {
@@ -559,16 +441,10 @@ export function updatePlacementManagerImpact() {
     const changes =
         getPlacementManagerChanges();
 
-    const removedLinkCount =
-        countLinksRemovedByPlacementChange(
-            placementManagerDeviceId,
-            changes.removedViewIds
-        );
-
     impact.textContent =
         `追加 ${changes.addedViewIds.length}件 / ` +
         `解除 ${changes.removedViewIds.length}件 / ` +
-        `削除される接続 ${removedLinkCount}件`;
+        '共通接続は保持されます';
 }
 
 
@@ -639,12 +515,6 @@ export async function applyPlacementManager() {
     let changes =
         getPlacementManagerChanges();
 
-    const removedLinkCount =
-        countLinksRemovedByPlacementChange(
-            device.id,
-            changes.removedViewIds
-        );
-
     if (
         changes.addedViewIds.length === 0 &&
         changes.removedViewIds.length === 0
@@ -660,7 +530,7 @@ export async function applyPlacementManager() {
             '配置変更を適用しますか?\n\n' +
             `追加される配置: ${changes.addedViewIds.length}件\n` +
             `解除される配置: ${changes.removedViewIds.length}件\n` +
-            `削除される接続: ${removedLinkCount}件`
+            '共通接続と手動経路は保持されます。'
         );
 
         if (!confirmed) {
@@ -674,8 +544,7 @@ export async function applyPlacementManager() {
                 .map(Number)
         );
 
-    // 配置や配線を消す前に、影響するパネルの未適用入力を解決する。
-    // 無関係な機器・配線のパネルは閉じず、入力と編集対象を保持する。
+    // 配置を外す前に、表示できなくなるパネルの未適用入力を解決する。
     if (
         removedViewIdSet.has(Number(appState.currentViewId)) &&
         Number(appState.editingDeviceId) === Number(device.id) &&
@@ -689,7 +558,7 @@ export async function applyPlacementManager() {
     );
     if (
         editingLink &&
-        removedViewIdSet.has(Number(editingLink.view_id)) &&
+        removedViewIdSet.has(Number(appState.currentViewId)) &&
         (Number(editingLink.from_id) === Number(device.id) ||
             Number(editingLink.to_id) === Number(device.id)) &&
         !await closeLinkPanel()
@@ -703,11 +572,12 @@ export async function applyPlacementManager() {
 
     // 入力確認中の保存による仮IDの再採番を反映してから変更する。
     device = getDeviceById(placementManagerDeviceId);
-    if (!device || !requireAdminUiAction()) return false;
+    if (!device || !requireAdminUiAction() || appState.authExpired || appState.appStatus?.state === 'unconfirmed') return false;
     changes = getPlacementManagerChanges();
     removedViewIdSet = new Set(changes.removedViewIds.map(Number));
     if (hasResourceConflict('devices', device.id) ||
-        changes.removedViewIds.some(id => hasResourceConflict('views', id))) return false;
+        changes.removedViewIds.some(id => hasResourceConflict('views', id)) ||
+        changes.addedViewIds.some(id => hasResourceConflict('views', id))) return false;
 
     appState.placements = appState.placements.filter(
         placement =>
@@ -723,19 +593,6 @@ export async function applyPlacementManager() {
             )
     );
 
-    appState.links = appState.links.filter(link =>
-        !(
-            removedViewIdSet.has(
-                Number(link.view_id)
-            ) &&
-            (
-                Number(link.from_id) ===
-                    Number(device.id) ||
-                Number(link.to_id) ===
-                    Number(device.id)
-            )
-        )
-    );
 
     changes.addedViewIds.forEach(
         viewId => {
@@ -781,6 +638,7 @@ export async function applyPlacementManager() {
         );
 
     dismissPlacementManager();
+    eventBus.emit('device-placements:changed', device.id);
 
     if (removedCurrentView) {
         const remainingPlacementIds = new Set(appState.placements.map(placement => Number(placement.id)));
@@ -801,9 +659,12 @@ export async function applyPlacementManager() {
             ledgerOverlay &&
             !ledgerOverlay.hidden
         );
+    const ledgerSheetIsOpen = document.getElementById('ledger-device-sheet-overlay')?.hidden === false;
 
     if (ledgerIsOpen) {
         eventBus.emit('ledger:render');
+    }
+    if (ledgerIsOpen && !ledgerSheetIsOpen) {
         window.requestAnimationFrame(() => {
             const newBtn = document.querySelector(
                 `#ledger-table button[data-ledger-action="placement"][data-device-id="${device.id}"]`
@@ -819,12 +680,11 @@ export async function applyPlacementManager() {
         });
     }
 
-    /*
-    * 機器台帳から配置先を変更した場合は、
-    * 台帳を維持して機器詳細パネルを開かない。
-    */
+    // 台帳や個票での配置変更では、背後の通常キャンバスに機器詳細を開かない。
     if (
         !ledgerIsOpen &&
+        !ledgerSheetIsOpen &&
+        getOpenBuildingId() == null &&
         !removedCurrentView
     ) {
         const currentDevice =

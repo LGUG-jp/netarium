@@ -215,6 +215,27 @@ test('API全体の処理失敗はalertと全行未確認に反映し、既存監
     assert.deepEqual(dom.revoked, ['blob:ping-1']);
 });
 
+test('フッターが inert でも台帳内に Ping の進捗と終了を通知する', async t => {
+    const dom = await setup(t);
+    dom.ledger.hidden = false;
+    registerModalOpen('ledger', dom.ledger, '#ledger-search');
+    assert.equal(document.querySelector('.status-bar').inert, true);
+    const progress = dom.get('ledger-ping-progress');
+    const announcement = dom.get('ledger-ping-announcement');
+
+    start([{ id: 1, ip: '192.0.2.1' }]);
+    assert.equal(progress.textContent, 'Ping確認中');
+    assert.equal(announcement.textContent, 'Ping実行中: 1件');
+    eventBus.emit('ping:updated', { running: true, message: 'Ping実行中: 1件・経過1秒' });
+    assert.equal(progress.textContent, 'Ping実行中: 1件・経過1秒');
+    assert.equal(announcement.textContent, 'Ping実行中: 1件');
+
+    finish([{ id: 1, outcome: 'success' }]);
+    assert.equal(progress.textContent, '');
+    assert.equal(announcement.textContent, 'Pingが完了しました');
+    assert.equal(dom.get('ledger-ping-results-btn').disabled, false);
+});
+
 test('開始時snapshotを進捗で作り直さず、新実行では旧結果を閉じて混在させない', async t => {
     const dom = await setup(t);
     const targets = [{ id: 1, ip: '192.0.2.1' }];

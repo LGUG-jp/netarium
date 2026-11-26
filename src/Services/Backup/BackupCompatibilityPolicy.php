@@ -6,7 +6,7 @@ namespace Netarium\Services\Backup;
 /**
  * バックアップZIP（Web構成情報・停止型完全バックアップ）の復元互換性ポリシー。
  *
- * 同一メジャー内の順方向だけを受け付け、対応する元スキーマ契約と移行経路を確認する。
+ * 同一メジャー内の順方向と、明示的に対応する 1.x → 2.x の復元を受け付ける。
  * この入口判定だけでは許可しない。各復元処理で元契約の厳密検証・移行・
  * 復元先契約の再検証を行ってから配置する。
  */
@@ -18,9 +18,14 @@ final class BackupCompatibilityPolicy
     public const CONFIG_FORMAT_VERSION = 1;
     public const FULL_FORMAT_VERSION = 1;
 
-    // 両復元処理に元契約の検証と 11→12→13→14→15→16→17→18→19→20→21→22→23 の移行が実装済み。
+    // 両復元処理に元契約の検証と 11→29 の移行が実装済み。
     // 将来のスキーマは、検証・移行を実装するまでこの一覧へ追加しない。
-    private const SUPPORTED_SCHEMAS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
+    private const SUPPORTED_SCHEMAS = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+
+    public static function isSupportedSchema(mixed $schemaVersion): bool
+    {
+        return in_array($schemaVersion, self::SUPPORTED_SCHEMAS, true);
+    }
 
     public static function isSupportedFormat(
         string $expectedFormat,
@@ -71,26 +76,31 @@ final class BackupCompatibilityPolicy
             || preg_match($pattern, $targetAppVersion, $target) !== 1) {
             return 'invalid application version';
         }
-        if ($source[1] !== $target[1]) {
+        $crossMajor = $source[1] !== $target[1];
+        if ($crossMajor && ($source[1] !== '1' || $target[1] !== '2')) {
             return 'different major version';
         }
+        // 1.x → 2.x は、公開済みの安定版 1.0.0〜1.5.2 に限定する。
+        $upperVersion = $crossMajor ? [2 => '5', 3 => '2'] : $target;
         // 桁数→同桁の数字の順で比較し、文字列辞書順や整数オーバーフローを避ける。
         for ($part = 2; $part <= 3; $part++) {
-            $order = (strlen($source[$part]) <=> strlen($target[$part]))
-                ?: strcmp($source[$part], $target[$part]);
+            $order = (strlen($source[$part]) <=> strlen($upperVersion[$part]))
+                ?: strcmp($source[$part], $upperVersion[$part]);
             if ($order > 0) {
-                return 'reverse application version';
+                return $crossMajor ? 'unsupported 1.x application version' : 'reverse application version';
             }
             if ($order < 0) {
                 break;
             }
         }
-        if (!in_array($sourceSchemaVersion, self::SUPPORTED_SCHEMAS, true)
-            || !in_array($targetSchemaVersion, self::SUPPORTED_SCHEMAS, true)) {
+        if (!self::isSupportedSchema($sourceSchemaVersion) || !self::isSupportedSchema($targetSchemaVersion)) {
             return 'unsupported schema contract or migration path';
         }
         if ($sourceSchemaVersion > $targetSchemaVersion) {
             return 'reverse schema migration';
+        }
+        if ($crossMajor && ($sourceSchemaVersion > 23 || $targetSchemaVersion < 29)) {
+            return 'unsupported 1.x to 2.x schema path';
         }
         return null;
     }
@@ -106,6 +116,8 @@ final class BackupCompatibilityPolicy
         )) {
             'invalid application version' => 'アプリ版の表記が不正または非対応です',
             'different major version' => 'メジャーバージョンが異なります',
+            'unsupported 1.x application version' => '2.x への復元はアプリ版 1.0.0〜1.5.2 が対象です',
+            'unsupported 1.x to 2.x schema path' => '1.x から 2.x への復元ではこのスキーマの組は未対応です',
             'reverse application version' => '新版から旧版への逆方向復元はできません',
             'reverse schema migration' => 'DBスキーマの逆方向移行はできません',
             default => 'スキーマの保存契約または移行経路が未対応です',

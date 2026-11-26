@@ -9,6 +9,7 @@
 import {
     DASHBOARD_QUALITY_CODES,
     DASHBOARD_UNSET_LABEL,
+    DATA_QUALITY_DEVICE_FIELD_LABELS,
     DEVICE_TYPES
 } from './constants.js';
 
@@ -17,6 +18,7 @@ import { getUnplacedDeviceIds } from './device-placement.js';
 import { normalizeDataQualityIds } from '../modals/data-quality-modal.js';
 import { aggregateMaintenanceExpiry } from './maintenance-expiry.js';
 import { rackUsage } from './rack-layout.js';
+import { compareHierarchyOrder, viewHierarchyPath } from './building-hierarchy.js';
 
 /**
  * ダッシュボードの分類値を整える。
@@ -37,37 +39,6 @@ export function createDashboardGroupKey(value) {
     } catch (error) {
         return normalized.toLocaleLowerCase('ja');
     }
-}
-
-/**
- * 項目値ごとの件数を集計する。
- */
-export function aggregateDashboardGroups(items, getValue) {
-    if (!Array.isArray(items) || typeof getValue !== 'function') {
-        return [];
-    }
-
-    const groups = new Map();
-
-    items.forEach(item => {
-        const rawValue = getValue(item);
-        const label = normalizeDashboardGroupValue(rawValue);
-        const key = createDashboardGroupKey(label);
-
-        const current = groups.get(key);
-        if (current) {
-            current.count++;
-            return;
-        }
-
-        groups.set(key, {
-            key,
-            label,
-            count: 1
-        });
-    });
-
-    return Array.from(groups.values()).sort(compareDashboardGroups);
 }
 
 /**
@@ -100,44 +71,69 @@ export function addDashboardGroupPercentages(groups, total) {
 }
 
 /**
- * 機器を施設別に集計する。
+ * 機器を設置建物ID別に集計する。
  */
-export function aggregateDashboardFacilities(sourceDevices = []) {
+export function aggregateDashboardFacilities(sourceDevices = [], hierarchy = {}) {
     const devices = Array.isArray(sourceDevices) ? sourceDevices : [];
-    const groups = aggregateDashboardGroups(devices, device => device?.facility);
-    return addDashboardGroupPercentages(groups, devices.length);
+    return aggregateFacilities(devices, indexDashboardFloors(hierarchy));
 }
 
-/**
- * 機器を施設・フロアの組み合わせで集計する。
- */
-export function aggregateDashboardFloors(sourceDevices = []) {
-    const devices = Array.isArray(sourceDevices) ? sourceDevices : [];
-    const groupMap = new Map();
-
-    devices.forEach(device => {
-        const facility = normalizeDashboardGroupValue(device?.facility);
-        const floor = normalizeDashboardGroupValue(device?.floor);
-        const facilityKey = createDashboardGroupKey(facility);
-        const floorKey = createDashboardGroupKey(floor);
-        const key = `${facilityKey}\u0000${floorKey}`;
-
-        const current = groupMap.get(key);
-        if (current) {
-            current.count++;
-            return;
+function indexDashboardFloors({ buildings = [], floors = [] }) {
+    const buildingsById = new Map(buildings.map(building => [Number(building.id), building]));
+    const locations = new Map();
+    for (const floor of floors) {
+        const buildingId = Number(floor.building_id);
+        const building = buildingsById.get(buildingId);
+        if (building) {
+            locations.set(Number(floor.id), { floor, building, buildingId });
         }
+    }
+    return locations;
+}
 
-        groupMap.set(key, {
-            key,
-            facility,
-            floor,
-            label: `${facility} / ${floor}`,
-            count: 1
-        });
-    });
-
-    const groups = Array.from(groupMap.values()).sort(compareDashboardGroups);
+function aggregateFacilities(devices, locations) {
+    const facilities = new Map();
+    for (const device of devices) {
+        const location = locations.get(Number(device.floor_id));
+        const buildingId = location?.buildingId ?? null;
+        let facility = facilities.get(buildingId);
+        if (!facility) {
+            facility = {
+                key: buildingId === null ? 'unset' : String(buildingId),
+                buildingId,
+                building: location?.building,
+                count: 0,
+                floors: new Map()
+            };
+            facilities.set(buildingId, facility);
+        }
+        facility.count++;
+        if (!location) continue;
+        const floorId = Number(location.floor.id);
+        const floorGroup = facility.floors.get(floorId);
+        if (floorGroup) {
+            floorGroup.count++;
+        } else {
+            facility.floors.set(floorId, {
+                floor: location.floor,
+                count: 1
+            });
+        }
+    }
+    const unassigned = facilities.get(null);
+    facilities.delete(null);
+    const ordered = [...facilities.values()].sort((a, b) => compareHierarchyOrder(a.building, b.building));
+    if (unassigned) ordered.push(unassigned);
+    const groups = ordered.map(({ building, floors, ...facility }) => ({
+        ...facility,
+        label: building?.name ?? DASHBOARD_UNSET_LABEL,
+        floors: addDashboardGroupPercentages(
+            [...floors.values()]
+                .sort((a, b) => compareHierarchyOrder(a.floor, b.floor))
+                .map(({ floor, count }) => ({ floorId: Number(floor.id), label: floor.name, count })),
+            facility.count
+        )
+    }));
     return addDashboardGroupPercentages(groups, devices.length);
 }
 
@@ -290,55 +286,144 @@ export function getDashboardFloorViewsWithoutPlanIds(qualityResult = null) {
     return getDashboardUniqueEntityIds(issues, 'view');
 }
 
-/**
- * データ品質の問題件数を取得する。
- */
-export function aggregateDashboardQuality(qualityResult = null) {
+function aggregateDashboardQuality(devices, qualityResult) {
     const issues = getDashboardQualityIssues(qualityResult);
-
-    const calculated = {
-        error: 0,
-        warning: 0,
-        info: 0,
-        total: issues.length
-    };
-
-    issues.forEach(issue => {
-        const severity = String(issue?.severity || '');
-        if (Object.prototype.hasOwnProperty.call(calculated, severity)) {
-            calculated[severity]++;
+    const suppressedIssues = qualityResult.suppressed_issues ?? [];
+    const counts = { error: 0, warning: 0, info: 0, total: issues.length };
+    const categories = new Map();
+    let legacyConflicts = 0;
+    let legacyVlans = 0;
+    for (const { severity, category, code } of issues) {
+        if (severity === 'error' || severity === 'warning' || severity === 'info') {
+            counts[severity]++;
+            if (category) {
+                if (!categories.has(category)) categories.set(category, { key: category, problems: 0, info: 0 });
+                categories.get(category)[severity === 'info' ? 'info' : 'problems']++;
+            }
         }
-    });
-
-    const apiSummary =
-        qualityResult?.summary && typeof qualityResult.summary === 'object'
-            ? qualityResult.summary
-            : null;
-
+        if (code === DASHBOARD_QUALITY_CODES.legacyLinkConflict) legacyConflicts++;
+        if (code === DASHBOARD_QUALITY_CODES.legacyLinkVlan) legacyVlans++;
+    }
     return {
-        error:
-            Number.isFinite(Number(apiSummary?.error))
-                ? Math.max(0, Number(apiSummary.error))
-                : calculated.error,
-        warning:
-            Number.isFinite(Number(apiSummary?.warning))
-                ? Math.max(0, Number(apiSummary.warning))
-                : calculated.warning,
-        info:
-            Number.isFinite(Number(apiSummary?.info))
-                ? Math.max(0, Number(apiSummary.info))
-                : calculated.info,
-        total:
-            Number.isFinite(Number(apiSummary?.total))
-                ? Math.max(0, Number(apiSummary.total))
-                : calculated.total
+        ...counts,
+        problems: counts.error + counts.warning,
+        suppressed: qualityResult.suppressed_count ?? 0,
+        categories: [...categories.values()],
+        legacyConflicts,
+        legacyVlans,
+        registration: aggregateDashboardRegistration(devices, qualityResult.settings, issues, suppressedIssues)
+    };
+}
+
+function aggregateDashboardRegistration(devices, settings, issues, suppressedIssues) {
+    const fields = new Map();
+    for (const field of settings?.recommended_device_fields ?? []) {
+        fields.set(field, DASHBOARD_QUALITY_CODES.missingRecommendedFields);
+    }
+    fields.set('ip', DASHBOARD_QUALITY_CODES.managementIpMissing);
+    fields.set('maintenance_expiry', DASHBOARD_QUALITY_CODES.maintenanceExpiryMissing);
+
+    const devicesById = new Set(devices.map(device => Number(device.id)));
+    const statuses = new Map([...fields].map(([key]) => [key, { missing: new Set(), suppressed: new Set() }]));
+    function record(field, code, deviceId, status) {
+        const id = Number(deviceId);
+        if (fields.get(field) === code && devicesById.has(id)) {
+            statuses.get(field)[status].add(id);
+        }
+    }
+    for (const { code, entity_type, entity_ids, details } of issues) {
+        if (entity_type !== 'device') continue;
+        if (code === DASHBOARD_QUALITY_CODES.missingRecommendedFields) {
+            for (const field of details?.fields ?? []) {
+                for (const id of entity_ids) record(field, code, id, 'missing');
+            }
+        } else if (code === DASHBOARD_QUALITY_CODES.managementIpMissing && details?.reason === 'ip_not_set') {
+            for (const id of entity_ids) record('ip', code, id, 'missing');
+        } else if (code === DASHBOARD_QUALITY_CODES.maintenanceExpiryMissing) {
+            for (const id of entity_ids) record('maintenance_expiry', code, id, 'missing');
+        }
+    }
+    for (const { code, entity_type, not_applicable_items } of suppressedIssues) {
+        if (entity_type !== 'device') continue;
+        for (const { field, device_id } of not_applicable_items ?? []) {
+            record(field, code, device_id, 'suppressed');
+        }
+    }
+    return [...fields].map(([key, code]) => {
+        const { missing, suppressed } = statuses.get(key);
+        for (const id of suppressed) missing.delete(id);
+        const applicable = devicesById.size - suppressed.size;
+        const registered = applicable - missing.size;
+        return {
+            key,
+            label: DATA_QUALITY_DEVICE_FIELD_LABELS[key] ?? key,
+            code,
+            registered,
+            missing: missing.size,
+            suppressed: suppressed.size,
+            percentage: applicable === 0 ? null : Math.round(registered * 1000 / applicable) / 10
+        };
+    });
+}
+
+function aggregateDashboardNetwork(devices, devicePorts, links, locations, qualityResult) {
+    const portIds = new Set();
+    const devicesWithPorts = new Set();
+    for (const port of devicePorts) {
+        portIds.add(Number(port.id));
+        devicesWithPorts.add(Number(port.device_id));
+    }
+    const devicesById = new Map(devices.map(device => [Number(device.id), device]));
+    const connectedPorts = new Set();
+    const linkIds = new Set();
+    const topology = { sameFloor: 0, betweenFloors: 0, betweenBuildings: 0, unknown: 0 };
+    const endpoints = qualityResult ? { specified: 0, missing: 0, suppressed: 0 } : null;
+    const suppressedEndpoints = new Map();
+    for (const issue of qualityResult?.suppressed_issues ?? []) {
+        if (issue.code !== DASHBOARD_QUALITY_CODES.linkPortsMissing || issue.entity_type !== 'link') continue;
+        suppressedEndpoints.set(Number(issue.entity_ids[0]), issue.details.missing_endpoints);
+    }
+    for (const link of links) {
+        const id = Number(link.id);
+        if (linkIds.has(id)) continue;
+        linkIds.add(id);
+
+        const fromFloorId = Number(devicesById.get(Number(link.from_id))?.floor_id);
+        const toFloorId = Number(devicesById.get(Number(link.to_id))?.floor_id);
+        const from = locations.get(fromFloorId);
+        const to = locations.get(toFloorId);
+        if (!from || !to) topology.unknown++;
+        else if (fromFloorId === toFloorId) topology.sameFloor++;
+        else if (from.buildingId === to.buildingId) topology.betweenFloors++;
+        else topology.betweenBuildings++;
+
+        for (const side of ['from', 'to']) {
+            const portId = link[`${side}_port_id`];
+            if (portId != null) {
+                if (portIds.has(Number(portId))) connectedPorts.add(Number(portId));
+                if (endpoints) endpoints.specified++;
+            } else if (endpoints) {
+                // 孤立した端点は診断に現れないことがあるため、未指定は端点ごとに判定する。
+                if (suppressedEndpoints.get(id)?.[side]) endpoints.suppressed++;
+                else endpoints.missing++;
+            }
+        }
+    }
+    return {
+        portCount: portIds.size,
+        linkCount: linkIds.size,
+        devicesWithPorts: devicesWithPorts.size,
+        connectedPorts: connectedPorts.size,
+        unconnectedPorts: portIds.size - connectedPorts.size,
+        endpoints,
+        topology
     };
 }
 
 /**
  * ラックごと・全体の搭載機器をIDで一意に集計する。
  */
-function aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices) {
+function aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices, hierarchy) {
     const racks = (Array.isArray(views) ? views : []).filter(view => view.view_type === 'rack');
     const mountedByRack = new Map(racks.map(view => [Number(view.id), { deviceIds: new Set(), mounts: [] }]));
     const mountedDevices = new Set();
@@ -382,8 +467,7 @@ function aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, r
             return {
                 id: Number(view.id),
                 name: String(view.name || '').trim() || `ビューID ${view.id}`,
-                facility: String(view.facility || '').trim(),
-                floor: String(view.floor || '').trim(),
+                hierarchyPath: viewHierarchyPath(view, hierarchy),
                 location: String(settings?.location || '').trim(),
                 deviceCount: rack.deviceIds.size,
                 faces
@@ -404,36 +488,61 @@ export function buildDashboardModel({
     rackSettings = [],
     rackShelves = [],
     rackShelfDevices = [],
+    buildings = [],
+    floors = [],
+    devicePorts = [],
+    links = [],
     qualityResult = null,
+    qualityLoading = false,
     dataRevision = 0,
     dirty = false,
+    fiscalYearStartMonth = 4,
     referenceDate = new Date()
 } = {}) {
     const sourceDevices = Array.isArray(devices) ? devices : [];
     const sourcePlacements = Array.isArray(placements) ? placements : [];
+    const locations = indexDashboardFloors({ buildings, floors });
+
+    const qualityAvailable = qualityResult?.ok === true;
+    const qualityRevision = Number(qualityResult?.revision || 0);
+    const revision = Number(dataRevision);
+    const qualityRevisionMatches = qualityRevision > 0 && revision > 0 ? qualityRevision === revision : null;
+    const hasUnsavedChanges = Boolean(dirty);
+    let qualitySync;
+    if (qualityLoading) qualitySync = 'loading';
+    else if (hasUnsavedChanges) qualitySync = 'unsaved';
+    else if (!qualityAvailable) qualitySync = 'unavailable';
+    else if (qualityRevisionMatches !== true) qualitySync = 'revision_mismatch';
+    else qualitySync = 'synced';
+    const syncedQuality = qualitySync === 'synced' ? qualityResult : null;
+
+    const quality = syncedQuality ? aggregateDashboardQuality(sourceDevices, syncedQuality) : null;
+    const maintenanceRegistration = quality?.registration.find(row => row.key === 'maintenance_expiry');
 
     const monitoring = aggregateDashboardMonitoring(sourceDevices);
-    const quality = aggregateDashboardQuality(qualityResult);
+    const maintenance = aggregateMaintenanceExpiry(sourceDevices, referenceDate, fiscalYearStartMonth);
     const stateUnplacedDeviceIds = getUnplacedDeviceIds(
         sourceDevices,
         sourcePlacements,
         [...rackMounts, ...rackShelfDevices]
     );
-    const qualityUnplacedDeviceIds = getDashboardUnplacedDeviceIds(qualityResult);
-    const incompleteDeviceIds = getDashboardIncompleteDeviceIds(qualityResult);
-    const floorViewsWithoutPlanIds = getDashboardFloorViewsWithoutPlanIds(qualityResult);
-
-    const qualityRevision = Number(qualityResult?.revision || 0);
+    const qualityUnplacedDeviceIds = getDashboardUnplacedDeviceIds(syncedQuality);
+    const incompleteDeviceIds = getDashboardIncompleteDeviceIds(syncedQuality);
+    const floorViewsWithoutPlanIds = getDashboardFloorViewsWithoutPlanIds(syncedQuality);
 
     return {
-        qualityAvailable: Boolean(qualityResult && qualityResult.ok === true),
-        qualityRevisionMatches:
-            qualityRevision > 0 && Number(dataRevision) > 0
-                ? qualityRevision === Number(dataRevision)
-                : null,
-        hasUnsavedChanges: Boolean(dirty),
-        maintenance: aggregateMaintenanceExpiry(sourceDevices, referenceDate),
-        racks: aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices),
+        qualityAvailable,
+        qualityRevisionMatches,
+        hasUnsavedChanges,
+        qualitySync,
+        quality,
+        maintenance: {
+            ...maintenance,
+            unset: maintenanceRegistration?.missing ?? null,
+            suppressed: maintenanceRegistration?.suppressed ?? null
+        },
+        network: aggregateDashboardNetwork(sourceDevices, devicePorts, links, locations, syncedQuality),
+        racks: aggregateDashboardRacks(views, rackMounts, rackSettings, rackShelves, rackShelfDevices, { buildings, floors }),
         totals: {
             devices: sourceDevices.length,
             green: monitoring.green,
@@ -442,13 +551,13 @@ export function buildDashboardModel({
             /* 基本集計は画面メモリ基準 */
             unplacedDevices: stateUnplacedDeviceIds.length,
             /* 品質指標は保存済みDB基準 */
-            incompleteDevices: incompleteDeviceIds.length,
-            qualityErrors: quality.error,
-            qualityWarnings: quality.warning,
-            qualityInfo: quality.info,
-            qualityTotal: quality.total,
-            qualityProblems: quality.error + quality.warning,
-            floorViewsWithoutPlan: floorViewsWithoutPlanIds.length
+            incompleteDevices: syncedQuality ? incompleteDeviceIds.length : null,
+            qualityErrors: quality?.error ?? null,
+            qualityWarnings: quality?.warning ?? null,
+            qualityInfo: quality?.info ?? null,
+            qualityTotal: quality?.total ?? null,
+            qualityProblems: quality?.problems ?? null,
+            floorViewsWithoutPlan: syncedQuality ? floorViewsWithoutPlanIds.length : null
         },
         entityIds: {
             stateUnplacedDevices: stateUnplacedDeviceIds,
@@ -457,8 +566,7 @@ export function buildDashboardModel({
             floorViewsWithoutPlan: floorViewsWithoutPlanIds
         },
         groups: {
-            facilities: aggregateDashboardFacilities(sourceDevices),
-            floors: aggregateDashboardFloors(sourceDevices),
+            facilities: aggregateFacilities(sourceDevices, locations),
             types: aggregateDashboardDeviceTypes(sourceDevices)
         }
     };
@@ -485,7 +593,6 @@ export function validateDashboardModel(model) {
 
     [
         ['施設別', model.groups?.facilities],
-        ['フロア別', model.groups?.floors],
         ['種別別', model.groups?.types]
     ].forEach(([label, groups]) => {
         const groupTotal = (Array.isArray(groups) ? groups : []).reduce(
@@ -496,13 +603,19 @@ export function validateDashboardModel(model) {
             errors.push(`${label}件数の合計が総機器数と一致しません`);
         }
     });
+    for (const facility of model.groups?.facilities ?? []) {
+        if (facility.buildingId != null &&
+            (facility.floors ?? []).reduce((sum, floor) => sum + floor.count, 0) !== facility.count) {
+            errors.push('フロア別件数の合計が建物内の機器数と一致しません');
+        }
+    }
 
     const qualityTotal =
         Number(totals.qualityErrors || 0) +
         Number(totals.qualityWarnings || 0) +
         Number(totals.qualityInfo || 0);
 
-    if (model.qualityAvailable && qualityTotal !== Number(totals.qualityTotal || 0)) {
+    if (model.qualitySync === 'synced' && qualityTotal !== totals.qualityTotal) {
         errors.push('品質診断の重大度別件数と合計が一致しません');
     }
 

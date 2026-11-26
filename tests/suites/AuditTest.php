@@ -378,6 +378,62 @@ class AuditTest extends TestCase
         }
     }
 
+    public function testSecurityWindowReplacementFailureKeepsLastCommittedQuota(): void
+    {
+        $prepend = tempnam(sys_get_temp_dir(), 'netarium-security-rename-');
+        $block = $prepend . '.block';
+        file_put_contents($prepend, '<?php namespace Netarium\\Core;'
+            . ' function time(): int { return 1700000040; }'
+            . ' function rename(string $source, string $target): bool {'
+            . ' return !is_file(' . var_export($block, true) . ') && \rename($source, $target); }');
+        $server = new TestServer(null, $prepend);
+        try {
+            $server->start();
+            $anonymous = new TestHttpClient($server->getBaseUrl());
+            $auditDir = $server->getTempDir() . '/logs/audit';
+            $statePath = $auditDir . '/.security-window';
+            $stagingPath = $statePath . '.tmp';
+            $before = $this->readRawAuditContent($auditDir);
+
+            touch($block);
+            $denial = $anonymous->get('/api.php?action=load')->assertStatus(401)->getJson();
+            $this->assertFalse(array_key_exists('request_id', $denial));
+            $this->assertFalse(file_exists($statePath));
+            $this->assertFalse(file_exists($stagingPath));
+            $this->assertSame($before, $this->readRawAuditContent($auditDir));
+            unlink($block);
+
+            // ファイル置換前にワーカーが停止した状態でも、未確定の内容は読まない。
+            file_put_contents($stagingPath, '{"partial":');
+            $denial = $anonymous->get('/api.php?action=load')->assertStatus(401)->getJson();
+            $this->assertArrayHasKey('request_id', $denial);
+            $committed = file_get_contents($statePath);
+            $state = json_decode($committed, true, 512, JSON_THROW_ON_ERROR);
+            $this->assertSame(1, $state['authentication_required']['count']);
+            $this->assertFalse(file_exists($stagingPath));
+            $before = $this->readRawAuditContent($auditDir);
+
+            touch($block);
+            $denial = $anonymous->get('/api.php?action=load')->assertStatus(401)->getJson();
+            $this->assertFalse(array_key_exists('request_id', $denial));
+            $this->assertSame($committed, file_get_contents($statePath));
+            $this->assertFalse(file_exists($stagingPath));
+            $this->assertSame($before, $this->readRawAuditContent($auditDir));
+            unlink($block);
+
+            $denial = $anonymous->get('/api.php?action=load')->assertStatus(401)->getJson();
+            $this->assertArrayHasKey('request_id', $denial);
+            $state = json_decode(file_get_contents($statePath), true, 512, JSON_THROW_ON_ERROR);
+            $this->assertSame(2, $state['authentication_required']['count']);
+        } finally {
+            $server->stop();
+            if (is_file($block)) {
+                unlink($block);
+            }
+            unlink($prepend);
+        }
+    }
+
     public function testSecurityAuditCannotConsumePendingMutationTerminalReservation(): void
     {
         $server = new TestServer();

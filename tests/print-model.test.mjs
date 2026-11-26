@@ -4,19 +4,23 @@ import { DEVICE_TYPES } from '../public/js/core/constants.js';
 import { buildPrintModel, createPrintSettings, viewportToPrintBounds, calculatePrintScale } from '../public/js/canvas/print-model.js';
 import { resolveTopologyLinkRoutes } from '../public/js/canvas/link-route-resolver.js';
 import { createLinkDisplayMap } from '../public/js/canvas/link-crossings.js';
+import { resolveViewLinkGroups } from '../public/js/core/connection-data.js';
 import { LINK_SYSTEM_COLORS } from '../public/js/core/link-systems.js';
 import { RACK_NOTE_REGION_X } from '../public/js/core/canvas-note-data.js';
 
 function fixture() {
     return {
-        view: { id: 1, name: '合成構成図', facility: '試験施設', floor: '3F', view_type: 'topology' },
+        view: { id: 1, name: '合成構成図', facility: '旧施設', floor: '旧階', floor_id: 10, view_type: 'topology' },
+        buildings: [{ id: 1, name: '試験施設' }],
+        floors: [{ id: 10, building_id: 1, name: '3F' }],
         devices: Object.keys(DEVICE_TYPES).map((type, index) => ({ id: index + 1, type,
             name: `合成機器${index + 1}`, ip: `192.0.2.${index + 1}`, password: 'excluded-password',
             management_url: 'excluded-connection', serial_number: 'excluded-serial' })),
         placements: Object.keys(DEVICE_TYPES).map((_, index) => ({ id: index + 1, device_id: index + 1,
             view_id: 1, x: index * 200 + 100, y: index % 2 * 200 + 100 })),
-        links: [{ id: 1, view_id: 1, from_id: 1, to_id: 2, label: '合成配線', route_mode: 'manual',
-            manual_route: [{ x: 148, y: 600 }, { x: 348, y: 600 }] }],
+        links: [{ id: 1, from_id: 1, to_id: 2, label: '合成配線', resource_revision: 1 }],
+        viewLinkRoutes: [{ view_id: 1, device_a_id: 1, device_b_id: 2,
+            manual_route: [{ x: 154, y: 600 }, { x: 354, y: 600 }] }],
         notes: [{ id: 1, view_id: 1, text: '<b>合成メモ</b>\n2行目', x: 1800, y: 700, width: 220, height: 120,
             background_color: '#FFF3B0', background_opacity: 0.5, text_color: '#263238', font_size: 20 }],
         floorPlan: { view_id: 1, image_url: 'synthetic-plan.png', image_width: 3000, image_height: 2000,
@@ -29,14 +33,17 @@ function fixture() {
 test('全種の個別filterは非表示端点の配線だけを除外し、別ビューを混入させない', () => {
     const input = fixture();
     input.placements.push({ id: 99, device_id: 1, view_id: 2, x: 9000, y: 9000 });
-    input.links.push({ ...input.links[0], id: 99, view_id: 2 });
+    input.devices.push({ id: 999, type: 'switch', name: '別ビュー機器' });
+    input.placements.push({ id: 100, device_id: 999, view_id: 2, x: 9200, y: 9200 });
+    input.links.push({ id: 99, from_id: 1, to_id: 999, resource_revision: 1 });
+    input.viewLinkRoutes.push({ ...input.viewLinkRoutes[0], view_id: 2, manual_route: [{ x: 9000, y: 9000 }] });
     input.notes.push({ ...input.notes[0], id: 99, view_id: 2 });
     for (const type of Object.keys(DEVICE_TYPES)) {
         const settings = createPrintSettings();
         settings.deviceTypes[type] = false;
         const model = buildPrintModel(input, settings);
         assert.deepEqual(model.nodes.map(node => node.type), Object.keys(DEVICE_TYPES).filter(key => key !== type));
-        assert.deepEqual(model.wires.map(wire => wire.id), ['switch', 'l3_switch'].includes(type) ? [] : [1]);
+        assert.deepEqual(model.wires.map(wire => wire.displayKey), ['switch', 'l3_switch'].includes(type) ? [] : ['1:1:2']);
         assert.deepEqual(model.notes.map(note => note.id), [1]);
         assert.ok(model.bounds.x + model.bounds.width < 9000);
     }
@@ -138,28 +145,103 @@ test('手動経路は通常resolverを保持し、交差方式はbridge/gapを�
         { id: 4, view_id: 1, device_id: 4, x: 200, y: 300 }
     ];
     input.links = [
-        { id: 1, view_id: 1, from_id: 1, to_id: 2, system_id: 8, route_mode: 'auto', label: '横線' },
-        { id: 2, view_id: 1, from_id: 3, to_id: 4, system_id: 9, route_mode: 'manual', manual_route: [], label: '縦線' }
+        { id: 1, from_id: 1, to_id: 2, system_id: 8, label: '横線' },
+        { id: 2, from_id: 3, to_id: 4, system_id: 9, label: '縦線' }
     ];
+    input.viewLinkRoutes = [{ view_id: 1, device_a_id: 3, device_b_id: 4, manual_route: [] }];
     input.linkSystems = [{ id: 8, name: '共通A', color_key: 'indigo' },
         { id: 9, name: '共通B', color_key: 'teal' }];
-    const routes = resolveTopologyLinkRoutes(input.links, input.placements);
+    const routes = resolveTopologyLinkRoutes(resolveViewLinkGroups(input.view, input), input.placements);
     const options = createPrintSettings();
     for (const crossingStyle of ['bridge', 'gap']) {
         input.crossingStyle = crossingStyle;
         const expected = createLinkDisplayMap(routes, crossingStyle);
         const model = buildPrintModel(input, options);
         for (const wire of model.wires) {
-            assert.deepEqual(wire.points, routes.get(wire.id));
-            assert.equal(wire.pathData, expected.get(wire.id).pathData);
-            assert.deepEqual(wire.labelPosition, expected.get(wire.id).labelPosition);
-            assert.equal(wire.color, wire.id === 1 ? '#4B5BA9' : '#167D8D');
+            assert.deepEqual(wire.points, routes.get(wire.displayKey));
+            assert.equal(wire.pathData, expected.get(wire.displayKey).pathData);
+            assert.deepEqual(wire.labelPosition, expected.get(wire.displayKey).labelPosition);
+            assert.equal(wire.color, wire.displayKey === '1:1:2' ? '#4B5BA9' : '#167D8D');
         }
         assert.ok(model.wires.some(wire => crossingStyle === 'bridge' ? wire.pathData.includes('Q') : wire.pathData.split('M').length > 2));
     }
     options.labels = false;
     assert.deepEqual(buildPrintModel(input, options).wires.map(wire => wire.label), ['', '']);
     options.links = false;
+    assert.deepEqual(buildPrintModel(input, options).wires, []);
+});
+
+test('印刷はラック間とラック・直接配置間の集約線をアイコンの中心へ結ぶ', () => {
+    const input = fixture();
+    input.view.view_type = 'floor';
+    input.views = [input.view, { id: 1 + input.devices.length, name: 'ラックA', view_type: 'rack' },
+        { id: 2, name: 'ラックB', view_type: 'rack' }];
+    const rackA = input.views[1].id;
+    input.placements = input.placements.slice(0, 1);
+    input.floorRackPlacements = [
+        { floor_view_id: 1, rack_view_id: rackA, x: 400, y: 100 },
+        { floor_view_id: 1, rack_view_id: 2, x: 750, y: 100 }
+    ];
+    input.rackMounts = [{ view_id: rackA, device_id: 2 }, { view_id: 2, device_id: 4 }];
+    input.rackShelves = [{ id: 1, view_id: rackA }];
+    input.rackShelfDevices = [{ shelf_id: 1, device_id: 3 }];
+    input.links = [[2, 1, 8], [1, 3, 9], [4, 2, 8], [3, 4, 8], [2, 3, 9]]
+        .map(([from_id, to_id, system_id], index) => ({ id: index + 1, from_id, to_id, system_id }));
+    input.linkSystems = [{ id: 8, color_key: 'indigo' }, { id: 9, color_key: 'teal' }];
+    const settings = createPrintSettings();
+    settings.labels = false;
+    const model = buildPrintModel(input, settings);
+    const centers = new Map(model.nodes.map(node => [node.rackViewId ? -node.rackViewId : node.deviceId,
+        { x: node.x + node.width / 2, y: node.y + node.height / 2 }]));
+    assert.deepEqual(model.wires.map(wire =>
+        [wire.displayKey, wire.label, wire.color, wire.points[0], wire.points.at(-1)]), [
+        [`1:${-rackA}:-2`, '×2', '#4B5BA9', centers.get(-rackA), centers.get(-2)],
+        [`1:${-rackA}:1`, '×2', '#334155', centers.get(-rackA), centers.get(1)]
+    ]);
+    settings.deviceTypes[input.devices[0].type] = false;
+    assert.deepEqual(buildPrintModel(input, settings).wires, [model.wires[0]]);
+    settings.deviceTypes[input.devices[0].type] = true;
+    settings.rack = false;
+    const withoutRack = buildPrintModel(input, settings);
+    assert.deepEqual(withoutRack.nodes.map(node => node.deviceId), [1]);
+    assert.deepEqual(withoutRack.wires, []);
+    settings.rack = true;
+    input.view.show_connections = 0;
+    assert.deepEqual(buildPrintModel(input, settings).wires, []);
+});
+
+test('印刷は機器ペアの方向を保ち、接続非表示のビューでは印刷しない', () => {
+    const input = fixture();
+    const options = createPrintSettings();
+    const forward = buildPrintModel(input, options).wires[0].points;
+    assert.deepEqual(forward.slice(1, -1), input.viewLinkRoutes[0].manual_route);
+    Object.assign(input.links[0], { from_id: 2, to_id: 1 });
+    const reversed = buildPrintModel(input, options).wires[0];
+    assert.deepEqual(reversed.points, forward);
+    assert.equal(reversed.pathData, reversed.points.map(({ x, y }, index) =>
+        `${index ? 'L' : 'M'} ${x} ${y}`).join(' '));
+    assert.deepEqual(input.viewLinkRoutes[0].manual_route, [{ x: 154, y: 600 }, { x: 354, y: 600 }]);
+    input.view.show_connections = 0;
+    assert.deepEqual(buildPrintModel(input, options).wires, []);
+});
+
+test('複数接続は個別ラベルを出さず、系統色が一致する場合だけその色で×Nを印刷する', () => {
+    const input = fixture();
+    const options = createPrintSettings();
+    input.links[0].system_id = 8;
+    input.links.push({ id: 20, from_id: 2, to_id: 1, system_id: 9, label: '別のラベル' });
+    input.linkSystems = [{ id: 8, color_key: 'teal' }, { id: 9, color_key: 'teal' }];
+    const [wire] = buildPrintModel(input, options).wires;
+    assert.deepEqual(buildPrintModel(input, options).wires, [wire]);
+    assert.equal(wire.displayKey, '1:1:2');
+    assert.equal(wire.label, '×2');
+    assert.equal(wire.color, '#167D8D');
+    options.labels = false;
+    input.linkSystems[1].color_key = 'indigo';
+    assert.deepEqual(buildPrintModel(input, options).wires, [{ ...wire, color: '#334155' }]);
+    input.links.reverse();
+    assert.deepEqual(buildPrintModel(input, options).wires, [{ ...wire, color: '#334155' }]);
+    options.deviceTypes.switch = false;
     assert.deepEqual(buildPrintModel(input, options).wires, []);
 });
 
@@ -180,9 +262,9 @@ test('snapshotは入力・機密・管理情報を変更も共有もせず、空
     assert.equal(options.deviceTypes.ap, true);
     options.title = false;
     assert.equal(buildPrintModel(input, options).title, null);
-    input.view.facility = ''; input.view.floor = '';
+    input.view.floor_id = null;
     options.title = true;
-    assert.equal(buildPrintModel(input, options).title.location, '');
+    assert.equal(buildPrintModel(input, options).title.location, '未分類');
 });
 
 test('メモ本文null/undefined、不正bounds、スケールゼロ除算、未解決リンクを安全に処理する', () => {

@@ -109,7 +109,7 @@
     width: 140px;
 }
 
-.ledger-filter-tools #ledger-facility-filter-trigger {
+.ledger-filter-tools #ledger-building-filter-trigger {
     width: 110px;
 }
 
@@ -155,7 +155,7 @@
     font-weight: 700;
 }
 
-.ledger-tools input,
+.ledger-tools input:not([type="checkbox"]),
 .ledger-tools select {
     min-width: 120px;
     height: 32px;
@@ -765,6 +765,7 @@
 
 .ledger-sheet-actions-bar {
     display: flex;
+    align-items: center;
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px 18px;
@@ -775,7 +776,38 @@
     overflow-y: auto;
 }
 
-#ledger-sheet-save-btn {
+.ledger-sheet-save-status {
+    margin-left: auto;
+    padding: 3px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.ledger-sheet-save-status.is-conflict,
+.ledger-sheet-save-status.is-error {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
+.ledger-sheet-save-status.is-warning,
+.ledger-sheet-save-status.is-unconfirmed {
+    color: var(--warning-text, var(--text-main));
+    background: var(--warning-bg);
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
+.ledger-sheet-save-status.is-saving,
+.ledger-sheet-save-status.is-pending {
+    color: var(--primary);
+    background: var(--primary-soft);
+    border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+}
+
+.ledger-sheet-save-status[hidden] + #ledger-sheet-save-btn {
     margin-left: auto;
 }
 
@@ -789,15 +821,23 @@
     gap: 12px;
 }
 
+.ledger-sheet-body[data-active-tab="config"] {
+    padding: 0;
+    gap: 0;
+    overflow: hidden;
+}
+
 .ledger-sheet-tabs {
     display: flex;
     flex-shrink: 0;
     gap: 8px;
     padding: 0 18px;
+    overflow-x: auto;
     border-bottom: 1px solid var(--border-light);
 }
 
 .ledger-sheet-tabs button {
+    flex: 0 0 auto;
     padding: 12px;
     border: 0;
     border-bottom: 3px solid transparent;
@@ -805,6 +845,11 @@
     color: var(--text-muted);
     font: inherit;
     cursor: pointer;
+    white-space: nowrap;
+}
+
+.ledger-sheet-tabs button:focus-visible {
+    outline-offset: -4px !important;
 }
 
 .ledger-sheet-tabs button[aria-selected="true"] {
@@ -819,10 +864,368 @@
     gap: 12px;
 }
 
+.ledger-sheet-panel-config {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    width: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+.ledger-sheet-panel-ports {
+    display: block;
+    width: 100%;
+    min-width: 0;
+}
+
+.port-ledger-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-block-end: 8px;
+}
+
+.port-ledger-scroll {
+    --port-ledger-first-column: 7rem;
+    container-name: port-ledger;
+    container-type: inline-size;
+    max-block-size: clamp(10rem, calc(92dvh - 16rem), 34rem);
+    overflow: auto;
+    scroll-padding-block-start: 2.5rem;
+    scroll-padding-inline-start: var(--port-ledger-first-column);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.port-ledger-table {
+    width: 100%;
+    min-width: 60rem;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: #ffffff;
+    color: var(--text-main);
+    font-size: 13px;
+}
+
+.port-ledger-table :is(th, td) {
+    padding: 5px 8px;
+    border-block-end: 1px solid var(--border-light);
+    text-align: start;
+    vertical-align: middle;
+}
+
+.port-ledger-table thead {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 2;
+}
+
+.port-ledger-table thead th {
+    background: #f8fafc;
+    white-space: nowrap;
+}
+
+.port-ledger-table thead th:first-child {
+    width: var(--port-ledger-first-column);
+}
+
+.port-ledger-table thead th:nth-child(4) {
+    width: 18%;
+}
+
+.port-ledger-table thead th:nth-child(2) {
+    width: 14%;
+}
+
+.port-ledger-table thead th:nth-child(3),
+.port-ledger-table thead th:nth-child(8) {
+    width: 12%;
+}
+
+.port-ledger-table thead th:last-child {
+    width: 5.5rem;
+}
+
+.port-ledger-table tr > :is(th, td):first-child:not([colspan]) {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    border-inline-end: 1px solid var(--border-light);
+}
+
+.port-ledger-table tbody tr > :is(th, td):first-child:not([colspan]) {
+    background: #ffffff;
+}
+
+.port-ledger-value {
+    display: block;
+    max-inline-size: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.port-ledger-table button:focus-visible {
+    outline-offset: -3px !important;
+}
+
+.port-ledger-section > :is(th, td) {
+    background: #f8fafc;
+    font-weight: 700;
+}
+
+.port-ledger-table td:has(> .port-ledger-editor) {
+    padding: 0;
+    background: var(--primary-soft);
+}
+
+/* 横スクロールしても、編集フォームは表示領域の左端に収める。 */
+.port-ledger-editor {
+    position: sticky;
+    inset-inline-start: 0;
+    inline-size: min(100%, 100cqi);
+    padding: 12px;
+}
+
+.port-ledger-editor > h3 {
+    margin-block: 0 8px;
+}
+
+.port-ledger-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+    gap: 8px 12px;
+}
+
+.port-ledger-field {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    min-width: 0;
+}
+
+.port-ledger-field > label {
+    font-weight: 600;
+}
+
+.port-ledger-fields :is(input, select, textarea) {
+    width: 100%;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: #ffffff;
+    color: inherit;
+    font: inherit;
+}
+
+.port-ledger-field > :is(input, select, textarea):disabled {
+    background-color: #f1f5f9;
+    color: var(--text-muted);
+    cursor: not-allowed;
+}
+
+.port-ledger-field:has(> :disabled) > label {
+    color: var(--text-muted);
+}
+
+.port-ledger-fields textarea {
+    resize: vertical;
+}
+
+.port-ledger-field-reason {
+    margin: 0;
+}
+
+.port-ledger-vlan-copy {
+    margin-block-start: 12px;
+    overflow-wrap: anywhere;
+}
+
+.port-ledger-vlan-copy > p {
+    margin: 0;
+}
+
+.port-ledger-vlan-copy-controls {
+    display: grid;
+    grid-template-columns: fit-content(60%) minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    margin-block-start: 6px;
+}
+
+.port-ledger-vlan-copy-controls > p {
+    margin: 0;
+}
+@container port-ledger (max-width: 30rem) {
+    .port-ledger-vlan-copy-controls > p {
+        min-block-size: 4lh;
+    }
+}
+
+
+.port-ledger-vlan-copy-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    min-inline-size: 0;
+}
+
+.port-vlan-confirm-dialog {
+    max-block-size: calc(100dvh - 24px);
+}
+
+.port-vlan-confirm-comparison-dialog {
+    width: min(560px, 100%);
+}
+
+.port-vlan-confirm-message {
+    overscroll-behavior: contain;
+}
+
+.port-vlan-confirm-message > p {
+    margin-block: 0 0.5em;
+    white-space: pre-wrap;
+}
+
+.port-vlan-confirm-comparison {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+    gap: var(--space-3);
+}
+
+.port-vlan-confirm-endpoint {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    overflow-wrap: anywhere;
+}
+
+.port-vlan-confirm-endpoint > h3 {
+    margin-block: 0 var(--space-1);
+    font-size: inherit;
+    color: var(--text-main);
+}
+
+.port-vlan-confirm-endpoint > p {
+    margin: 0;
+    white-space: pre-wrap;
+}
+
+.port-ledger-legacy-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin-block-end: var(--space-2);
+}
+
+.port-ledger-legacy-value {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.port-ledger-table td > .port-ledger-legacy-value {
+    margin-block-start: var(--space-1);
+    color: var(--danger);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.port-ledger-legacy-notice > button {
+    min-block-size: 24px;
+    max-inline-size: 100%;
+    white-space: normal;
+}
+
+.port-ledger-peer-popup {
+    max-block-size: 12rem;
+    overflow: auto;
+    overscroll-behavior: contain;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: #ffffff;
+    color: var(--text-main);
+}
+
+@supports (position-area: block-end span-inline-end) {
+    #ledger-port-peerId {
+        anchor-name: --ledger-port-peer;
+    }
+
+    .port-ledger-peer-popup[popover] {
+        position-anchor: --ledger-port-peer;
+        position-area: block-end span-inline-end;
+        position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+        inset: auto;
+        margin: 0;
+        inline-size: max(anchor-size(width), 12rem);
+        padding: 0;
+        box-shadow: var(--shadow-lg);
+    }
+}
+
+.port-ledger-peer-option,
+.port-ledger-peer-popup p {
+    padding: 6px 8px;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.port-ledger-peer-option {
+    cursor: pointer;
+}
+
+.port-ledger-peer-option:is(:hover, .is-active) {
+    background: var(--primary-soft);
+}
+
+@container port-ledger (min-width: 28rem) {
+    .port-ledger-connection-fields {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container port-ledger (min-width: 52rem) {
+    .port-ledger-connection-fields {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+.port-ledger-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-block-start: 12px;
+}
+
+.port-ledger-confirm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-inline-start: auto;
+}
+
+.port-ledger-status {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.port-ledger-status:not(:empty) {
+    margin-block-start: 8px;
+}
+
 .ledger-sheet-panel[hidden] {
     display: none;
 }
-
 .ledger-sheet-section {
     min-width: 0;
     border: 1px solid var(--border-light);
@@ -905,6 +1308,44 @@ div.ledger-sheet-table {
     grid-column: 1 / -1;
 }
 
+.ledger-sheet-floor-support {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+}
+
+.ledger-sheet-floor-support h5,
+.ledger-sheet-floor-support p {
+    margin: 0;
+    font-size: inherit;
+    overflow-wrap: anywhere;
+}
+
+.ledger-sheet-hierarchy-link {
+    display: block;
+    min-height: 24px;
+    margin-top: 4px;
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--primary);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+
+.ledger-sheet-hierarchy-link:hover {
+    text-decoration-thickness: 2px;
+}
+
+.ledger-sheet-hierarchy-link:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
 .ledger-sheet-table.ledger-sheet-asset-fields {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     align-content: start;
@@ -915,6 +1356,7 @@ div.ledger-sheet-table {
     .ledger-sheet-panel { grid-template-columns: 1fr; }
     .ledger-sheet-maintenance { grid-row: auto; }
     .ledger-sheet-table.ledger-sheet-asset-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ledger-sheet-table.ledger-sheet-placement-fields { grid-template-columns: 1fr; }
     .ledger-sheet-body { padding: 12px; }
 }
 
@@ -1000,11 +1442,7 @@ table.ledger-sheet-table {
     border-color: var(--primary);
 }
 
-.ledger-sheet-table input[readonly]:focus-visible,
-.ledger-sheet-table textarea[readonly]:focus-visible,
 .ledger-sheet-table select:disabled:focus-visible,
-#ledger-sheet-body input[readonly]:focus-visible,
-#ledger-sheet-body textarea[readonly]:focus-visible,
 #ledger-sheet-body select:disabled:focus-visible {
     outline: none !important;
     box-shadow: none !important;

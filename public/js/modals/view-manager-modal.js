@@ -3,6 +3,9 @@
  */
 
 import {
+    DEFAULT_DEVICE_HEIGHT,
+    DEFAULT_DEVICE_WIDTH,
+    DEFAULT_VIEW_SCALE,
     MAX_VIEWS
 } from '../core/constants.js';
 
@@ -23,16 +26,17 @@ import {
 import {
     getCurrentView,
     allocateLocalId,
-    normalizeLink,
-    toSaveLink,
     toSavePlacement,
     toSaveView
 } from '../core/state.js';
+import { normalizeViewLinkRoute } from '../core/connection-data.js';
 import { toSaveCanvasNote } from '../core/canvas-note-data.js';
 import { MAX_RACK_U, toSaveRackSettings, toSaveRackMount } from '../core/rack-layout.js';
-import { toSaveFloorRackPlacement } from '../core/floor-rack-data.js';
+import { getFloorRackDestination, toSaveFloorRackPlacement } from '../core/floor-rack-data.js';
 import { clearFloorRackSelection } from '../canvas/floor-racks.js';
 import {
+    applyViewTransform,
+    getCanvasVisibleCenter,
     restoreCurrentViewState,
     saveCurrentViewState
 } from '../canvas/pan-zoom.js';
@@ -72,12 +76,18 @@ import {
 import { openFloorPlanManager } from './floor-plan-modal.js';
 import { syncViewCombobox } from '../ui/view-combobox.js';
 import { openChangeHistory } from './change-history-modal.js';
+import { buildHierarchyTree, flattenHierarchyTree, syncHierarchyExpansion, populateFloorSelect, viewHierarchyPath } from '../core/building-hierarchy.js';
+import { renderHierarchyEditor, resolveHierarchyEditor, clearHierarchyEditor, hasHierarchyEditorDraft } from './building-hierarchy-editor.js';
 
 let viewManagerSelectedId = null;
+let hierarchySelection = null;
+const collapsedHierarchy = new Set();
+const hierarchyExpansion = { collapsed: collapsedHierarchy, knownBranches: new Set(), selectedPath: null };
+let acceptedManagerSearch = '';
 let viewManagerSnapshot = null;
 let viewManagerFormGeneration = 0;
 let viewManagerApplyGeneration = 0;
-const viewFormIds = ['vm-name', 'vm-facility', 'vm-floor', 'vm-type', 'vm-sort-order', 'vm-memo', 'vm-total-u', 'vm-location'];
+const viewFormIds = ['vm-name', 'vm-type', 'vm-sort-order', 'vm-memo', 'vm-total-u', 'vm-location', 'vm-floor-id'];
 let floorRackReturn = null;
 
 export function openFloorRackView(rackViewId) {
@@ -86,6 +96,37 @@ export function openFloorRackView(rackViewId) {
             Number(row.rack_view_id) === Number(rackViewId)) ||
         !appState.views.some(view => Number(view.id) === Number(rackViewId) && view.view_type === 'rack')) return false;
     return switchView(rackViewId, { fromFloor: true });
+}
+
+export async function showFloorRackPlacement(rackViewId, { fromManager = false } = {}) {
+    const generation = viewManagerFormGeneration;
+    if (fromManager && (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration)) return false;
+    const destination = getFloorRackDestination(appState, rackViewId);
+    if (!destination || !appState.canvas) {
+        showToast('ラックアイコンの配置先が見つかりません', 'warning');
+        return false;
+    }
+    const viewId = Number(destination.view.id);
+    const sameView = Number(appState.currentViewId) === viewId;
+    if (!await switchView(viewId)) return false;
+    if (sameView && (!await closePanel() || !await closeLinkPanel())) return false;
+    if (fromManager && generation !== viewManagerFormGeneration) return false;
+    const current = getFloorRackDestination(appState, rackViewId);
+    if (Number(current?.view.id) !== Number(appState.currentViewId)) return false;
+    const icon = appState.deviceLayer?.querySelector(`[data-rack-view-id="${Number(rackViewId)}"]`)
+        ?.querySelector('.floor-rack-trigger');
+    if (!icon) return false;
+
+    if (fromManager) hideViewManager({ restoreFocus: false });
+    eventBus.emit('placement-mode:exit');
+    const center = getCanvasVisibleCenter();
+    const state = appState.viewState;
+    state.scale = Math.max(state.scale, DEFAULT_VIEW_SCALE);
+    state.panX = center.x - (Number(current.placement.x) + DEFAULT_DEVICE_WIDTH / 2) * state.scale;
+    state.panY = center.y - (Number(current.placement.y) + DEFAULT_DEVICE_HEIGHT / 2) * state.scale;
+    applyViewTransform();
+    icon.focus({ preventScroll: true });
+    return true;
 }
 
 export function renderFloorRackReturn() {
@@ -114,15 +155,18 @@ export function renderFloorRackReturn() {
 }
 
 function readViewForm() {
-    return viewFormIds.map(id => String(document.getElementById(id)?.value ?? ''));
+    const fields = viewFormIds.map(id => String(document.getElementById(id)?.value ?? ''));
+    fields.push(document.getElementById('vm-show-connections')?.checked === false ? '0' : '1');
+    return fields;
 }
 
 function hasUnappliedViewForm() {
     const view = getViewManagerSelectedView();
     if (!view) return false;
     const settings = appState.rackSettings.find(row => Number(row.view_id) === Number(view.id));
-    const values = [view.name, view.facility, view.floor, view.view_type, view.sort_order, view.memo,
-        settings?.total_u ?? '', settings?.location ?? ''].map(value => String(value ?? ''));
+    const values = [view.name, view.view_type, view.sort_order, view.memo,
+        settings?.total_u ?? '', settings?.location ?? '', view.floor_id ?? '',
+        Number(view.show_connections ?? 1) === 0 ? 0 : 1].map(value => String(value ?? ''));
     return readViewForm().some((value, index) => value !== values[index]);
 }
 
@@ -132,10 +176,12 @@ export function updateViewManagerFormState() {
 }
 
 async function resolveUnappliedViewForm() {
+    const generation = viewManagerFormGeneration;
+    if (!await resolveHierarchyEditor() || generation !== viewManagerFormGeneration) return false;
     if (!hasUnappliedViewForm()) return true;
     const choice = await chooseUnsavedChanges('未適用のビュー入力があります。どうしますか？');
+    if (generation !== viewManagerFormGeneration) return false;
     if (choice === 'save') {
-        const generation = viewManagerFormGeneration;
         if (!await applyViewForm()) return false;
         return generation === viewManagerFormGeneration && !hasUnappliedViewForm();
     }
@@ -152,12 +198,11 @@ eventBus.on('resources:ids-remapped', maps => {
             row.device_id = mappedResourceId(maps.devices, row.device_id);
             row.view_id = mappedResourceId(maps.views, row.view_id);
         });
-        viewManagerSnapshot.links.forEach(row => {
-            row.id = mappedResourceId(maps.links, row.id);
-            row.view_id = mappedResourceId(maps.views, row.view_id);
-            row.from_id = mappedResourceId(maps.devices, row.from_id);
-            row.to_id = mappedResourceId(maps.devices, row.to_id);
-        });
+        viewManagerSnapshot.viewLinkRoutes = viewManagerSnapshot.viewLinkRoutes.map(row => normalizeViewLinkRoute({
+            ...row, view_id: mappedResourceId(maps.views, row.view_id),
+            device_a_id: mappedResourceId(maps.devices, row.device_a_id),
+            device_b_id: mappedResourceId(maps.devices, row.device_b_id)
+        }));
         viewManagerSnapshot.canvasNotes.forEach(note => {
             note.id = mappedResourceId(maps.canvas_notes, note.id);
             note.view_id = mappedResourceId(maps.views, note.view_id);
@@ -194,12 +239,19 @@ eventBus.on('resources:saved', () => {
 
 eventBus.on('save-state:changed', updateViewManagerButtons);
 
-eventBus.on('resources:reloaded', () => {
+eventBus.on('resources:reloaded', ({ source } = {}) => {
+    if (source === 'hierarchy-editor') {
+        viewManagerSnapshot = createViewManagerSnapshot();
+        renderViewSelector(); render(); renderViewManagerList();
+        return;
+    }
     floorRackReturn = null;
     // 全再読込は既に確認済み。古いDOMを新モデルと比較して再確認しない。
     viewManagerFormGeneration++;
     viewManagerApplyGeneration++;
     appState.viewManagerFormDirty = false;
+    hierarchySelection = null;
+    clearHierarchyEditor();
     viewManagerSnapshot = null;
     viewManagerSelectedId = null;
     setInputValue('vm-id', '');
@@ -210,10 +262,20 @@ eventBus.on('resources:reloaded', () => {
     }
 });
 
+eventBus.on('hierarchy:changed', () => {
+    renderViewSelector();
+    render();
+    if (!document.getElementById('view-manager-overlay')?.hidden) {
+        renderViewManagerList();
+        if (!hierarchySelection && !hasUnappliedViewForm()) loadSelectedViewIntoForm();
+        viewManagerSnapshot = createViewManagerSnapshot();
+    }
+});
+
 /**
  * ビュー管理
  */
-export function openViewManager() {
+export function openViewManager({ floorId } = {}) {
     if (!requireAdminUiAction()) {
         return;
     }
@@ -224,7 +286,7 @@ export function openViewManager() {
 
     if (!overlay) {
         showToast(
-            'ビュー管理画面が見つかりません',
+            '建物・フロア・ビュー管理画面が見つかりません',
             'error'
         );
         return;
@@ -251,10 +313,37 @@ export function openViewManager() {
             );
 
     overlay.hidden = false;
+    const viewForm = document.getElementById('view-manager-form');
+    if (viewForm) viewForm.hidden = false;
+    const embeddedEditor = document.getElementById('hierarchy-editor');
+    if (embeddedEditor) embeddedEditor.hidden = true;
+    hierarchySelection = null; clearHierarchyEditor();
+    const rackPlacementButton = document.getElementById('vm-rack-go-to-placement');
+    if (rackPlacementButton) {
+        rackPlacementButton.onclick = () => showFloorRackPlacement(getViewManagerSelectedView()?.id, { fromManager: true });
+    }
+    for (const [id, kind] of [['hierarchy-add-building-btn', 'building'], ['hierarchy-add-floor-btn', 'floor']]) {
+        const button = document.getElementById(id);
+        if (button) button.onclick = async () => {
+            const generation = viewManagerFormGeneration;
+            if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
+            const buildingId = hierarchySelection?.kind === 'building' ? hierarchySelection.id :
+                appState.floors.find(floor => Number(floor.id) === Number(hierarchySelection?.id))?.building_id;
+            selectHierarchyNode({ kind, building_id: buildingId });
+        };
+    }
 
-    renderViewManagerList();
-    loadSelectedViewIntoForm();
-    registerModalOpen('view_manager', overlay, '#view-manager-search', { onClose: () => closeViewManager() });
+    const floor = floorId == null ? null : appState.floors.find(row => Number(row.id) === Number(floorId));
+    if (floor) {
+        const search = document.getElementById('view-manager-search');
+        if (search) search.value = '';
+        selectHierarchyNode({ kind: 'floor', id: floor.id });
+    } else {
+        renderViewManagerList();
+        loadSelectedViewIntoForm();
+    }
+    registerModalOpen('view_manager', overlay, floor ? '#hierarchy-representative_view_id' : '#view-manager-search',
+        { onClose: () => closeViewManager() });
 }
 
 
@@ -372,9 +461,7 @@ export function createViewManagerSnapshot() {
                 ...placement
             })),
 
-        links: appState.links.map(link => ({
-            ...link
-        })),
+        viewLinkRoutes: appState.viewLinkRoutes.map(normalizeViewLinkRoute),
 
         canvasNotes: appState.canvasNotes.map(note => ({ ...note })),
         rackSettings: appState.rackSettings.map(row => ({ ...row })),
@@ -419,6 +506,7 @@ export async function closeViewManager() {
 function hideViewManager({ restoreFocus = true } = {}) {
     const overlay = document.getElementById('view-manager-overlay');
     if (!overlay || overlay.hidden) return;
+    hierarchySelection = null; clearHierarchyEditor();
     appState.viewManagerFormDirty = false;
     viewManagerFormGeneration++;
 
@@ -438,7 +526,7 @@ export function hasViewManagerChanges() {
         views: appState.views.map(toSaveView),
         placements:
             appState.placements.map(toSavePlacement),
-        links: appState.links.map(toSaveLink),
+        view_link_routes: appState.viewLinkRoutes,
         canvas_notes: appState.canvasNotes.map(toSaveCanvasNote),
         rack_settings: appState.rackSettings.map(toSaveRackSettings),
         rack_mounts: appState.rackMounts.map(toSaveRackMount),
@@ -457,9 +545,7 @@ export function hasViewManagerChanges() {
                 .placements
                 .map(toSavePlacement),
 
-        links:
-            viewManagerSnapshot.links
-                .map(toSaveLink),
+        view_link_routes: viewManagerSnapshot.viewLinkRoutes,
         canvas_notes: viewManagerSnapshot.canvasNotes.map(toSaveCanvasNote),
         rack_settings: viewManagerSnapshot.rackSettings.map(toSaveRackSettings),
         rack_mounts: viewManagerSnapshot.rackMounts.map(toSaveRackMount),
@@ -472,149 +558,118 @@ export function hasViewManagerChanges() {
 }
 
 
-export function renderViewManagerList() {
-    const list =
-        document.getElementById(
-            'view-manager-list'
-        );
+function selectHierarchyNode(selection) {
+    viewManagerFormGeneration++;
+    hierarchySelection = selection;
+    viewManagerSelectedId = selection?.kind === 'view' ? Number(selection.id) : null;
+    if (selection?.kind === 'view') hierarchySelection = null;
+    const form = document.getElementById('view-manager-form');
+    const editor = document.getElementById('hierarchy-editor');
+    const hierarchy = hierarchySelection && hierarchySelection.kind !== 'unclassified';
+    if (form) form.hidden = Boolean(hierarchySelection);
+    if (editor) {
+        editor.hidden = !hierarchy;
+        if (hierarchy) renderHierarchyEditor(editor, hierarchySelection, next => {
+            hierarchySelection = next;
+            viewManagerSnapshot = createViewManagerSnapshot();
+            renderViewManagerList();
+            if (!next) selectHierarchyNode({ kind: 'unclassified' });
+        });
+    }
+    appState.viewManagerFormDirty = false;
+    renderViewManagerList();
+    if (!hierarchySelection) { clearHierarchyEditor(); loadSelectedViewIntoForm(); }
+}
 
-    if (!list) {
+export function renderViewManagerList() {
+    const list = document.getElementById('view-manager-list');
+    if (!list) return;
+    const searchInput = document.getElementById('view-manager-search');
+    const search = normalizeText(searchInput?.value).trim().toLocaleLowerCase('ja');
+    // フィルターで編集中の行を見失わないよう、未適用入力がある間は変更しない。
+    if (search !== acceptedManagerSearch && (hasUnappliedViewForm() || hasHierarchyEditorDraft())) {
+        if (searchInput) searchInput.value = acceptedManagerSearch;
         return;
     }
-
-    const search =
-        normalizeText(
-            document.getElementById(
-                'view-manager-search'
-            )?.value
-        )
-            .trim()
-            .toLocaleLowerCase('ja');
-
-    const sortedViews = [...appState.views]
-        .sort((a, b) => {
-            const orderDifference =
-                Number(a.sort_order) -
-                Number(b.sort_order);
-
-            return orderDifference !== 0
-                ? orderDifference
-                : Number(a.id) -
-                    Number(b.id);
-        })
-        .filter(view => {
-            if (!search) {
-                return true;
-            }
-
-            const text = [
-                view.name,
-                view.facility,
-                view.floor,
-                view.view_type,
-                view.memo
-            ]
-                .map(normalizeText)
-                .join(' ')
-                .toLocaleLowerCase('ja');
-
-            return text.includes(search);
-        });
-
+    acceptedManagerSearch = search;
+    const matches = item => [item.row?.name, item.row?.memo,
+        item.kind === 'view' ? viewHierarchyPath(item.row, appState) : '',
+        item.kind === 'unclassified' ? '未分類ビュー' : ''].join(' ').toLocaleLowerCase('ja').includes(search);
+    const filter = items => items.flatMap(item => {
+        const children = filter(item.children);
+        return !search || matches(item) || children.length ? [{ ...item, children: matches(item) ? item.children : children }] : [];
+    });
+    const selectedKey = hierarchySelection ? `${hierarchySelection.kind}${hierarchySelection.id == null ? '' : `:${hierarchySelection.id}`}` : `view:${viewManagerSelectedId}`;
+    const tree = buildHierarchyTree(appState);
+    syncHierarchyExpansion(tree, hierarchyExpansion, selectedKey);
+    const unclassifiedCount = tree.find(item => item.kind === 'unclassified')?.children.length || 0;
+    const entries = flattenHierarchyTree(filter(tree), search ? new Set() : collapsedHierarchy);
     list.replaceChildren();
-
-    sortedViews.forEach(view => {
-        const button =
-            document.createElement('button');
-
-        button.type = 'button';
-        button.className =
-            'view-manager-list-item';
-
-        button.dataset.viewId =
-            String(view.id);
-
-        button.setAttribute(
-            'role',
-            'option'
-        );
-
-        const selected =
-            Number(view.id) ===
-            Number(viewManagerSelectedId);
-
-        button.classList.toggle(
-            'selected',
-            selected
-        );
-
-        button.setAttribute(
-            'aria-selected',
-            selected ? 'true' : 'false'
-        );
-
-        const typeLabel = view.view_type === 'rack' ? 'ラック' :
-            view.view_type === 'floor' ? '物理' : '論理';
-
-        const subText = [
-            view.facility,
-            view.floor,
-            typeLabel
-        ]
-            .map(normalizeText)
-            .filter(Boolean)
-            .join(' / ');
-
-        const name =
-            document.createElement('strong');
-
-        name.textContent =
-            view.name ||
-            `ビューID ${view.id}`;
-
-        const detail =
-            document.createElement('span');
-
-        detail.textContent =
-            subText ||
-            `表示順 ${view.sort_order}`;
-
-        button.appendChild(name);
-        button.appendChild(detail);
-
-        button.addEventListener(
-            'click',
-            async () => {
-                let nextViewId = Number(button.dataset.viewId);
-                if (Number(viewManagerSelectedId) === nextViewId) return;
-                const generation = viewManagerFormGeneration;
-                if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
-                nextViewId = Number(view.id);
-                if (!appState.views.some(item => Number(item.id) === nextViewId)) return;
-
-                viewManagerSelectedId =
-                    nextViewId;
-
-                renderViewManagerList();
-                loadSelectedViewIntoForm();
+    entries.forEach((item, index) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'view-manager-list-item';
+        button.dataset.nodeKey = item.key;
+        if (item.kind === 'view') button.dataset.viewId = String(item.row.id);
+        button.style.paddingInlineStart = `${12 + item.depth * 18}px`;
+        button.setAttribute('role', 'treeitem');
+        button.setAttribute('aria-level', String(item.depth + 1));
+        button.setAttribute('aria-selected', String(item.key === selectedKey));
+        button.classList.toggle('selected', item.key === selectedKey);
+        button.tabIndex = item.key === selectedKey || (!entries.some(entry => entry.key === selectedKey) && index === 0) ? 0 : -1;
+        button.addEventListener('focus', () => {
+            list.querySelectorAll('[role="treeitem"]').forEach(element => { element.tabIndex = element === button ? 0 : -1; });
+        });
+        const branch = item.kind !== 'view';
+        if (branch) button.setAttribute('aria-expanded', String(!collapsedHierarchy.has(item.key) || Boolean(search)));
+        const labelText = `${branch ? collapsedHierarchy.has(item.key) && !search ? '▸ ' : '▾ ' : ''}${item.kind === 'unclassified' ? `未分類ビュー（${unclassifiedCount}件）` : item.row?.name}${item.kind === 'view' &&
+            appState.floors.some(floor => Number(floor.representative_view_id) === Number(item.row.id)) ? '（代表）' : ''}`;
+        if (branch) {
+            button.textContent = labelText;
+        } else {
+            button.classList.add('view-manager-view');
+            const icon = document.createElement('img');
+            const type = item.row.view_type;
+            icon.className = 'view-manager-type-icon';
+            icon.src = `assets/icons/toolbar/${type === 'rack' ? 'rack' : type === 'floor' ? 'floor-plan' : 'link'}.svg`;
+            icon.alt = type === 'rack' ? 'ラック搭載図' : type === 'floor' ? '物理・フロア配置図' : '論理構成図';
+            icon.width = 16; icon.height = 16;
+            const label = document.createElement('span');
+            label.className = 'view-manager-view-name';
+            label.textContent = labelText;
+            button.append(icon, label);
+        }
+        const focusKey = key => Array.from(list.querySelectorAll('[role="treeitem"]')).find(element => element.dataset.nodeKey === key)?.focus();
+        const toggle = async () => {
+            const generation = viewManagerFormGeneration;
+            if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
+            if (!search && collapsedHierarchy.has(item.key)) collapsedHierarchy.delete(item.key);
+            else if (!search) collapsedHierarchy.add(item.key);
+            renderViewManagerList(); focusKey(item.key);
+        };
+        button.addEventListener('click', async () => {
+            if (item.key === selectedKey && branch) { await toggle(); return; }
+            const generation = viewManagerFormGeneration;
+            if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration) return;
+            clearHierarchyEditor();
+            selectHierarchyNode({ kind: item.kind, id: item.row?.id });
+            focusKey(item.key);
+        });
+        button.addEventListener('keydown', async event => {
+            const offset = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+            if (offset || event.key === 'Home' || event.key === 'End') {
+                event.preventDefault();
+                focusKey(entries[event.key === 'Home' ? 0 : event.key === 'End' ? entries.length - 1 : Math.max(0, Math.min(entries.length - 1, index + offset))].key);
+            } else if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+                event.preventDefault();
+                if (branch && !search && ((event.key === 'ArrowRight') === collapsedHierarchy.has(item.key))) await toggle();
+                else if (event.key === 'ArrowRight' && entries[index + 1]?.depth > item.depth) focusKey(entries[index + 1].key);
+                else if (event.key === 'ArrowLeft') focusKey(entries.slice(0, index).reverse().find(entry => entry.depth < item.depth)?.key);
             }
-        );
-
-
-
+        });
         list.appendChild(button);
     });
-
-    const count =
-        document.getElementById(
-            'view-manager-count'
-        );
-
-    if (count) {
-        count.textContent =
-            `${appState.views.length} / ${MAX_VIEWS}件`;
-    }
-
+    const count = document.getElementById('view-manager-count');
+    if (count) count.textContent = `${appState.views.length} / ${MAX_VIEWS}件`;
     updateViewManagerButtons();
 }
 
@@ -646,6 +701,8 @@ export function loadSelectedViewIntoForm() {
         setInputError(document.getElementById(id), document.getElementById(`${id}-error`), '');
     }
     const disabled = !view;
+    const floorSelect = document.getElementById('vm-floor-id');
+    populateFloorSelect(floorSelect, appState, view?.floor_id);
 
     form
         .querySelectorAll(
@@ -655,11 +712,18 @@ export function loadSelectedViewIntoForm() {
             element.disabled = disabled;
         });
 
+    const displaySetting = document.getElementById('vm-connections-setting');
+    const displayCheckbox = document.getElementById('vm-show-connections');
+    const showSetting = Boolean(view) && view.view_type !== 'rack';
+    if (displaySetting) displaySetting.hidden = !showSetting;
+    if (displayCheckbox) {
+        displayCheckbox.disabled = !showSetting;
+        displayCheckbox.checked = Number(view?.show_connections ?? 1) !== 0;
+    }
+
     if (!view) {
         setInputValue('vm-id', '');
         setInputValue('vm-name', '');
-        setInputValue('vm-facility', '');
-        setInputValue('vm-floor', '');
         setInputValue('vm-type', 'topology');
         setInputValue('vm-sort-order', '0');
         setInputValue('vm-memo', '');
@@ -675,11 +739,6 @@ export function loadSelectedViewIntoForm() {
 
     setInputValue('vm-id', view.id);
     setInputValue('vm-name', view.name);
-    setInputValue(
-        'vm-facility',
-        view.facility
-    );
-    setInputValue('vm-floor', view.floor);
     setInputValue(
         'vm-type',
         view.view_type
@@ -728,11 +787,9 @@ export async function applyViewForm() {
     }
     const generation = viewManagerFormGeneration;
     const submittedInputs = readViewForm();
-    const [rawName, rawFacility, rawFloor, rawType, rawOrder, rawMemo, rawTotalU, rawLocation] = submittedInputs;
+    const [rawName, rawType, rawOrder, rawMemo, rawTotalU, rawLocation, rawFloorId, rawShowConnections] = submittedInputs;
     const values = {
         name: rawName.trim(),
-        facility: rawFacility.trim(),
-        floor: rawFloor.trim(),
         view_type: ['floor', 'rack'].includes(rawType) ? rawType : 'topology',
         sort_order: Number(rawOrder),
         memo: rawMemo.trim()
@@ -740,8 +797,7 @@ export async function applyViewForm() {
     for (const id of viewFormIds) {
         setInputError(document.getElementById(id), document.getElementById(`${id}-error`), '');
     }
-    const limits = [['name', 100, 'ビュー名', 'vm-name'], ['facility', 100, '施設名', 'vm-facility'],
-        ['floor', 50, 'フロア', 'vm-floor'], ['memo', 1000, '備考', 'vm-memo']];
+    const limits = [['name', 100, 'ビュー名', 'vm-name'], ['memo', 1000, '備考', 'vm-memo']];
     if (!values.name) {
         setInputError(document.getElementById('vm-name'), document.getElementById('vm-name-error'), 'ビュー名を入力してください');
         document.getElementById('vm-name')?.focus();
@@ -792,15 +848,25 @@ export async function applyViewForm() {
             return false;
         }
     }
+    const floorId = rawFloorId ? Number(rawFloorId) : null;
+    if (floorId !== null && !appState.floors.some(floor => Number(floor.id) === floorId)) {
+        setInputError(document.getElementById('vm-floor-id'), document.getElementById('vm-floor-id-error'), '所属フロアを選び直してください');
+        return false;
+    }
 
     const previousSettings = appState.rackSettings.find(row => Number(row.view_id) === Number(view.id));
-    const changed = JSON.stringify(toSaveView(view)) !== JSON.stringify(toSaveView({ ...view, ...values })) ||
+    const showConnections = view.view_type === 'rack' ? toSaveView(view).show_connections : Number(rawShowConnections);
+    const changed = JSON.stringify(toSaveView(view)) !== JSON.stringify(toSaveView({
+        ...view, ...values, floor_id: floorId, show_connections: showConnections
+    })) ||
         (rackSettings && JSON.stringify(previousSettings && toSaveRackSettings(previousSettings)) !== JSON.stringify(rackSettings));
     if (rackSettings) {
         if (previousSettings) Object.assign(previousSettings, rackSettings);
         else appState.rackSettings.push(rackSettings);
     }
     Object.assign(view, values);
+    view.floor_id = floorId;
+    view.show_connections = showConnections;
     if (view.view_type !== 'floor') {
         appState.floorRackPlacements = (appState.floorRackPlacements || []).filter(row => Number(row.floor_view_id) !== Number(view.id));
     }
@@ -847,6 +913,13 @@ export async function addView(requestedType = null) {
     if (!await resolveUnappliedViewForm() || generation !== viewManagerFormGeneration ||
         !isCurrentUserAdmin() || appState.authExpired || appState.views.length >= MAX_VIEWS) return;
 
+    const inheritedFloorId = hierarchySelection?.kind === 'floor' &&
+        appState.floors.some(floor => Number(floor.id) === Number(hierarchySelection.id)) ? Number(hierarchySelection.id) : null;
+    hierarchySelection = null; clearHierarchyEditor();
+    const form = document.getElementById('view-manager-form');
+    if (form) form.hidden = false;
+    const editor = document.getElementById('hierarchy-editor');
+    if (editor) editor.hidden = true;
     const id = allocateLocalId('views');
     const selectedType = requestedType ?? document.getElementById('vm-new-type')?.value;
     const viewType = ['floor', 'rack'].includes(selectedType) ? selectedType : 'topology';
@@ -867,6 +940,7 @@ export async function addView(requestedType = null) {
         ),
         facility: '',
         floor: '',
+        floor_id: inheritedFloorId,
         view_type: viewType,
         sort_order: sortOrder,
         memo: ''
@@ -961,18 +1035,8 @@ export async function duplicateSelectedView() {
             });
         });
 
-    appState.links
-        .filter(link =>
-            Number(link.view_id) ===
-            Number(source.id)
-        )
-        .forEach(link => {
-            appState.links.push(normalizeLink({
-                ...link,
-                id: allocateLocalId('links'),
-                view_id: newViewId
-            }));
-        });
+    appState.viewLinkRoutes.push(...appState.viewLinkRoutes.filter(row => Number(row.view_id) === Number(source.id))
+        .map(row => normalizeViewLinkRoute({ ...row, view_id: newViewId })));
     }
     appState.canvasNotes.filter(note => Number(note.view_id) === Number(source.id)).forEach(note => {
         appState.canvasNotes.push({
@@ -1030,21 +1094,16 @@ export async function deleteSelectedView() {
                 Number(view.id)
         ).length;
 
-    const linkCount =
-        appState.links.filter(
-            link =>
-                Number(link.view_id) ===
-                Number(view.id)
-        ).length;
+    const routeCount = appState.viewLinkRoutes.filter(row => Number(row.view_id) === Number(view.id)).length;
 
     const noteCount = appState.canvasNotes.filter(note => Number(note.view_id) === Number(view.id)).length;
 
     const confirmed = confirm(
         `ビュー「${view.name}」を削除しますか?\n\n` +
         `配置: ${placementCount}件\n` +
-        `接続: ${linkCount}件\n` +
+        `手動経路: ${routeCount}件\n` +
         `メモ: ${noteCount}件\n\n` +
-        '機器台帳自体は削除されません。'
+        '機器台帳と共通接続は削除されません。'
     );
 
     if (!confirmed) {
@@ -1072,11 +1131,7 @@ export async function deleteSelectedView() {
             deletedViewId
     );
 
-    appState.links = appState.links.filter(
-        link =>
-            Number(link.view_id) !==
-            deletedViewId
-    );
+    appState.viewLinkRoutes = appState.viewLinkRoutes.filter(row => Number(row.view_id) !== deletedViewId);
 
     appState.canvasNotes = appState.canvasNotes.filter(note => Number(note.view_id) !== deletedViewId);
     if (!appState.canvasNotes.some(note => Number(note.id) === Number(appState.selectedCanvasNoteId))) {
@@ -1162,6 +1217,8 @@ export function updateViewManagerButtons() {
             'view-apply-btn'
         );
 
+    const floorButton = document.getElementById('hierarchy-add-floor-btn');
+    if (floorButton) floorButton.disabled = !appState.buildings.length;
     if (addButton) {
         addButton.disabled =
             appState.views.length >= MAX_VIEWS;
@@ -1211,6 +1268,13 @@ export function updateViewManagerButtons() {
     const floorPlanStatus = document.getElementById('vm-floor-plan-status');
     const floorPlanHelp = document.getElementById('vm-floor-plan-help');
     const selectedView = getViewManagerSelectedView();
+    const rackDestination = selectedView?.view_type === 'rack' ? getFloorRackDestination(appState, selectedView.id) : null;
+    const rackPlacementText = document.getElementById('vm-rack-destination');
+    if (rackPlacementText) rackPlacementText.textContent = rackDestination
+        ? `${viewHierarchyPath(rackDestination.view, appState)} / ${rackDestination.view.name}` : '未配置';
+    const rackPlacementButton = document.getElementById('vm-rack-go-to-placement');
+    if (rackPlacementButton) rackPlacementButton.hidden = !rackDestination;
+
     const isFloor = Boolean(selectedView) && document.getElementById('vm-type')?.value === 'floor';
     const hasFloorPlan = isFloor && appState.floorPlans.some(plan => Number(plan.view_id) === Number(selectedView.id));
     const floorPlanBlockReason = getSelectedViewFloorPlanBlockReason();
@@ -1275,7 +1339,7 @@ export async function openSelectedViewHistory() {
     if (!isConfirmedView(latestView) || Number(latestView.id) !== selectedId) return false;
     if (appState.authExpired || hasResourceConflict('views', selectedId) ||
         hasResourceChanges('views', selectedId) || hasUnappliedViewForm()) {
-        showToast('ビューの保存が完了していません。ビュー管理で保存状態と入力を確認してください', 'warning');
+        showToast('ビューの保存が完了していません。建物・フロア・ビュー管理で保存状態と入力を確認してください', 'warning');
         return false;
     }
     await openChangeHistory({

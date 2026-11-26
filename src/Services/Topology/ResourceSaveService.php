@@ -29,14 +29,13 @@ final class ResourceSaveService
     {
         $deviceOperations = $this->operations($input['devices'] ?? null, '機器');
         $viewOperations = $this->operations($input['views'] ?? null, 'ビュー');
-        $maps = ['devices' => [], 'views' => [], 'placements' => [], 'links' => [], 'canvas_notes' => [], 'rack_shelves' => []];
+        $maps = ['devices' => [], 'views' => [], 'placements' => [], 'canvas_notes' => [], 'rack_shelves' => []];
         $deletedDevices = [];
         $deletedViews = [];
         $affectedViews = [];
         $floorPlanFiles = [];
         $meta = new AppMetaRepository($this->db);
         $placementIds = [];
-        $linkIds = [];
         $noteIds = [];
         foreach ($viewOperations as $viewId => $operation) {
             if ($operation['operation'] === 'delete') {
@@ -45,10 +44,6 @@ final class ResourceSaveService
             foreach ($operation['placements'] as $row) {
                 $row = $this->topologyRow($row, $viewId, '配置');
                 $placementIds[(int)$row['id']] = true;
-            }
-            foreach ($operation['links'] as $row) {
-                $row = $this->topologyRow($row, $viewId, '接続');
-                $linkIds[(int)$row['id']] = true;
             }
             foreach ($operation['canvas_notes'] as $row) {
                 $row = $this->topologyRow($row, $viewId, 'メモ');
@@ -75,7 +70,6 @@ final class ResourceSaveService
             // SQLiteのNOCASEに合わせ、退避中も残る既存名（削除予定を含む）を予約する。
             $reservedViewNames = array_fill_keys(array_map('strtolower', array_column($views, 'name')), true);
             $placements = $this->selectRows('device_placements', 'id', array_keys($placementIds));
-            $links = $this->selectRows('links', 'id', array_keys($linkIds));
             $existingNotes = $this->indexed($this->selectRows('canvas_notes', 'id', array_keys($noteIds)));
             $conflicts = array_merge(
                 $this->revisionConflicts($deviceOperations, $devices, 'devices'),
@@ -94,7 +88,13 @@ final class ResourceSaveService
                     $deletedDevices[$id] = true;
                     unset($devices[$id]);
                 } else {
-                    $devices[$id] = array_replace($operation['device'], ['id' => $id]);
+                    $device = $operation['device'];
+                    foreach (['floor_id', 'facility', 'floor'] as $field) {
+                        if (!array_key_exists($field, $device)) {
+                            $device[$field] = $devices[$id][$field] ?? ($field === 'floor_id' ? null : '');
+                        }
+                    }
+                    $devices[$id] = array_replace($device, ['id' => $id]);
                 }
             }
             foreach ($viewOperations as $localId => $operation) {
@@ -107,7 +107,17 @@ final class ResourceSaveService
                     $deletedViews[$id] = true;
                     unset($views[$id]);
                 } else {
-                    $views[$id] = array_replace($operation['view'], ['id' => $id]);
+                    $view = $operation['view'];
+                    if (!array_key_exists('floor_id', $view)) {
+                        $view['floor_id'] = $existingViews[$id]['floor_id'] ?? null;
+                    }
+                    foreach (['facility', 'floor'] as $field) {
+                        if (!array_key_exists($field, $view)) { $view[$field] = $existingViews[$id][$field] ?? ''; }
+                    }
+                    if (!array_key_exists('show_connections', $view)) {
+                        $view['show_connections'] = $existingViews[$id]['show_connections'] ?? 1;
+                    }
+                    $views[$id] = array_replace($view, ['id' => $id]);
                 }
             }
             $replacedViews = [];
@@ -288,20 +298,31 @@ final class ResourceSaveService
             }
 
             $placements = array_merge($placements, $this->selectRows('device_placements', 'device_id', array_keys($deletedDevices)));
-            $links = array_merge($links,
-                $this->selectRows('links', 'from_id', array_keys($deletedDevices)),
-                $this->selectRows('links', 'to_id', array_keys($deletedDevices)));
-            foreach (array_merge($placements, $links) as $row) {
-                if (isset($deletedDevices[(int)($row['device_id'] ?? 0)]) ||
-                    isset($deletedDevices[(int)($row['from_id'] ?? 0)]) ||
-                    isset($deletedDevices[(int)($row['to_id'] ?? 0)])) {
+            foreach ($placements as $row) {
+                if (isset($deletedDevices[$row['device_id']])) {
                     $affectedViews[(int)$row['view_id']] = true;
                 }
             }
+            $deletedDeviceIds = array_keys($deletedDevices);
+            $deletedLinks = $this->indexed(array_merge(
+                $this->selectRows('links', 'from_id', $deletedDeviceIds),
+                $this->selectRows('links', 'to_id', $deletedDeviceIds)
+            ));
+            $deletedPortIds = array_column($this->selectRows('device_ports', 'device_id', $deletedDeviceIds), 'id');
+            $connectionPeers = [];
+            foreach ($deletedLinks as $link) {
+                $connectionPeers[$link['from_id']] = $connectionPeers[$link['to_id']] = true;
+            }
+            $connectionPeers = array_keys(array_diff_key($connectionPeers, $deletedDevices));
+            foreach (['device_a_id', 'device_b_id'] as $endpoint) {
+                foreach ($this->selectRows('view_link_routes', $endpoint, $deletedDeviceIds) as $route) {
+                    $affectedViews[$route['view_id']] = true;
+                }
+            }
             $existingPlacements = $this->indexed($placements);
-            $existingLinks = $this->indexed($links);
             $placements = [];
-            $links = [];
+            $routes = [];
+            $replacedRouteViews = [];
             $notes = [];
 
             foreach ($viewOperations as $localId => $operation) {
@@ -324,22 +345,19 @@ final class ResourceSaveService
                     $row['device_id'] = $maps['devices'][$deviceId] ?? $deviceId;
                     $placements[] = $row;
                 }
-                foreach ($operation['links'] as $row) {
-                    $row = $this->topologyRow($row, $localId, '接続');
-                    $localLinkId = (int)$row['id'];
-                    if (isset($maps['links'][$localLinkId])) {
-                        throw new ApiException("接続ID {$localLinkId} が重複しています", 400);
+                if (array_key_exists('view_link_routes', $operation) || ($views[$viewId]['view_type'] ?? 'topology') === 'rack') {
+                    $replacedRouteViews[$viewId] = true;
+                }
+                foreach ($operation['view_link_routes'] ?? [] as $row) {
+                    if (!is_array($row) || (array_key_exists('view_id', $row) && ResourceId::parse($row['view_id'], 'view_id') !== $localId)) {
+                        throw new ApiException("ビューID {$localId}: 手動経路のビュー参照が不正です", 400);
                     }
-                    $id = isset($existingLinks[$localLinkId]) && (int)$existingLinks[$localLinkId]['view_id'] === $viewId
-                        ? $localLinkId : $this->allocate('links');
-                    $maps['links'][$localLinkId] = $id;
-                    $row['id'] = $id;
+                    $a = ResourceId::parse($row['device_a_id'] ?? null, 'device_a_id');
+                    $b = ResourceId::parse($row['device_b_id'] ?? null, 'device_b_id');
                     $row['view_id'] = $viewId;
-                    $fromId = (int)($row['from_id'] ?? $row['fromId'] ?? 0);
-                    $toId = (int)($row['to_id'] ?? $row['toId'] ?? 0);
-                    $row['from_id'] = $maps['devices'][$fromId] ?? $fromId;
-                    $row['to_id'] = $maps['devices'][$toId] ?? $toId;
-                    $links[] = $row;
+                    $row['device_a_id'] = $maps['devices'][$a] ?? $a;
+                    $row['device_b_id'] = $maps['devices'][$b] ?? $b;
+                    $routes[] = $row;
                 }
                 foreach ($operation['canvas_notes'] as $row) {
                     $row = $this->topologyRow($row, $localId, 'メモ');
@@ -367,9 +385,9 @@ final class ResourceSaveService
             foreach ($placements as $row) {
                 $validationDeviceIds[(int)$row['device_id']] = true;
             }
-            foreach ($links as $row) {
-                $validationDeviceIds[(int)$row['from_id']] = true;
-                $validationDeviceIds[(int)$row['to_id']] = true;
+            foreach ($routes as $row) {
+                $validationDeviceIds[$row['device_a_id']] = true;
+                $validationDeviceIds[$row['device_b_id']] = true;
             }
             foreach ($mounts as $row) {
                 $validationDeviceIds[(int)$row['device_id']] = true;
@@ -377,13 +395,16 @@ final class ResourceSaveService
             foreach ($shelfDevices as $row) {
                 $validationDeviceIds[(int)$row['device_id']] = true;
             }
-            [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedLinks, , , $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices] =
-                (new TopologyService($this->db))->normalizeTopology([
+            $topology = new TopologyService($this->db);
+            [$normalizedViews, $normalizedDevices, $normalizedPlacements, $normalizedRoutes, , , $normalizedNotes, $normalizedSettings, $normalizedMounts, $normalizedShelves, $normalizedShelfDevices] =
+                $topology->normalizeTopology([
                     'views' => array_values($views), 'devices' => array_values(array_intersect_key($devices, $validationDeviceIds)),
-                    'placements' => $placements, 'links' => $links, 'canvas_notes' => $notes,
+                    'placements' => $placements, 'view_link_routes' => $routes, 'canvas_notes' => $notes,
                     'rack_settings' => $settings, 'rack_mounts' => $mounts,
                     'rack_shelves' => $shelves, 'rack_shelf_devices' => $shelfDevices,
                 ], $config);
+            FloorRackPlacement::assertNewPairsMatchFloors($floorRacks, $existingFloorRacks, $normalizedViews);
+            $topology->assertRoutePairsExist($normalizedRoutes);
             $normalizedViews = $this->indexed($normalizedViews);
             $normalizedDevices = $this->indexed($normalizedDevices);
             $ipManagement = new IpManagementService($this->db);
@@ -396,8 +417,8 @@ final class ResourceSaveService
             }
             $ipManagement->assertFinal(array_values($finalDevices));
             $changeHistory = new ChangeHistoryService($this->db);
-            $beforeHistoryDeviceIds = [];
-            $afterHistoryDeviceIds = [];
+            $beforeHistoryDeviceIds = $connectionPeers;
+            $afterHistoryDeviceIds = $connectionPeers;
             foreach ($deviceOperations as $localId => $operation) {
                 $mappedId = (int)($maps['devices'][$localId] ?? $localId);
                 if ($operation['operation'] !== 'create') {
@@ -428,6 +449,7 @@ final class ResourceSaveService
                     foreach ((new DeviceImageRepository($this->db))->getByDeviceId($id) as $image) {
                         (new DeviceImageRepository($this->db))->enqueueGc((string)$image['stored_name'], date(DATE_ATOM));
                     }
+                    $this->db->prepare('DELETE FROM legacy_link_conflicts WHERE device_a_id = :id OR device_b_id = :id')->execute([':id' => $id]);
                     $this->deleteRow('devices', $id);
                     $monitorChanged = true;
                     continue;
@@ -479,11 +501,16 @@ final class ResourceSaveService
                     $stmt->execute([':id' => $id]);
                 }
                 if ($operation['operation'] === 'delete') {
+                    $this->db->prepare('DELETE FROM legacy_link_conflicts WHERE view_id = :id')->execute([':id' => $id]);
                     $this->deleteRow('views', $id);
                     continue;
                 }
                 $this->writeRow('views', $normalizedViews[$id], $operation['operation'] === 'create');
-                foreach (['links', 'device_placements', 'canvas_notes'] as $table) {
+                $tables = ['device_placements', 'canvas_notes'];
+                if (isset($replacedRouteViews[$id])) {
+                    $tables[] = 'view_link_routes';
+                }
+                foreach ($tables as $table) {
                     $stmt = $this->db->prepare("DELETE FROM {$table} WHERE view_id = :id");
                     $stmt->execute([':id' => $id]);
                 }
@@ -514,10 +541,8 @@ final class ResourceSaveService
                     $this->writeRow('device_placements', $row, true);
                 }
             }
-            foreach ($normalizedLinks as $row) {
-                if (isset($replacedViews[$row['view_id']]) && !isset($deletedViews[$row['view_id']])) {
-                    $this->writeRow('links', $row, true);
-                }
+            foreach ($normalizedRoutes as $row) {
+                $this->writeRow('view_link_routes', $row, true);
             }
             foreach ($normalizedNotes as $row) {
                 $this->writeRow('canvas_notes', $row, true);
@@ -539,7 +564,7 @@ final class ResourceSaveService
             $changeHistory->recordFromSnapshot($beforeHistory, $afterHistoryDeviceIds, $afterHistoryViewIds, 'save_resources');
             // Read the response before commit, from the same snapshot as the writes.
             $affectedPlacements = $this->selectRows('device_placements', 'view_id', array_keys($affectedViews));
-            $affectedLinks = $this->selectRows('links', 'view_id', array_keys($affectedViews));
+            $affectedRoutes = $this->selectRows('view_link_routes', 'view_id', array_keys($affectedViews));
             $affectedMounts = $this->selectRows('rack_mounts', 'view_id', array_keys($affectedViews));
             $affectedShelves = $this->selectRows('rack_shelves', 'view_id', array_keys($affectedViews));
             $affectedShelfDevices = $this->selectRows('rack_shelf_devices', 'shelf_id', array_column($affectedShelves, 'id'));
@@ -556,20 +581,24 @@ final class ResourceSaveService
             }
             $result = [
                 'ok' => true, 'revision' => $meta->getDataRevision(),
+                'buildings' => $this->db->query('SELECT * FROM buildings ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
+                'floors' => $this->db->query('SELECT * FROM floors ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
                 'monitor_revision' => $meta->getMonitorRevision(),
                 'saved_at' => $meta->get('last_saved_at', '') ?: null,
                 'id_maps' => array_map(static fn(array $map): object => (object)$map, $maps),
                 'devices' => (new DeviceRepository($this->db))->getAllWithStatus(array_keys($responseDeviceIds)),
                 'views' => $this->selectRows('views', 'id', array_keys($affectedViews)),
                 'placements' => $affectedPlacements,
-                'links' => $affectedLinks,
+                'view_link_routes' => $affectedRoutes,
                 'canvas_notes' => $this->selectRows('canvas_notes', 'view_id', array_keys($affectedViews)),
                 'rack_settings' => $this->selectRows('rack_settings', 'view_id', array_keys($affectedViews)),
                 'rack_mounts' => $affectedMounts,
                 'rack_shelves' => $affectedShelves,
                 'rack_shelf_devices' => $affectedShelfDevices,
                 'floor_rack_placements' => $this->selectRows('floor_rack_placements', 'floor_view_id', array_keys($affectedViews)),
-                'deleted_device_ids' => array_keys($deletedDevices),
+                'deleted_device_ids' => $deletedDeviceIds,
+                'deleted_link_ids' => array_keys($deletedLinks),
+                'deleted_device_port_ids' => $deletedPortIds,
                 'deleted_view_ids' => array_keys($deletedViews),
                 'affected_view_ids' => array_keys($affectedViews),
             ];
@@ -628,9 +657,13 @@ final class ResourceSaveService
                 if (!is_array($row[$key] ?? null)) {
                     throw new ApiException("{$label}ID {$id}: データ形式が不正です", 400);
                 }
-                if ($key === 'view' && (!is_array($row['placements'] ?? null) || !is_array($row['links'] ?? null)
+                if ($key === 'view' && (!is_array($row['placements'] ?? null)
                     || !is_array($row['canvas_notes'] ?? null) || !array_is_list($row['canvas_notes']))) {
-                    throw new ApiException("ビューID {$id}: 配置・接続・メモの全構成を指定してください", 400);
+                    throw new ApiException("ビューID {$id}: 配置・メモの全構成を指定してください", 400);
+                }
+                if ($key === 'view' && array_key_exists('view_link_routes', $row)
+                    && (!is_array($row['view_link_routes']) || !array_is_list($row['view_link_routes']))) {
+                    throw new ApiException('view_link_routesは配列で指定してください', 400);
                 }
                 if ($key === 'view' && array_key_exists('rack_mounts', $row)
                     && (!is_array($row['rack_mounts']) || !array_is_list($row['rack_mounts']))) {
@@ -674,12 +707,6 @@ final class ResourceSaveService
         }
         if ($label === '配置') {
             $row['device_id'] = ResourceId::parse($row['device_id'] ?? null, 'device_id');
-        } elseif ($label === '接続') {
-            $row['from_id'] = ResourceId::parse($row['from_id'] ?? $row['fromId'] ?? null, 'from_id');
-            $row['to_id'] = ResourceId::parse($row['to_id'] ?? $row['toId'] ?? null, 'to_id');
-            if (isset($row['system_id'])) {
-                $row['system_id'] = LinkSystemService::positiveInteger($row['system_id'], 'system_id');
-            }
         }
         return $row;
     }
@@ -700,7 +727,7 @@ final class ResourceSaveService
 
     private function writeRow(string $table, array $row, bool $create): void
     {
-        if ($table === 'links') {
+        if ($table === 'view_link_routes') {
             $row['manual_route'] = json_encode($row['manual_route'], JSON_THROW_ON_ERROR);
         }
         $fields = array_keys($row);
@@ -724,10 +751,15 @@ final class ResourceSaveService
             return [];
         }
         $idList = implode(', ', array_map('intval', $ids));
-        $order = $table === 'floor_rack_placements' ? 'rack_view_id'
-            : ($table === 'rack_settings' ? 'view_id' : (in_array($table, ['rack_mounts', 'rack_shelf_devices'], true) ? 'device_id' : 'id'));
+        $order = match ($table) {
+            'floor_rack_placements' => 'rack_view_id',
+            'rack_settings' => 'view_id',
+            'rack_mounts', 'rack_shelf_devices' => 'device_id',
+            'view_link_routes' => 'view_id, device_a_id, device_b_id',
+            default => 'id',
+        };
         $rows = $this->db->query("SELECT * FROM {$table} WHERE {$column} IN ({$idList}) ORDER BY {$order}")->fetchAll(PDO::FETCH_ASSOC);
-        if ($table === 'links') {
+        if ($table === 'view_link_routes') {
             foreach ($rows as &$row) {
                 $row['manual_route'] = json_decode($row['manual_route'], true, 512, JSON_THROW_ON_ERROR);
             }

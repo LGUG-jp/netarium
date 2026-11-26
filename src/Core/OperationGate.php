@@ -68,7 +68,7 @@ class OperationGate
 
         if (!@flock($handle, $lockType | LOCK_NB)) {
             @fclose($handle);
-            throw new ApiException($busyMessage, 409);
+            throw new ApiException($busyMessage, 409, ['reason' => 'operation_busy']);
         }
 
         $this->handle = $handle;

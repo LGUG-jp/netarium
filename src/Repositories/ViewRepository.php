@@ -27,6 +27,8 @@ class ViewRepository
                 facility,
                 floor,
                 view_type,
+                show_connections,
+                floor_id,
                 sort_order,
                 memo
             FROM views
@@ -47,6 +49,8 @@ class ViewRepository
                 facility,
                 floor,
                 view_type,
+                show_connections,
+                floor_id,
                 sort_order,
                 memo
             FROM views

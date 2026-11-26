@@ -1469,4 +1469,21 @@ test('#374: 両フォームの到達性、dirty/409、警告付き保存、監�
     assert.ok(!overlay.querySelectorAll('button').some(row => row.textContent === 'ネットワークを登録'));
     await click('本番');
     assert.ok(!overlay.querySelectorAll('button').some(row => row.textContent === 'ネットワーク区分を編集'));
+
+    await closeIpManagement();
+    window.APP_CONFIG.user.isAdmin = true;
+    await openIpManagement();
+    await click('本番');
+    await click('ネットワーク区分を編集');
+    await choose('reachable');
+    conflict = true;
+    await submit(); await confirm();
+    assert.equal(overlay.querySelector('.ip-management-recovery-btn').hidden, false);
+    conflict = false;
+    const closing = closeIpManagement();
+    await confirm();
+    await closing;
+    await openIpManagement({ target: { device_id: 1, kind: 'management', id: null, ip: '192.0.2.1' } });
+    assert.equal(overlay.querySelector('.ip-management-recovery-btn').hidden, true);
+    await closeIpManagement();
 });

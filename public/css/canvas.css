@@ -270,6 +270,21 @@
     user-select: none;
 }
 
+.link-count-badge {
+    pointer-events: visiblePainted;
+    cursor: pointer;
+}
+
+.link-count-badge rect {
+    fill: #fff;
+    stroke: #cbd5e1;
+}
+
+.link-label-count {
+    stroke: none;
+    dominant-baseline: central;
+}
+
 
 .topology-link-hit {
     fill: none;
@@ -295,17 +310,12 @@
         opacity var(--transition-fast);
 }
 
-.link-group:hover .topology-link {
-    stroke-width: 5;
+.link-group.selected .topology-link {
+    filter: none;
 }
 
-.link-group.selected .topology-link {
+.link-group:not(.selected):hover .topology-link {
     stroke-width: 5;
-    filter:
-        drop-shadow(
-            0 0 4px
-            rgba(37, 99, 235, 0.55)
-        );
 }
 
 .link-group.selected .link-label {
@@ -333,12 +343,17 @@
 }
 
 .link-foreground.selected .link-foreground-halo {
-    stroke: var(--primary);
+    stroke: rgba(37, 99, 235, 0.22);
+    stroke-width: 7;
 }
 
 .link-foreground-path {
     stroke: var(--link-default-color, rgba(71, 85, 105, 0.72));
     stroke-width: 5;
+}
+
+.link-foreground.selected .link-foreground-path {
+    stroke-width: 4;
 }
 
 
@@ -394,7 +409,8 @@
 
 /* Opacity leaves hit paths, status colors and pointer interactions intact. */
 .device.connection-dimmed,
-.link-group.connection-dimmed {
+.link-group.connection-dimmed,
+.link-count-badge.connection-dimmed {
     opacity: 0.28;
 }
 
@@ -405,7 +421,8 @@
 
 .device.connection-dimmed:hover,
 .device.connection-dimmed.dragging,
-.link-group.connection-dimmed:hover {
+.link-group.connection-dimmed:hover,
+.link-count-badge.connection-dimmed:hover {
     opacity: 0.85;
 }
 
@@ -562,15 +579,15 @@
     pointer-events: none;
 }
 
-/* 接続作成の接続元 */
-.device.link-source {
+/* 接続作成で選択した端点 */
+.device:is(.link-source, .link-target) {
     background: var(--primary-soft);
     box-shadow:
         0 12px 30px rgba(37, 99, 235, 0.18),
         0 0 0 5px rgba(37, 99, 235, 0.16);
 }
 
-.device.link-source::after {
+.device:is(.link-source, .link-target)::after {
     content: "接続元";
     position: absolute;
     top: -13px;
@@ -582,6 +599,15 @@
     font-size: 10px;
     font-weight: 900;
     box-shadow: 0 4px 10px rgba(37, 99, 235, 0.30);
+}
+
+.device.link-target::after {
+    content: "接続先";
+}
+
+:is(.rack-device, .rack-shelf-device-icon).legacy-link-endpoint {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
 }
 
 
@@ -955,35 +981,59 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
     position: absolute;
     z-index: 10;
     pointer-events: auto;
+    user-select: none;
+    touch-action: none;
+}
+.floor-rack:hover { z-index: 20; }
+.floor-rack-trigger {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 3px;
+    gap: 4px;
     cursor: pointer;
-    user-select: none;
-    touch-action: none;
-    border: 2px solid transparent;
-    border-radius: var(--radius-sm);
-    box-sizing: border-box;
-}
-.floor-rack > img { width: 54px; height: 54px; object-fit: contain; pointer-events: none; }
-.floor-rack .device-name { text-align: center; }
-.floor-rack.selected, .floor-rack:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
-.floor-rack-select {
-    position: absolute;
-    top: -22px;
-    right: 0;
-    padding: 1px 5px;
-    font-size: 11px;
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-xs);
-    background: var(--bg-surface, #fff);
+    width: 100%;
+    height: 100%;
+    padding: 6px;
+    border: 2px dashed rgba(51, 65, 85, 0.55);
+    background: rgba(248, 250, 252, 0.95);
+    box-shadow:
+        0 6px 14px rgba(15, 23, 42, 0.16),
+        0 0 0 2px rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     color: var(--text-main);
-    cursor: pointer;
-    opacity: 0;
+    font: inherit;
+    border-radius: var(--radius-lg);
+    box-sizing: border-box;
+    transition:
+        box-shadow var(--transition-fast),
+        border-color var(--transition-fast),
+        background var(--transition-fast);
 }
-.floor-rack:hover .floor-rack-select, .floor-rack:focus-within .floor-rack-select, .floor-rack.selected .floor-rack-select { opacity: 1; }
+.floor-rack-trigger:hover {
+    background: rgba(255, 255, 255, 0.99);
+    border-color: rgba(51, 65, 85, 0.78);
+    box-shadow: var(--shadow-md);
+}
+.floor-rack-trigger > img { width: 42px; height: 42px; object-fit: contain; pointer-events: none; flex-shrink: 0; }
+.floor-rack-trigger .device-name {
+    text-align: center;
+    pointer-events: none;
+    padding: 0 2px;
+    background: transparent;
+    text-shadow: none;
+}
+.floor-rack.selected { z-index: 11; }
+.floor-rack.selected .floor-rack-trigger { border-color: var(--primary); }
+.floor-rack.selected .floor-rack-trigger,
+.floor-rack-trigger:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.floor-rack-open {
+    position: absolute;
+    bottom: calc(100% + 5px);
+    right: 0;
+    white-space: nowrap;
+}
 .placement-rack-list { display: grid; gap: 6px; max-height: 360px; overflow-y: auto; }
 .placement-rack-item {
     display: flex;
@@ -996,8 +1046,8 @@ body:has(#panel:not(.hidden):not([hidden])) #canvas.rack-active .rack-content { 
     border-radius: var(--radius-sm);
     background: var(--bg-surface, #fff);
     color: var(--text-main);
-    cursor: pointer;
 }
+button.placement-rack-item { cursor: pointer; }
 .placement-rack-item > img { flex: 0 0 36px; width: 36px; height: 36px; }
 .placement-rack-item > span { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .placement-rack-item > span > span { font-size: 12px; color: var(--text-muted); }

@@ -3,14 +3,15 @@
  * ES Modules
  */
 
-import { appState, state } from './core/state.js';
+import { appState, getCurrentView, state } from './core/state.js';
 import { eventBus } from './core/event-bus.js';
-import { initModalFocusTrap } from './core/modal-focus.js';
+import { getTopModalContainer, initModalFocusTrap } from './core/modal-focus.js';
 import { initializeHiddenTerminal } from './modals/hidden-terminal.js';
 import { initializeLinkDisplaySettings } from './core/link-display-settings.js';
 import { initCanvasContextToolbar } from './ui/canvas-context-toolbar.js';
 import { initLinkRouteEditor } from './canvas/link-route-editor.js';
-import { initCanvasNotes, finishCanvasNotes } from './canvas/canvas-notes.js';
+import { initCanvasNotes, finishCanvasNotes, commitCanvasNoteText, hasUnappliedCanvasNoteText } from './canvas/canvas-notes.js';
+import { endLinkMode } from './core/link-mode.js';
 import {
     closeLinkDisplaySettings,
     initializeLinkDisplayModal,
@@ -73,13 +74,13 @@ import {
     toggleWorkspaceNavigation
 } from './ui/workspace-navigation.js';
 import { closeWiringControls, initWiringControls } from './ui/wiring-controls.js';
+import { hasHierarchyEditorDraft } from './modals/building-hierarchy-editor.js';
 import {
     applyLinkPanel,
     applyPanel,
     applyPlacementCoordinates,
     closeLinkPanel,
     closePanel,
-    deleteDevice,
     deleteDeviceCompletely,
     deleteDeviceCompletelyFromPanel,
     deleteEditingLink,
@@ -94,7 +95,6 @@ import {
     revertPanelValues,
     setDevicePanelReadOnly,
     setLinkPanelReadOnly,
-    swapLinkPanelEndpoints,
     syncPanelIfOpen,
     updateDeviceManagementButtons,
     jumpToManagementSettings
@@ -111,16 +111,17 @@ import {
     deleteSelectedLedgerDevicesCompletely,
     getLedgerSelectedDeviceIds,
     manageActiveDevicePlacements,
-    openDashboardLedger,
+    navigateLedgerDevice,
     openDataQualityDeviceInLedger,
     openLedger,
     openLedgerWithFilters,
     openLedgerDetail,
     focusLedgerSheetField,
+    hasUnsavedPortDraft,
     openLedgerPlaceViewModal,
     openActiveDeviceHistory,
-    openActiveDeviceConfig,
     pingLedgerSelected,
+    refreshOpenLedgerAfterReload,
     renderLedgerTable,
     resetLedgerFilters,
     saveLedger,
@@ -145,6 +146,8 @@ import {
     updateViewManagerButtons
 } from './modals/view-manager-modal.js';
 import { initViewCombobox } from './ui/view-combobox.js';
+import { openBuildingView, closeBuildingView, hasBuildingViewDraft, getOpenBuildingId } from './ui/building-view.js';
+import { findEnabledBuilding } from './core/building-view-model.js';
 import {
     applyPlacementManager,
     closePlacementManager,
@@ -217,14 +220,18 @@ import {
     inspectDashboardModel,
     openDashboard,
     refreshDashboard,
-    selectDashboardTab
+    renderDashboardAfterQualityChange,
+    renderDashboardAfterSaveStateChange,
+    selectDashboardTab,
+    updateDashboardMaintenanceSettings
 } from './modals/dashboard-modal.js';
 import {
     clearDataQualityFilters,
     closeDataQuality,
     openDataQuality,
     refreshDataQuality,
-    renderDataQuality,
+    refreshDataQualityAfterSheet,
+    selectDataQualitySuppressed,
     selectDataQualitySeverity
 } from './modals/data-quality-modal.js';
 import {
@@ -270,11 +277,13 @@ import {
     renderStatusBar
 } from './ui/status-bar.js';
 import { openDirectLink } from './core/direct-link.js';
+import { initPlacementHistoryControls } from './ui/placement-history-controls.js';
 import {
     isCurrentUserAdmin
 } from './ui/access-control.js';
 
 export function registerStaticListeners() {
+    initPlacementHistoryControls();
     for (const section of ['breakdown', 'racks']) {
         document.getElementById(`dashboard-${section}-toggle`)?.addEventListener('click', () => handleDashboardAction(`toggle-${section}`));
     }
@@ -296,7 +305,6 @@ export function registerStaticListeners() {
     rotation?.addEventListener('keydown', onFloorPlanRotationKeyDown);
     rotation?.addEventListener('blur', commitFloorPlanRotation);
     document.getElementById('lp-close-btn')?.addEventListener('click', () => closeLinkPanel());
-    document.getElementById('lp-swap-btn')?.addEventListener('click', () => swapLinkPanelEndpoints());
     document.getElementById('lp-apply-btn')?.addEventListener('click', () => applyLinkPanel());
     document.getElementById('lp-revert-btn')?.addEventListener('click', () => revertLinkPanelValues());
     document.getElementById('lp-delete-btn')?.addEventListener('click', () => deleteEditingLink());
@@ -309,7 +317,6 @@ export function registerStaticListeners() {
     document.getElementById('p-ping-help-btn')?.addEventListener('click', () => openPingHelpDialog());
     document.getElementById('p-apply-btn')?.addEventListener('click', () => applyPanel());
     document.getElementById('p-revert-btn')?.addEventListener('click', () => revertPanelValues());
-    document.getElementById('p-delete-btn')?.addEventListener('click', () => deleteDevice());
     document.getElementById('p-delete-complete-btn')?.addEventListener('click', () => deleteDeviceCompletelyFromPanel());
     document.getElementById('ping-help-close-btn')?.addEventListener('click', () => closePingHelpDialog());
     document.getElementById('close-device-image-zoom-btn')?.addEventListener('click', () => closeDeviceImageZoom());
@@ -330,6 +337,7 @@ export function registerStaticListeners() {
     document.getElementById('place-scope-current')?.addEventListener('click', () => setPlacementUnplacedScope('current-view'));
     document.getElementById('place-scope-all')?.addEventListener('click', () => setPlacementUnplacedScope('all-views'));
     document.getElementById('placement-unplaced-search')?.addEventListener('input', () => renderPlacementUnplacedList());
+    document.getElementById('placement-show-other-floors')?.addEventListener('change', () => renderPlacementUnplacedList());
     document.getElementById('placement-enqueue-btn')?.addEventListener('click', () => enqueueSelectedUnplacedDevices());
     document.getElementById('linkBtn')?.addEventListener('click', () => toggleLinkMode());
     document.getElementById('wiring-close-btn')?.addEventListener('click', () => closeWiringControls());
@@ -337,21 +345,44 @@ export function registerStaticListeners() {
     document.getElementById('palette-nav-btn')?.addEventListener('click', () => toggleWorkspaceNavigation());
     document.getElementById('close-workspace-navigation-btn')?.addEventListener('click', () => closeWorkspaceNavigation());
     document.getElementById('floor-plan-manage-btn')?.addEventListener('click', () => openFloorPlanManager());
-    document.getElementById('dashboard-btn')?.addEventListener('click', () => openDashboard());
-    document.getElementById('ledgerBtn')?.addEventListener('click', () => openLedger());
     document.getElementById('loadBtn')?.addEventListener('click', () => reloadDataWithConfirmation());
     document.getElementById('saveBtn')?.addEventListener('click', () => saveData());
     document.getElementById('help-btn')?.addEventListener('click', () => window.open('help.html', '_blank', 'noopener'));
-    document.getElementById('view-manage-btn')?.addEventListener('click', () => openViewManager());
-    document.getElementById('link-display-settings-btn')?.addEventListener('click', () => openLinkDisplaySettings());
-    document.getElementById('link-systems-settings-btn')?.addEventListener('click', () => openLinkSystems());
-    document.getElementById('ip-management-btn')?.addEventListener('click', () => openIpManagement());
-    document.getElementById('change-history-btn')?.addEventListener('click', () => openChangeHistory());
-    document.getElementById('data-quality-btn')?.addEventListener('click', () => openDataQuality());
-    document.getElementById('backup-export-btn')?.addEventListener('click', () => exportBackupZip());
-    document.getElementById('backup-restore-btn')?.addEventListener('click', () => openBackupRestore());
-    document.getElementById('user-management-btn')?.addEventListener('click', () => openUserManagement());
-    document.getElementById('password-change-btn')?.addEventListener('click', () => openPasswordChange());
+    const leaveBuildingFromToolbar = async trigger => {
+        // 閉じるメニュー項目の代わりに、確認や遷移先から戻れる起点を残す。
+        const focusTarget = trigger.closest('.toolbar-menu')?.querySelector('summary') ?? trigger;
+        focusTarget.focus();
+        closeToolbarMenu();
+        if (!await closeBuildingView()) return false;
+        focusTarget.focus();
+        return true;
+    };
+    for (const [id, action] of [
+        ['dashboard-btn', openDashboard],
+        ['ledgerBtn', openLedger],
+        ['view-manage-btn', openViewManager],
+        ['link-display-settings-btn', openLinkDisplaySettings],
+        ['link-systems-settings-btn', openLinkSystems],
+        ['ip-management-btn', openIpManagement],
+        ['change-history-btn', openChangeHistory],
+        ['data-quality-btn', openDataQuality],
+        ['backup-export-btn', exportBackupZip],
+        ['backup-restore-btn', openBackupRestore],
+        ['user-management-btn', openUserManagement],
+        ['password-change-btn', openPasswordChange]
+    ]) {
+        const button = document.getElementById(id);
+        button?.addEventListener('click', async () => {
+            if (getOpenBuildingId() != null && !await leaveBuildingFromToolbar(button)) return;
+            return action();
+        });
+    }
+    const logout = document.getElementById('logout-btn');
+    logout?.form?.addEventListener('submit', async event => {
+        if (getOpenBuildingId() == null) return;
+        event.preventDefault();
+        if (await leaveBuildingFromToolbar(logout)) logout.form.requestSubmit(event.submitter ?? logout);
+    });
     document.getElementById('close-account-management-btn')?.addEventListener('click', () => closeAccountManagement());
     document.getElementById('user-list-refresh-btn')?.addEventListener('click', () => refreshUserList());
     document.getElementById('close-backup-restore-btn')?.addEventListener('click', () => closeBackupRestore());
@@ -372,12 +403,20 @@ export function registerStaticListeners() {
         }
     });
     document.getElementById('dashboard-tabs')?.addEventListener('keydown', handleDashboardTabKeydown);
+    for (const id of ['dashboard-maintenance-mode', 'dashboard-fiscal-start']) {
+        document.getElementById(id)?.addEventListener('change', updateDashboardMaintenanceSettings);
+    }
+    document.getElementById('dashboard-content')?.addEventListener('click', event => {
+        const button = event.target?.closest?.('button[data-dashboard-action]');
+        if (button && !button.disabled) handleDashboardAction(button.dataset.dashboardAction, button.dataset);
+    });
     document.getElementById('close-data-quality-btn')?.addEventListener('click', () => closeDataQuality());
     document.getElementById('select-data-quality-severity-btn')?.addEventListener('click', () => selectDataQualitySeverity('error'));
     document.getElementById('select-data-quality-severity-btn-2')?.addEventListener('click', () => selectDataQualitySeverity('warning'));
     document.getElementById('select-data-quality-severity-btn-3')?.addEventListener('click', () => selectDataQualitySeverity('info'));
     document.getElementById('select-data-quality-severity-btn-4')?.addEventListener('click', () => selectDataQualitySeverity(''));
     document.getElementById('data-quality-refresh-btn')?.addEventListener('click', () => refreshDataQuality());
+    document.getElementById('data-quality-show-suppressed')?.addEventListener('change', event => selectDataQualitySuppressed(event.target.checked));
     document.getElementById('data-quality-clear-filter-btn')?.addEventListener('click', () => clearDataQualityFilters());
     document.getElementById('close-device-search-view-selector-btn')?.addEventListener('click', () => closeDeviceSearchViewSelector());
     document.getElementById('close-device-search-view-selector-btn-2')?.addEventListener('click', () => closeDeviceSearchViewSelector());
@@ -409,7 +448,6 @@ export function registerStaticListeners() {
     document.getElementById('ledger-sheet-next-btn')?.addEventListener('click', () => navigateLedgerDevice(1));
     document.getElementById('ledger-sheet-view-manage-btn')?.addEventListener('click', () => manageActiveDevicePlacements());
     document.getElementById('ledger-sheet-history-btn')?.addEventListener('click', () => openActiveDeviceHistory());
-    document.getElementById('ledger-sheet-config-btn')?.addEventListener('click', () => openActiveDeviceConfig());
     document.getElementById('ledger-sheet-delete-btn')?.addEventListener('click', () => deleteActiveLedgerDevice());
     document.getElementById('ledger-sheet-save-btn')?.addEventListener('click', () => saveLedgerSheet());
     document.getElementById('close-ledger-place-view-modal-btn')?.addEventListener('click', () => closeLedgerPlaceViewModal());
@@ -439,7 +477,13 @@ export function registerStaticListeners() {
 }
 
 function registerApplicationEvents() {
-    eventBus.on('resources:reloaded', () => {
+    eventBus.on('save-state:changed', renderDashboardAfterSaveStateChange);
+    eventBus.on('data-quality:sync-changed', renderDashboardAfterQualityChange);
+    eventBus.on('resources:reloaded', detail => {
+        if (detail?.source === 'hierarchy-editor') {
+            refreshOpenLedgerAfterReload();
+            return;
+        }
         // 全読込は利用者が破棄を選んだ操作。古いフォームを新しいstateに残さない。
         if (document.getElementById('ledger-overlay')?.hidden === false) closeLedger();
         else if (document.getElementById('ledger-device-sheet-overlay')?.hidden === false) closeLedgerDetailPane();
@@ -546,7 +590,7 @@ function registerApplicationEvents() {
     );
     eventBus.on(
         'data-quality:render',
-        renderDataQuality
+        refreshDataQualityAfterSheet
     );
     eventBus.on(
         'ui:busy-ended',
@@ -615,7 +659,13 @@ async function init() {
 
     document.addEventListener(
         'keydown',
-        onKeyDown,
+        event => {
+            if (getOpenBuildingId() != null) {
+                const topModal = getTopModalContainer();
+                if (!topModal || topModal.hidden) return;
+            }
+            return onKeyDown(event);
+        },
         true
     );
 
@@ -712,7 +762,26 @@ async function init() {
 
     applyViewTransform();
 
-    initViewCombobox(switchView);
+    initViewCombobox(async id => {
+        if (!await closeBuildingView()) return false;
+        return switchView(id);
+    }, async buildingId => {
+        const canOpen = () => !appState.isPinging && Boolean(findEnabledBuilding(appState, buildingId));
+        if (!canOpen() || !await closePanel() || !canOpen() || !await closeLinkPanel() || !canOpen()) return false;
+        if (getCurrentView()?.view_type === 'rack' && !commitCanvasNoteText()) return false;
+        eventBus.emit('canvas-note:finish');
+        eventBus.emit('floor-plan:finish');
+        if (isCurrentUserAdmin() && !await flushSaveQueue({ silent: true })) return false;
+        if (!canOpen()) return false;
+        if (appState.isRangeSelecting) appState.cancelActiveRangeSelection?.();
+        endLinkMode();
+        syncLinkModeButton();
+        // 一覧は建物ビューで操作不能になるため、最初の切替時に閉じる。
+        if (getOpenBuildingId() == null && document.getElementById('workspace-nav-panel')?.hidden === false) {
+            closeWorkspaceNavigation();
+        }
+        return openBuildingView(buildingId);
+    });
 
     document
         .getElementById('p-ip')
@@ -750,7 +819,7 @@ async function init() {
                     target instanceof HTMLDetailsElement &&
                     target.open
                 ) {
-                    if (!await closePanel() || !await closeLinkPanel()) {
+                    if (getOpenBuildingId() == null && (!await closePanel() || !await closeLinkPanel())) {
                         target.open = false;
                         return;
                     }
@@ -847,89 +916,6 @@ async function init() {
             );
 
 
-        document
-            .getElementById(
-                'dashboard-content'
-            )
-            ?.addEventListener(
-                'click',
-                event => {
-                    const target =
-                        event.target instanceof
-                            Element
-                            ? event.target.closest(
-                                '[data-dashboard-action]'
-                            )
-                            : null;
-
-                    if (
-                        !target ||
-                        target.hasAttribute(
-                            'disabled'
-                        )
-                    ) {
-                        return;
-                    }
-
-                    const action =
-                        String(
-                            target.dataset
-                                .dashboardAction ||
-                            ''
-                        );
-
-                    if (
-                        action ===
-                        'ledger-facility'
-                    ) {
-                        openDashboardLedger({
-                            facility:
-                                target.dataset
-                                    .facility ||
-                                ''
-                        });
-
-                        return;
-                    }
-
-                    if (
-                        action ===
-                        'ledger-floor'
-                    ) {
-                        openDashboardLedger({
-                            facility:
-                                target.dataset
-                                    .facility ||
-                                '',
-
-                            floor:
-                                target.dataset
-                                    .floor ||
-                                ''
-                        });
-
-                        return;
-                    }
-
-                    if (
-                        action ===
-                        'ledger-type'
-                    ) {
-                        openDashboardLedger({
-                            type:
-                                target.dataset
-                                    .deviceType ||
-                                ''
-                        });
-
-                        return;
-                    }
-
-                    handleDashboardAction(
-                        action
-                    );
-                }
-            );
 
 
     applyRoleBasedUi();
@@ -978,12 +964,15 @@ window.applyPanel = applyPanel;
 window.applyPlacementCoordinates = applyPlacementCoordinates;
 window.hasAnyUnappliedChanges = () => hasAnyUnappliedChanges()
     || hasAnyDeviceDraftChanges()
-    || appState.viewManagerFormDirty;
+    || hasUnsavedPortDraft()
+    || hasUnappliedCanvasNoteText()
+    || appState.viewManagerFormDirty
+    || hasHierarchyEditorDraft()
+    || hasBuildingViewDraft();
 window.hasUnappliedLinkPanelChanges = hasUnappliedLinkPanelChanges;
 window.hasUnappliedPanelChanges = hasUnappliedPanelChanges;
 window.revertLinkPanelValues = revertLinkPanelValues;
 window.revertPanelValues = revertPanelValues;
-window.swapLinkPanelEndpoints = swapLinkPanelEndpoints;
 window.applyPlacementManager = applyPlacementManager;
 window.applyViewForm = applyViewForm;
 window.chooseFloorPlanFile = chooseFloorPlanFile;
@@ -1028,7 +1017,6 @@ window.commitBackupRestore = commitBackupRestore;
 window.commitDevicesCsvImport = commitDevicesCsvImport;
 window.confirmManagementConnection = confirmManagementConnection;
 window.deleteCurrentFloorPlan = deleteCurrentFloorPlan;
-window.deleteDevice = deleteDevice;
 window.deleteDeviceCompletely = deleteDeviceCompletely;
 window.deleteDeviceCompletelyFromPanel = deleteDeviceCompletelyFromPanel;
 window.deleteEditingLink = deleteEditingLink;
@@ -1083,7 +1071,8 @@ window.scheduleSave = scheduleSave;
 window.flushSaveQueue = flushSaveQueue;
 window.saveDeviceProperties = saveDeviceProperties;
 window.selectDataQualitySeverity = selectDataQualitySeverity;
-window.switchView = switchView;
+window.switchView = (...args) => getOpenBuildingId() == null ? switchView(...args) :
+    closeBuildingView().then(closed => closed ? switchView(...args) : false);
 window.setLedgerColumnPreset = setLedgerColumnPreset;
 window.triggerDeviceImageUpload = triggerDeviceImageUpload;
 window.closeDeviceImageZoom = closeDeviceImageZoom;
