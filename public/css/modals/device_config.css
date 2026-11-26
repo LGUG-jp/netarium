@@ -1,6 +1,5 @@
 /* ========================================================
-   Netarium - 機器Config管理モーダル (CSS)
-   UIモック基準：5画面構成（未登録・登録/編集・閲覧・削除・差分比較）
+   Netarium - 機器Config管理タブ (CSS)
 ======================================================== */
 
 .device-config-overlay {
@@ -21,13 +20,12 @@
     display: none !important;
 }
 
-/* モーダルダイアログ外枠 */
-.device-config-dialog,
+/* 削除確認ダイアログ外枠 */
 .device-config-confirm-dialog {
     display: flex;
     flex-direction: column;
     min-width: 0;
-    width: min(1160px, 100%);
+    width: min(580px, 100%);
     box-sizing: border-box;
     background: var(--bg-panel);
     color: var(--text-main);
@@ -37,39 +35,6 @@
     overflow: hidden;
 }
 
-.device-config-dialog {
-    height: min(88dvh, 860px);
-    max-height: calc(100dvh - 2 * var(--modal-edge-space));
-}
-
-/* 1. モーダルヘッダー（全画面共通） */
-.device-config-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--border-light);
-    background: var(--bg-panel);
-    flex-shrink: 0;
-    min-height: 48px;
-    box-sizing: border-box;
-}
-
-.device-config-navigation {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    gap: 6px;
-}
-
-
-.device-config-target-name {
-    color: var(--text-main);
-    font-weight: 600;
-}
-
-/* 削除モード案内バー（画面④） */
 /* 通知メッセージバー */
 .device-config-notice {
     margin: 0;
@@ -82,24 +47,26 @@
     flex-shrink: 0;
 }
 
-/* 2. 上部操作バー（全画面共通） */
+/* タブ内上部操作バー */
 .device-config-toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
     padding: 8px 20px;
     border-bottom: 1px solid var(--border-light);
     background: var(--bg-panel);
     flex-shrink: 0;
     min-height: 48px;
-    height: 48px;
     box-sizing: border-box;
 }
-
 .device-config-delete-controls {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
     gap: 10px;
     background: var(--danger-bg);
     border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent);
@@ -176,10 +143,33 @@
 .device-config-toolbar-actions {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
     margin-left: auto;
 }
 
+.device-config-more-menu {
+    position: relative;
+    flex: 0 0 auto;
+}
+
+.device-config-more-trigger {
+    min-width: 34px;
+    padding: 0 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.device-config-more-popup {
+    top: calc(100% + 4px);
+    right: 0;
+    width: 180px;
+    z-index: 50;
+}
+
+.device-config-more-popup[hidden] {
+    display: none;
+}
 /* 3. コンテンツエリア（レイアウト） */
 .device-config-body {
     display: flex;
@@ -888,16 +878,7 @@
     .device-config-overlay {
         padding: 8px;
     }
-    .device-config-dialog {
-        height: calc(100dvh - 16px);
-        max-height: calc(100dvh - 16px);
-    }
-    .device-config-header {
-        padding: 10px 14px;
-        gap: 8px;
-    }
     .device-config-toolbar {
-        flex-wrap: wrap;
         padding: 8px 14px;
         gap: 8px;
     }
@@ -907,12 +888,12 @@
     }
     .device-config-layout {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto minmax(240px, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
     }
     .device-config-sidebar {
         border-right: none;
         border-bottom: 1px solid var(--border-light);
-        max-height: 180px;
+        max-height: 160px;
     }
     .device-config-history-scroll {
         flex-direction: row;
@@ -965,5 +946,15 @@
     }
     .device-config-diff-row pre:empty {
         display: none;
+    }
+}
+
+@media (max-height: 540px) {
+    .ledger-sheet-body[data-active-tab="config"] {
+        overflow-y: auto;
+    }
+    .ledger-sheet-panel-config {
+        height: auto;
+        min-height: 360px;
     }
 }

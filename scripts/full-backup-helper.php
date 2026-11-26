@@ -20,7 +20,9 @@ function fullSafeName(string $name): void
 function fullValidateSchema(PDO $db, int $schemaVersion): void
 {
     global $appRoot;
-    if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], true)) { throw new RuntimeException('Unsupported source schema'); }
+    if (!\Netarium\Services\Backup\BackupCompatibilityPolicy::isSupportedSchema($schemaVersion)) {
+        throw new RuntimeException('Unsupported source schema');
+    }
     $reference = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     for ($version = 1; $version <= $schemaVersion; $version++) {
         ('migrateDatabaseToVersion' . $version)($reference);
@@ -53,7 +55,7 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
             $schemaVersion >= 15 ? $db->query('SELECT * FROM rack_shelves')->fetchAll(PDO::FETCH_ASSOC) : [],
             $schemaVersion >= 15 ? $db->query('SELECT * FROM rack_shelf_devices')->fetchAll(PDO::FETCH_ASSOC) : []
         );
-        foreach (['device_placements', 'links', 'view_floor_plans'] as $table) {
+        foreach (['device_placements', $schemaVersion < 27 ? 'links' : 'view_link_routes', 'view_floor_plans'] as $table) {
             if ($db->query("SELECT 1 FROM $table t JOIN views v ON v.id=t.view_id WHERE v.view_type='rack' LIMIT 1")->fetchColumn() !== false) {
                 throw new RuntimeException('Rack view contains XY content');
             }
@@ -104,6 +106,29 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
             OR rotation NOT BETWEEN -180 AND 180 LIMIT 1")->fetchColumn() !== false) {
         throw new RuntimeException('Invalid floor plan rotation');
     }
+    if ($schemaVersion >= 24) {
+        \Netarium\Services\Topology\BuildingHierarchyService::validateBackupRows(
+            $db->query('SELECT * FROM buildings ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM floors ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $db->query('SELECT * FROM views ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            $schemaVersion >= 26
+        );
+        foreach (['buildings', 'floors'] as $table) {
+            $sequence = $db->query("SELECT value FROM resource_sequences WHERE name = '$table'")->fetchColumn();
+            if (!is_int($sequence) || $sequence < 0 || $sequence > \Netarium\Core\ResourceId::MAX_RESTORE) {
+                throw new RuntimeException('Invalid sequence: ' . $table);
+            }
+            foreach ($db->query("SELECT id FROM $table") as $row) {
+                \Netarium\Core\ResourceId::parse($row['id'], "$table.id", \Netarium\Core\ResourceId::MAX_RESTORE);
+            }
+        }
+    }
+    if ($schemaVersion >= 25) {
+        $floorIds = array_fill_keys($db->query('SELECT id FROM floors')->fetchAll(PDO::FETCH_COLUMN), true);
+        foreach ($db->query('SELECT floor_id FROM devices') as $device) {
+            \Netarium\Services\Topology\BuildingHierarchyService::normalizeFloorId($device['floor_id'], $floorIds);
+        }
+    }
     foreach (['address_spaces' => 18, 'ip_segments' => 18, 'change_history' => 19, 'device_configs' => 20] as $table => $introducedIn) {
         if ($schemaVersion < $introducedIn) { continue; }
         $stmt = $db->prepare('SELECT seq FROM sqlite_sequence WHERE name = ?');
@@ -111,6 +136,43 @@ function fullValidateSchema(PDO $db, int $schemaVersion): void
         $sequence = $stmt->fetchColumn();
         if ($sequence !== false && (!is_int($sequence) || $sequence < 0 || $sequence > \Netarium\Core\ResourceId::MAX_RESTORE)) {
             throw new RuntimeException('Invalid sequence: ' . $table);
+        }
+    }
+    $backup = new \Netarium\Services\Backup\BackupService($db);
+    if ($schemaVersion < 27) {
+        $linkCounter = $db->query("SELECT value FROM resource_sequences WHERE name = 'links'")->fetchColumn();
+        $maxLink = (int)$db->query('SELECT COALESCE(MAX(id), 0) FROM links')->fetchColumn();
+        if (!is_int($linkCounter) || $linkCounter < $maxLink || $linkCounter > \Netarium\Core\ResourceId::MAX_RESTORE
+            || $db->query('SELECT 1 FROM links WHERE id <= 0 OR from_id = to_id LIMIT 1')->fetchColumn() !== false) {
+            throw new RuntimeException('Invalid legacy links or sequence');
+        }
+        foreach ($db->query('SELECT vlan FROM links') as $row) {
+            if (!is_string($row['vlan']) || preg_match('/\A.{0,100}\z/su', $row['vlan']) !== 1) {
+                throw new RuntimeException('Invalid legacy link VLAN');
+            }
+        }
+    } else {
+        if ($schemaVersion >= 28 && $db->query("SELECT 1 FROM legacy_link_vlans WHERE typeof(vlan) <> 'text' LIMIT 1")->fetchColumn() !== false) {
+            throw new RuntimeException('Invalid pending legacy link VLAN type');
+        }
+        $connections = $backup->validateBackupConnectionTables(
+            ['links' => $db->query('SELECT * FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)] + $backup->fetchBackupConnectionTables($schemaVersion),
+            array_fill_keys($db->query('SELECT id FROM devices')->fetchAll(PDO::FETCH_COLUMN), true),
+            array_column($db->query('SELECT id, view_type FROM views')->fetchAll(PDO::FETCH_ASSOC), null, 'id'),
+            array_fill_keys($db->query('SELECT id FROM link_systems')->fetchAll(PDO::FETCH_COLUMN), true),
+            $schemaVersion
+        );
+        if ($schemaVersion >= 29) {
+            if ($db->query("SELECT 1 FROM quality_not_applicable WHERE typeof(field) <> 'text' LIMIT 1")->fetchColumn() !== false) {
+                throw new RuntimeException('Invalid quality not applicable field type');
+            }
+            $rows = $db->query('SELECT device_id, link_id, field FROM quality_not_applicable')->fetchAll(PDO::FETCH_ASSOC);
+            if ($rows !== []) {
+                $fields = implode(', ', \Netarium\Services\Quality\QualityNotApplicable::DEVICE_FIELDS);
+                $devices = $db->query("SELECT id, $fields FROM devices WHERE id IN (SELECT device_id FROM quality_not_applicable)")
+                    ->fetchAll(PDO::FETCH_UNIQUE | PDO::FETCH_ASSOC);
+                $backup->validateBackupQualityNotApplicable($rows, $devices, $connections['links']);
+            }
         }
     }
 }
@@ -185,11 +247,24 @@ function fullInventory(string $root): array
 }
 
 /** Hash only source columns, one row at a time; serialized values preserve types and binary data. */
-function fullTableFingerprint(PDO $db, string $table, array $columns, bool $excludeNewShelfSequence = false): array
+function fullTableFingerprint(PDO $db, string $table, array $columns, int $sourceSchemaVersion = APP_DATABASE_SCHEMA_VERSION): array
 {
     $quotedTable = '"' . str_replace('"', '""', $table) . '"';
     $quotedColumns = array_map(static fn(string $column): string => '"' . str_replace('"', '""', $column) . '"', $columns);
-    $where = $excludeNewShelfSequence && $table === 'resource_sequences' ? " WHERE name <> 'rack_shelves'" : '';
+    $excludedSequences = $sourceSchemaVersion < 15 ? ['rack_shelves'] : [];
+    if ($sourceSchemaVersion < 25) { array_push($excludedSequences, 'buildings', 'floors', 'revision'); }
+    $excludedMeta = $sourceSchemaVersion < 25 ? ['legacy_hierarchy_migration'] : [];
+    if ($sourceSchemaVersion < 27 && APP_DATABASE_SCHEMA_VERSION >= 27) {
+        array_push($excludedSequences, 'device_ports', 'revision');
+        $excludedMeta[] = 'legacy_link_migration';
+    }
+    $where = match ($table) {
+        'resource_sequences' => $excludedSequences === [] ? '' :
+            ' WHERE name NOT IN (' . implode(', ', array_map($db->quote(...), array_unique($excludedSequences))) . ')',
+        'app_meta' => $excludedMeta === [] ? '' :
+            ' WHERE meta_key NOT IN (' . implode(', ', array_map($db->quote(...), $excludedMeta)) . ')',
+        default => '',
+    };
     $rows = $db->query('SELECT ' . implode(', ', $quotedColumns) . " FROM $quotedTable$where ORDER BY rowid");
     $hashContext = hash_init('sha256');
     $count = 0;
@@ -276,23 +351,134 @@ function fullExtract(string $archive, string $root, int $maxBytes, int $maxFiles
             if (!hash_equals($expected['sha256'], hash_file('sha256', $root . '/' . $name))) { throw new RuntimeException('SHA-256 mismatch'); }
         }
         $file = $root . '/db/data.sqlite';
-        $counts = fullDatabase($file, $root, false, $m['schema_version']);
+        $sourceSchemaVersion = $m['schema_version'];
+        $counts = fullDatabase($file, $root, false, $sourceSchemaVersion);
         if ($counts !== $m['counts']) { throw new RuntimeException('Database count mismatch'); }
-        if ($m['schema_version'] < APP_DATABASE_SCHEMA_VERSION) {
+        if ($sourceSchemaVersion < APP_DATABASE_SCHEMA_VERSION) {
             // Extraction uses exclusive-created files in a private workspace.
             // Only this isolated DB is migrated, after all source checks finish.
             $db = new PDO('sqlite:' . $file, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
             $before = [];
+            $migratesHierarchy = $sourceSchemaVersion < 25 && APP_DATABASE_SCHEMA_VERSION >= 25;
+            if ($migratesHierarchy) {
+                $expectedHierarchy = [];
+                foreach (['buildings', 'floors', 'views', 'devices'] as $table) {
+                    $expectedHierarchy[$table] = $sourceSchemaVersion >= 24 || !in_array($table, ['buildings', 'floors'], true)
+                        ? $db->query("SELECT * FROM {$table} ORDER BY id")->fetchAll(PDO::FETCH_ASSOC) : [];
+                }
+                \Netarium\Services\Topology\LegacyHierarchyMigration::convert($expectedHierarchy,
+                    $db->query('SELECT name, value FROM resource_sequences')->fetchAll(PDO::FETCH_KEY_PAIR));
+            }
+            $migratesLinks = $sourceSchemaVersion < 27 && APP_DATABASE_SCHEMA_VERSION >= 27;
+            if ($migratesLinks) {
+                $expectedConnections = \Netarium\Services\Topology\LegacyLinkMigration::convert(
+                    $db->query('SELECT * FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+                );
+                $viewRevisions = $db->query('SELECT id, resource_revision FROM views')->fetchAll(PDO::FETCH_KEY_PAIR);
+                $routeOwners = array_fill_keys(array_column($expectedConnections['view_link_routes'], 'view_id'), true);
+                $previousRevision = (int)$db->query("SELECT value FROM resource_sequences WHERE name = 'revision'")->fetchColumn();
+            }
+            $migratesVlans = $sourceSchemaVersion < 28 && APP_DATABASE_SCHEMA_VERSION >= 28;
+            if ($migratesVlans) {
+                $expectedVlans = \Netarium\Services\Backup\BackupService::pendingLegacyLinkVlans(
+                    $migratesLinks ? $expectedConnections['links']
+                        : $db->query('SELECT id, vlan FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)
+                );
+                usort($expectedVlans, static fn(array $a, array $b): int => $a['link_id'] <=> $b['link_id']);
+            }
             foreach (array_keys($counts) as $table) {
+                if ($migratesLinks && $table === 'links') { continue; }
                 $columns = [];
                 foreach ($db->query('PRAGMA table_info("' . str_replace('"', '""', $table) . '")') as $column) {
+                    if ($migratesHierarchy && in_array($table, ['views', 'devices'], true)
+                        && in_array($column['name'], ['resource_revision', 'floor_id'], true)) { continue; }
+                    if ($migratesLinks && $table === 'views' && $column['name'] === 'resource_revision') { continue; }
+                    if ($migratesVlans && $table === 'links' && $column['name'] === 'vlan') { continue; }
                     $columns[] = $column['name'];
                 }
-                $before[$table] = ['columns' => $columns, 'fingerprint' => fullTableFingerprint($db, $table, $columns)];
+                $before[$table] = ['columns' => $columns, 'fingerprint' => fullTableFingerprint($db, $table, $columns, $sourceSchemaVersion)];
             }
             migrateDatabase($db);
+            if ($sourceSchemaVersion < 26 && APP_DATABASE_SCHEMA_VERSION >= 26
+                && $db->query('SELECT 1 FROM buildings WHERE building_view_enabled IS NOT 1 LIMIT 1')->fetchColumn() !== false) {
+                throw new RuntimeException('Migration did not enable all existing buildings');
+            }
+            if ($migratesHierarchy) {
+                foreach (['buildings', 'floors'] as $table) {
+                    $columns = $table === 'buildings' ? 'id, name, sort_order' : '*';
+                    $actual = $db->query("SELECT {$columns} FROM {$table} ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+                    $expected = $expectedHierarchy[$table];
+                    usort($expected, static fn(array $a, array $b): int => $a['id'] <=> $b['id']);
+                    if ($actual != $expected) { throw new RuntimeException('Unexpected hierarchy conversion: ' . $table); }
+                }
+                foreach (['views', 'devices'] as $table) {
+                    $actual = $db->query("SELECT id, floor_id FROM {$table} ORDER BY id")->fetchAll(PDO::FETCH_KEY_PAIR);
+                    if ($actual !== array_column($expectedHierarchy[$table], 'floor_id', 'id')) {
+                        throw new RuntimeException('Unexpected membership conversion: ' . $table);
+                    }
+                }
+            }
+            if ($migratesLinks) {
+                if ($db->query('SELECT 1 FROM views WHERE show_connections IS NOT 1 LIMIT 1')->fetchColumn() !== false) {
+                    throw new RuntimeException('Migration did not enable connections in all existing views');
+                }
+                $backup = new \Netarium\Services\Backup\BackupService($db);
+                $actual = ['links' => $db->query('SELECT id, from_id, to_id, system_id, label, memo, from_port_id, to_port_id'
+                    . ($migratesVlans ? '' : ', vlan') . ' FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC)]
+                    + $backup->fetchBackupConnectionTables();
+                foreach (['device_ports', 'links', 'view_link_routes', 'legacy_link_conflicts'] as $table) {
+                    $expected = $expectedConnections[$table];
+                    if ($migratesVlans && $table === 'links') {
+                        foreach ($expected as &$row) { unset($row['vlan']); }
+                        unset($row);
+                    }
+                    usort($expected, static fn(array $a, array $b): int => match ($table) {
+                        'view_link_routes' => [$a['view_id'], $a['device_a_id'], $a['device_b_id']]
+                            <=> [$b['view_id'], $b['device_a_id'], $b['device_b_id']],
+                        'legacy_link_conflicts' => $a['legacy_link_id'] <=> $b['legacy_link_id'],
+                        default => $a['id'] <=> $b['id'],
+                    });
+                    if ($table === 'device_ports') {
+                        foreach ($actual[$table] as &$row) { unset($row['resource_revision'], $row['vlan']); }
+                        unset($row);
+                    }
+                    $normalize = static function (array $row): array { ksort($row); return $row; };
+                    if (json_encode(array_map($normalize, $actual[$table]), JSON_THROW_ON_ERROR)
+                        !== json_encode(array_map($normalize, $expected), JSON_THROW_ON_ERROR)) {
+                        throw new RuntimeException('Unexpected connection conversion: ' . $table);
+                    }
+                }
+                $linkCounts = json_decode((string)$db->query("SELECT meta_value FROM app_meta
+                    WHERE meta_key = 'legacy_link_migration'")->fetchColumn(), true, 512, JSON_THROW_ON_ERROR);
+                if ($linkCounts !== $expectedConnections['counts'] || $linkCounts['total'] !== $counts['links']
+                    || $linkCounts['total'] !== $linkCounts['converted'] + $linkCounts['held']
+                    || $linkCounts['held'] !== count($actual['legacy_link_conflicts'])) {
+                    throw new RuntimeException('Migration did not account for all source links');
+                }
+                if (!$migratesHierarchy) {
+                    foreach ($db->query('SELECT id, resource_revision FROM views') as $row) {
+                        if (isset($routeOwners[$row['id']]) ? $row['resource_revision'] <= $viewRevisions[$row['id']]
+                            : $row['resource_revision'] !== $viewRevisions[$row['id']]) {
+                            throw new RuntimeException('Unexpected migration change to view revisions');
+                        }
+                    }
+                    $revision = (int)$db->query("SELECT value FROM resource_sequences WHERE name = 'revision'")->fetchColumn();
+                    if ($revision !== $previousRevision + count($actual['links']) + count($actual['device_ports']) + count($actual['view_link_routes'])) {
+                        throw new RuntimeException('Unexpected migration change to the revision sequence');
+                    }
+                }
+            }
+            if ($migratesVlans && ($db->query('SELECT * FROM legacy_link_vlans ORDER BY link_id')->fetchAll(PDO::FETCH_ASSOC) !== $expectedVlans
+                || $db->query("SELECT 1 FROM device_ports WHERE vlan IS NOT '' LIMIT 1")->fetchColumn() !== false)) {
+                throw new RuntimeException('Unexpected legacy VLAN conversion');
+            }
+            if ($sourceSchemaVersion < 29 && APP_DATABASE_SCHEMA_VERSION >= 29
+                && $db->query('SELECT 1 FROM quality_not_applicable LIMIT 1')->fetchColumn() !== false) {
+                throw new RuntimeException('Migration invented quality not applicable rows');
+            }
             foreach ($before as $table => $source) {
-                if (fullTableFingerprint($db, $table, $source['columns'], $m['schema_version'] < 15) !== $source['fingerprint']) {
+                if ($migratesHierarchy && in_array($table, ['buildings', 'floors'], true)) { continue; }
+                if (fullTableFingerprint($db, $table, $source['columns'], $sourceSchemaVersion) !== $source['fingerprint']) {
                     throw new RuntimeException('Migration changed existing data: ' . $table);
                 }
             }

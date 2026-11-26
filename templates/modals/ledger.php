@@ -29,7 +29,7 @@
                     <input
                         id="ledger-search"
                         type="search"
-                        placeholder="名称、IP、施設、型番など"
+                        placeholder="名称、IP、建物、フロア、型番など"
                     >
                 </label>
                 <div class="ledger-filter-control">
@@ -37,8 +37,8 @@
                     <select id="ledger-view-filter" multiple aria-label="表示ビュー"></select>
                 </div>
                 <div class="ledger-filter-control">
-                    <span>施設</span>
-                    <select id="ledger-facility-filter" multiple aria-label="施設"></select>
+                    <span>建物</span>
+                    <select id="ledger-building-filter" multiple aria-label="建物"></select>
                 </div>
 
                 <div class="ledger-filter-control">
@@ -162,7 +162,7 @@
                     <button
                         id="ledger-bulk-place-btn"
                         type="button"
-                        class="btn btn-secondary"
+                        class="admin-only btn btn-secondary"
                         title="選択した機器を指定のビューに配置します"
                         disabled
                     >
@@ -203,6 +203,10 @@
                     </select>
                 </label>
             </div>
+            <div>
+                <span id="ledger-ping-progress"></span>
+                <span id="ledger-ping-announcement" class="visually-hidden" role="status"></span>
+            </div>
 
             <div
                 id="ledger-active-filters"
@@ -240,8 +244,7 @@
                                 <th>種別</th>
                                 <th>IPアドレス</th>
                                 <th data-column="additional_ips">追加IP</th>
-                                <th>施設</th>
-                                <th>フロア</th>
+                                <th>設置フロア</th>
                                 <th>設置場所</th>
                                 <th>状態</th>
                                 <th>操作</th>
@@ -363,20 +366,19 @@
                     >
                         変更履歴
                     </button>
-                    <button
-                        type="button"
-                        id="ledger-sheet-config-btn"
-                        class="btn btn-secondary btn-sm admin-only"
-                        title="機器の保存が完了してからConfigを利用できます"
-                        disabled
-                    >
-                        Config
-                    </button>
+                    <span
+                        id="ledger-sheet-save-status"
+                        class="ledger-sheet-save-status"
+                        role="status"
+                        aria-live="polite"
+                        hidden
+                    ></span>
                     <button
                         type="button"
                         id="ledger-sheet-save-btn"
                         class="btn btn-primary btn-sm admin-only"
                         title="個票の変更を適用し、自動保存します"
+                        hidden
                         disabled
                     >
                         適用

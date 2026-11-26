@@ -46,13 +46,11 @@ import {
     syncLinkModeButton
 } from '../ui/toolbar-controls.js';
 import {
-    handleDataQualityDialogKeydown
-} from '../modals/data-quality-modal.js';
-import {
     handleDashboardDialogKeydown
 } from '../modals/dashboard-modal.js';
 import { getSelectedFloorRackPlacement, clearFloorRackSelection } from './floor-racks.js';
 import { isPlacementModeActive, exitPlacementMode } from '../ui/placement-mode.js';
+import { handlePlacementHistoryShortcut } from '../ui/placement-history-controls.js';
 import { flushSaveQueue, hasResourceConflict } from '../core/save-queue.js';
 
 let rangeSelectionInitialIds = new Set();
@@ -420,6 +418,7 @@ export async function beginCanvasRangeSelection(
         );
 
     appState.isRangeSelecting = true;
+    eventBus.emit('canvas:range-selection-changed');
     syncConnectionHighlight();
 
     appState.canvas.classList.add(
@@ -548,6 +547,7 @@ export async function beginCanvasRangeSelection(
         hideCanvasSelectionBox();
 
         appState.isRangeSelecting = false;
+        eventBus.emit('canvas:range-selection-changed');
         syncConnectionHighlight();
 
         appState.cancelActiveRangeSelection = null;
@@ -685,13 +685,11 @@ export async function onKeyDown(event) {
         if (event.key === 'Escape') {
             event.preventDefault();
             event.stopImmediatePropagation();
-            if (topModal.id !== 'ledger-overlay' || !dismissLedgerPopups()) {
+            if ((topModal.id !== 'ledger-overlay' && topModal.id !== 'ledger-device-sheet-overlay') || !dismissLedgerPopups()) {
                 await requestModalClose();
             }
         } else if (['management-connection-overlay', 'management-ssh-help-overlay'].includes(topModal.id)) {
             handleManagementConnectionDialogKeydown(event);
-        } else if (topModal.id === 'data-quality-overlay') {
-            handleDataQualityDialogKeydown(event);
         } else if (topModal.id === 'dashboard-overlay') {
             handleDashboardDialogKeydown(event);
         }
@@ -761,12 +759,13 @@ export async function onKeyDown(event) {
     }
 
     // 接続補助パネルのcheckboxにフォーカスがあってもEscでモードを終了する。
-    if (event.key === 'Escape' && appState.linkMode) {
+    if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229 && appState.linkMode) {
         event.preventDefault();
+        const focusId = appState.legacyLinkCreation ? 'palette-nav-btn' : 'linkBtn';
         endLinkMode();
         syncLinkModeButton();
         render();
-        document.getElementById('linkBtn')?.focus();
+        document.getElementById(focusId)?.focus();
         return;
     }
     if (event.key === 'Escape' && !event.isComposing && isPlacementModeActive()) {
@@ -789,6 +788,7 @@ export async function onKeyDown(event) {
     if (isInput) {
         return;
     }
+    if (handlePlacementHistoryShortcut(event)) return;
     if (getCurrentView()?.view_type === 'rack') {
         if (event.key === 'Delete' && !event.isComposing) {
             if (appState.editingDeviceId != null && isCurrentUserAdmin()) {
@@ -828,9 +828,9 @@ export async function onKeyDown(event) {
         }
         return;
     }
-    if (event.key === 'Delete' && appState.editingLinkId !== null) {
+    if (event.key === 'Delete' && (appState.editingLinkId != null || appState.editingLinkGroupKey != null)) {
         event.preventDefault();
-        deleteEditingLink();
+        if (appState.editingLinkId != null) deleteEditingLink();
         return;
     }
 

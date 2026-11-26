@@ -38,4 +38,25 @@ final class FloorRackPlacement
         }
         return $result;
     }
+
+    public static function assertNewPairsMatchFloors(array $rows, array $existingRows, array $views): void
+    {
+        if ($rows === []) {
+            return;
+        }
+        $existingOwners = array_column($existingRows, 'floor_view_id', 'rack_view_id');
+        $floors = array_column($views, 'floor_id', 'id');
+        foreach ($rows as $row) {
+            $rackViewId = $row['rack_view_id'];
+            $floorViewId = $row['floor_view_id'];
+            // Keep existing pairs even when a view changes floors or the icon moves.
+            if (isset($existingOwners[$rackViewId]) && (int)$existingOwners[$rackViewId] === $floorViewId) {
+                continue;
+            }
+            $rackFloorId = $floors[$rackViewId];
+            if ($rackFloorId !== null && $rackFloorId !== $floors[$floorViewId]) {
+                throw new ApiException('所属フロアが設定されたラックは、同じフロアの物理配置図にだけ配置できます', 400);
+            }
+        }
+    }
 }

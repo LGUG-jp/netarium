@@ -1,6 +1,7 @@
 import { appState, getCurrentCanvasNotes, getCurrentView, allocateLocalId } from '../core/state.js';
 import { endLinkMode } from '../core/link-mode.js';
-import { DEFAULT_CANVAS_NOTE, CANVAS_NOTE_LIMITS, RACK_NOTE_REGION_X, RACK_NOTE_REGIONS, getRackNoteRegion } from '../core/canvas-note-data.js';
+import { DEFAULT_CANVAS_NOTE, CANVAS_NOTE_LIMITS, RACK_NOTE_REGION_X, RACK_NOTE_REGIONS, getRackNoteRegion,
+    canvasNoteTextLengthError } from '../core/canvas-note-data.js';
 import { eventBus } from '../core/event-bus.js';
 import { hasResourceConflict, scheduleSave } from '../core/save-queue.js';
 import { mappedResourceId } from '../core/resource-save.js';
@@ -10,12 +11,14 @@ import { closePanel, closeLinkPanel } from '../ui/property-panel.js';
 import { exitPlacementMode, isPlacementModeActive } from '../ui/placement-mode.js';
 import { syncLinkModeButton } from '../ui/toolbar-controls.js';
 import { showCanvasContextToolbar, hideCanvasContextToolbar, finishCanvasContextToolbar } from '../ui/canvas-context-toolbar.js';
+import { showToast } from '../ui/toast.js';
 import { screenToWorld } from './pan-zoom.js';
 import { suppressCanvasClickOnce } from './interaction-state.js';
 import { syncConnectionHighlight } from './renderer.js';
 import { replaceSelectedPlacementIds } from './selection.js';
 
 let editing = null;
+let invalidTextDrafts = new Map();
 let drag = null;
 let stylePreview = null;
 let openColorId = null;
@@ -109,7 +112,29 @@ export async function toggleCanvasNoteMode() {
     renderCanvasNotes();
 }
 
-export function commitCanvasNoteText() {
+function setNoteTextError(textarea, message) {
+    textarea.setCustomValidity?.(message);
+    if (message) textarea.setAttribute('aria-invalid', 'true');
+    else textarea.removeAttribute('aria-invalid');
+}
+
+function clearCorrectedNoteTextError(textarea) {
+    if (textarea.getAttribute('aria-invalid') === 'true' && !canvasNoteTextLengthError(textarea.value)) {
+        setNoteTextError(textarea, '');
+    }
+}
+
+function restoreNoteText(textarea, note) {
+    const draft = invalidTextDrafts.get(Number(note.id));
+    textarea.value = draft?.text ?? note.text;
+    setNoteTextError(textarea, draft?.error ?? '');
+}
+
+export function hasUnappliedCanvasNoteText() {
+    return invalidTextDrafts.size > 0 || Boolean(editing && findNote(editing.id)?.text !== editing.textarea.value);
+}
+
+export function commitCanvasNoteText({ keepInvalidEditor = false } = {}) {
     if (!editing) return true;
     const draft = editing;
     const note = findNote(draft.id);
@@ -117,13 +142,21 @@ export function commitCanvasNoteText() {
         draft.textarea.readOnly = true;
         return false;
     }
+    const text = draft.textarea.value;
+    const error = note && canvasNoteTextLengthError(text);
+    if (error) {
+        invalidTextDrafts.set(draft.id, { text, error, viewId: draft.viewId, created: draft.created });
+        setNoteTextError(draft.textarea, error);
+        showToast(`${error}。入力は保持しています`, 'warning');
+        if (keepInvalidEditor) return false;
+    } else {
+        invalidTextDrafts.delete(draft.id);
+        setNoteTextError(draft.textarea, '');
+    }
     editing = null;
-    if (note) {
-        const text = draft.textarea.value;
-        if (note.text !== text || draft.created) {
-            note.text = text;
-            save();
-        }
+    if (note && !error && (note.text !== text || draft.created)) {
+        note.text = text;
+        save();
     }
     renderCanvasNotes();
     return true;
@@ -191,6 +224,7 @@ export function beginCanvasNoteText(created = false) {
     if (getCurrentView()?.view_type === 'rack') return false;
     const note = selectedNote();
     if (!canEdit(note)) return false;
+    if (editing?.id === Number(note.id)) return true;
     if (!commitCanvasNoteText()) return false;
     const element = appState.noteLayer?.querySelector(`[data-note-id="${note.id}"]`);
     if (!element) return false;
@@ -198,11 +232,15 @@ export function beginCanvasNoteText(created = false) {
     textarea.className = 'canvas-note-editor';
     textarea.setAttribute('aria-label', 'メモ本文');
     textarea.setAttribute('title', 'Ctrl+Enterで確定、Escで確定してメモモードを終了');
-    textarea.value = note.text;
+    restoreNoteText(textarea, note);
     textarea.spellcheck = false;
-    editing = { id: Number(note.id), viewId: Number(note.view_id), textarea, created };
+    editing = { id: Number(note.id), viewId: Number(note.view_id), textarea,
+        created: created || invalidTextDrafts.get(Number(note.id))?.created };
     element.querySelector('.canvas-note-text').replaceWith(textarea);
-    textarea.addEventListener('blur', commitCanvasNoteText);
+    textarea.addEventListener('input', () => clearCorrectedNoteTextError(textarea));
+    textarea.addEventListener('blur', () => {
+        if (editing?.textarea === textarea) commitCanvasNoteText();
+    });
     textarea.focus({ preventScroll: true });
     return true;
 }
@@ -223,6 +261,7 @@ export function deleteCanvasNote() {
     const note = selectedNote();
     if (!canEdit(note) || !requireAdminUiAction()) return false;
     if (!window.confirm('このメモを削除しますか？')) return false;
+    invalidTextDrafts.delete(Number(note.id));
     discardEditing();
     cancelDrag();
     appState.canvasNotes = appState.canvasNotes.filter(row => Number(row.id) !== Number(note.id));
@@ -258,6 +297,7 @@ export function deleteRackNote(id) {
     } else if (editing) {
         commitCanvasNoteText();
     }
+    invalidTextDrafts.delete(Number(id));
     cancelDrag();
     appState.canvasNotes = appState.canvasNotes.filter(row => Number(row.id) !== Number(id));
     renderCanvasNotes();
@@ -330,14 +370,17 @@ function makeRackEditor(note, region) {
     }
     const begin = () => {
         const id = Number(textarea.dataset.noteId);
+        if (editing?.textarea === textarea) return;
         const current = findNote(id);
         if (!canEdit(current) || Number(current.view_id) !== Number(appState.currentViewId)) return;
-        if (editing?.textarea !== textarea && !commitCanvasNoteText()) return;
-        editing = { id, viewId: Number(current.view_id), textarea, direct: true };
+        if (!commitCanvasNoteText()) return;
+        editing = { id, viewId: Number(current.view_id), textarea, direct: true,
+            created: invalidTextDrafts.get(id)?.created };
     };
     textarea.addEventListener('focus', begin);
     textarea.addEventListener('input', () => {
         if (!canEdit({ view_id: appState.currentViewId })) return;
+        clearCorrectedNoteTextError(textarea);
         if (!textarea.dataset.noteId) {
             if (!textarea.value.trim()) return;
             if (!commitCanvasNoteText()) return;
@@ -430,7 +473,7 @@ function renderRackNotes() {
             if (item.parentElement !== list) list.appendChild(item);
             existing.delete(id);
             const editor = item.querySelector('.rack-note-editor');
-            if (editing?.textarea !== editor) editor.value = note.text;
+            if (editing?.textarea !== editor) restoreNoteText(editor, note);
             editor.readOnly = !canEdit(note);
             editor.style.fontSize = `${note.font_size}px`;
             editor.style.color = note.text_color;
@@ -457,6 +500,9 @@ function renderRackNotes() {
 export function renderCanvasNotes() {
     const layer = appState.noteLayer;
     if (!layer) return;
+    for (const id of invalidTextDrafts.keys()) {
+        if (!findNote(id)) invalidTextDrafts.delete(id);
+    }
     const rack = getCurrentView()?.view_type === 'rack';
     if (editing && (!findNote(editing.id) || editing.viewId !== Number(appState.currentViewId))) discardEditing();
     if (rack) {
@@ -471,7 +517,8 @@ export function renderCanvasNotes() {
     el('rack-notes-area')?.replaceChildren();
     const notes = getCurrentCanvasNotes();
     if (appState.selectedCanvasNoteId != null &&
-        (appState.selectedPlacementIds.size > 0 || appState.editingLinkId != null || appState.floorPlanAdjustMode)) {
+        (appState.selectedPlacementIds.size > 0 || appState.editingLinkId != null ||
+            appState.editingLinkGroupKey != null || appState.floorPlanAdjustMode)) {
         finishCanvasNotes('selection');
         return;
     }
@@ -491,7 +538,10 @@ export function renderCanvasNotes() {
         element.classList.toggle('selected', selected);
         element.classList.toggle('read-only', !canEdit(note));
         element.querySelector('.canvas-note-resize').hidden = !selected || !canEdit(note);
-        element.querySelector('.canvas-note-header').hidden = !isCurrentUserAdmin();
+        const header = element.querySelector('.canvas-note-header');
+        header.hidden = !isCurrentUserAdmin();
+        const label = invalidTextDrafts.has(id) ? 'メモ（本文未確定）' : 'メモ';
+        if (header.textContent !== label) header.textContent = label;
         const editor = element.querySelector('.canvas-note-editor');
         if (editor && editing?.id !== id) {
             const text = document.createElement('div');
@@ -637,8 +687,9 @@ export function handleCanvasNoteKeydown(event) {
         if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
             event.preventDefault();
             const id = editing.id;
-            commitCanvasNoteText();
-            appState.noteLayer?.querySelector(`[data-note-id="${id}"]`)?.focus();
+            if (commitCanvasNoteText({ keepInvalidEditor: true })) {
+                appState.noteLayer?.querySelector(`[data-note-id="${id}"]`)?.focus();
+            }
         } else if (event.key === 'Escape') {
             event.preventDefault();
             finishCanvasNotes();
@@ -659,7 +710,7 @@ export function handleCanvasNoteKeydown(event) {
         deleteCanvasNote();
         return true;
     }
-    if (event.key === 'Enter' && !event.target?.closest?.('#canvas-context-toolbar, .canvas-note-resize')) {
+    if (event.key === 'Enter' && !event.target?.closest?.('#canvas-view-controls, #canvas-context-toolbar, .canvas-note-resize')) {
         event.preventDefault(); beginCanvasNoteText(); return true;
     }
     return false;
@@ -685,6 +736,12 @@ export function initCanvasNotes() {
 }
 eventBus.on('canvas-note:finish', () => finishCanvasNotes('view'));
 eventBus.on('resources:ids-remapped', maps => {
+    if (invalidTextDrafts.size) {
+        invalidTextDrafts = new Map([...invalidTextDrafts].map(([id, draft]) => [
+            mappedResourceId(maps.canvas_notes, id),
+            { ...draft, viewId: mappedResourceId(maps.views, draft.viewId) }
+        ]));
+    }
     if (editing) editing.id = mappedResourceId(maps.canvas_notes, editing.id);
     if (drag) drag.id = mappedResourceId(maps.canvas_notes, drag.id);
     if (stylePreview) stylePreview.id = mappedResourceId(maps.canvas_notes, stylePreview.id);
@@ -707,8 +764,16 @@ function discardCanvasNotes() {
     finishCanvasNotes('reload');
     renderCanvasNotes();
 }
-eventBus.on('resources:reloaded', discardCanvasNotes);
+eventBus.on('resources:reloaded', () => {
+    invalidTextDrafts.clear();
+    discardCanvasNotes();
+});
 eventBus.on('resource:reloaded', ({ kind, id }) => {
+    if (kind === 'views') {
+        for (const [noteId, draft] of invalidTextDrafts) {
+            if (Number(draft.viewId) === Number(id)) invalidTextDrafts.delete(noteId);
+        }
+    }
     if (kind === 'views' && Number(id) === Number(appState.currentViewId)) discardCanvasNotes();
 });
 eventBus.on('resource:conflict', () => { cancelDrag(); stylePreview = null; renderCanvasNotes(); });

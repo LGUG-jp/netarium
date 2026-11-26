@@ -33,12 +33,7 @@
 
             <div class="placement-manager-device-meta">
                 <span>
-                    施設:
-                    <strong id="pm-device-facility">-</strong>
-                </span>
-
-                <span>
-                    フロア:
+                    設置フロア:
                     <strong id="pm-device-floor">-</strong>
                 </span>
             </div>
@@ -51,7 +46,7 @@
                 <input
                     id="placement-manager-search"
                     type="search"
-                    placeholder="ビュー名、施設、フロアで検索"
+                    placeholder="ビュー名、建物、フロアで検索"
                 >
 
                 <span id="placement-manager-count"></span>

@@ -22,6 +22,7 @@ import { bindLocationSuggestion } from '../ui/location-suggestions.js';
 import { getPlacedDeviceIds, getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import { MAINTENANCE_EXPIRY_LABELS, classifyMaintenanceExpiry, getMaintenanceExpiryDate } from '../core/maintenance-expiry.js';
 import { syncLedgerFilterPicker, closeLedgerFilterPickers } from '../ui/ledger-filter-picker.js';
+import { populateFloorSelect, viewHierarchyPath } from '../core/building-hierarchy.js';
 import { clearShareLinkFallback } from '../ui/share-link.js';
 import { createDeviceTypePicker, closeDeviceTypePicker } from '../ui/device-type-picker.js';
 import {
@@ -65,7 +66,7 @@ import {
 import {
     flushSaveQueue, scheduleSave, updateSaveButtonState,
     hasResourceConflict, reloadConflictedResource, hasResourceChanges, isSaveInFlight,
-    waitForActiveResourceSave
+    getPendingSave, waitForActiveResourceSave
 } from '../core/save-queue.js';
 import {
     getDeviceDraft, hasDeviceDraftChanges, commitDeviceDraft, commitDeviceDrafts, discardDeviceDraft
@@ -74,16 +75,17 @@ import {
     openPlacementManager
 } from './placement-modal.js';
 import { openChangeHistory } from './change-history-modal.js';
-import { openDeviceConfig } from './device-config-modal.js';
 import {
     confirmDataQualityNavigation,
     findDataQualityDevice,
+    focusDataQualityTrigger,
     hideDataQualityForNavigation
 } from './data-quality-modal.js';
 import {
     registerModalClose,
     registerModalOpen
 } from '../core/modal-focus.js';
+import { closeBuildingView, getOpenBuildingId } from '../ui/building-view.js';
 
 export const LEDGER_COLUMNS = [
     { key: 'select', label: '', stickyClass: 'ledger-sticky-check' },
@@ -92,8 +94,7 @@ export const LEDGER_COLUMNS = [
     { key: 'type', label: '種別' },
     { key: 'ip', label: 'IPアドレス' },
     { key: 'additional_ips', label: '追加IP' },
-    { key: 'facility', label: '施設' },
-    { key: 'floor', label: 'フロア' },
+    { key: 'floor_id', label: '設置フロア' },
     { key: 'location', label: '設置場所' },
     { key: 'manufacturer', label: 'メーカー' },
     { key: 'model', label: '型番' },
@@ -114,9 +115,17 @@ export const LEDGER_COLUMNS = [
     { key: 'actions', label: '操作' }
 ];
 
+const LEDGER_COLUMN_LABELS = new Map(LEDGER_COLUMNS.map(col => [col.key, col.label]));
+
+function ledgerCellAriaLabel(device, key) {
+    const deviceLabel = device.name || `ID ${device.id}`;
+    const fieldLabel = LEDGER_COLUMN_LABELS.get(key) || key;
+    return `${deviceLabel}の${fieldLabel}`;
+}
+
 export const LEDGER_PRESETS = {
-    standard: ['select', 'id', 'name', 'type', 'ip', 'additional_ips', 'facility', 'floor', 'location', 'status', 'actions'],
-    placement: ['select', 'id', 'name', 'facility', 'floor', 'location', 'actions'],
+    standard: ['select', 'id', 'name', 'type', 'ip', 'additional_ips', 'floor_id', 'location', 'status', 'actions'],
+    placement: ['select', 'id', 'name', 'floor_id', 'location', 'actions'],
     asset: ['select', 'id', 'name', 'manufacturer', 'model', 'asset_number', 'serial_number', 'mac_address', 'install_date', 'actions'],
     maintenance: ['select', 'id', 'name', 'department', 'maintenance_vendor', 'maintenance_expiry', 'management_scheme', 'management_port', 'actions'],
     monitoring: ['select', 'id', 'name', 'ip', 'status', 'last_checked_at', 'last_response_ms', 'last_error', 'actions'],
@@ -128,25 +137,30 @@ export let activeLedgerDeviceId = null;
 
 let renderingLedgerTable = false;
 let deletingSheetDevice = false;
+let navigatingLedgerSheet = false;
 let ledgerViewFilterIds = [];
 let temporaryLedgerPreset = null;
+let temporaryMaintenanceRange = null;
 
 const {
     renderLedgerDeviceSheet, focusLedgerSheetField, triggerSheetImageUpload,
-    commitSheetDraft, confirmSheetNavigation
+    commitSheetDraft, confirmSheetNavigation, confirmOpenPortsTab,
+    isSheetTabBusy, openSheetConnection, clearSheetTabs, closeConfigMoreMenu, remapConfigDeviceId,
+    getConfigLoadPromise, hasUnsavedSheetTabDraft, hasUnsavedPortDraft
 } = createLedgerDeviceSheet({
     getActiveDeviceId: () => activeLedgerDeviceId,
     getAdjacentLedgerDeviceId,
     updateDraft,
     syncLedgerDraftButtons,
-    showLedgerDestination
+    showLedgerDestination,
+    openDevice: openLedgerDetail
 });
-export { renderLedgerDeviceSheet, focusLedgerSheetField, triggerSheetImageUpload };
+export { renderLedgerDeviceSheet, focusLedgerSheetField, triggerSheetImageUpload, getConfigLoadPromise, hasUnsavedPortDraft };
 
 const LEDGER_FILTERS = [
     { key: 'viewIds', id: 'ledger-view-filter', label: '表示ビュー' },
-    { key: 'facility', id: 'ledger-facility-filter', label: '施設' },
-    { key: 'floor', id: 'ledger-floor-filter', label: 'フロア' },
+    { key: 'buildingIds', id: 'ledger-building-filter', label: '建物' },
+    { key: 'floorIds', id: 'ledger-floor-filter', label: 'フロア' },
     { key: 'status', id: 'ledger-status-filter', label: '状態' },
     { key: 'type', id: 'ledger-type-filter', label: '種別' },
     { key: 'ipPresence', id: 'ledger-ip-presence-filter', label: 'IP登録' },
@@ -209,7 +223,7 @@ function updateDraft(scope, id, field, value) {
     const draft = getDeviceDraft(scope, id);
     if (!draft) return;
     if (field === 'ip' && draft.ip !== value) {
-        const candidates = segmentCandidates(value, appState.ipSegments || []);
+        const candidates = segmentCandidates(String(value ?? '').trim(), appState.ipSegments || []);
         draft.ip_segment_id = candidates.length === 1 ? Number(candidates[0].id) : null;
         delete draft.ip_conflicts_confirmed;
     }
@@ -222,12 +236,17 @@ function bindLedgerDraftInput(input, device, field) {
     input.dataset.field = field;
     input.addEventListener('input', () => {
         input.title = input.value;
-        updateDraft('ledger', Number(input.dataset.deviceId), field,
-            field === 'management_port' ? (input.value === '' ? null : Number(input.value)) : input.value);
+        const nextValue = ['management_port', 'floor_id'].includes(field)
+            ? (input.validity?.badInput
+                ? 'invalid'
+                : (input.value === '' ? null : Number(input.value)))
+            : input.value;
+        updateDraft('ledger', Number(input.dataset.deviceId), field, nextValue);
         showLedgerFieldErrors(Number(input.dataset.deviceId));
     });
     if (input.tagName === 'SELECT') {
-        input.addEventListener('change', () => updateDraft('ledger', Number(input.dataset.deviceId), field, input.value));
+        input.addEventListener('change', () => updateDraft('ledger', Number(input.dataset.deviceId), field,
+            field === 'floor_id' ? (input.value === '' ? null : Number(input.value)) : input.value));
     }
 }
 
@@ -286,12 +305,20 @@ function commitLedgerRow(id) {
     }
 }
 
-function commitLedgerDrafts() {
+function commitLedgerDrafts({ allowDiscardConflicted = false } = {}) {
     try {
         let valid = true;
         const hiddenErrors = [];
+        const conflictDraftIds = [];
+        const editableDraftIds = [];
         for (const device of appState.devices) {
-            if (!hasDeviceDraftChanges('ledger', device.id)) continue;
+            const changed = hasDeviceDraftChanges('ledger', device.id);
+            if (changed && hasResourceConflict('devices', device.id)) {
+                conflictDraftIds.push(Number(device.id));
+                continue;
+            }
+            editableDraftIds.push(device.id);
+            if (!changed) continue;
             const draft = getDeviceDraft('ledger', device.id);
             if (!draft) continue;
             // IP重複はcommitDeviceDraftsで全下書きを統合した候補集合に対して検証する。
@@ -314,12 +341,18 @@ function commitLedgerDrafts() {
             }
             return false;
         }
-        if (commitDeviceDrafts('ledger')) {
+        if (conflictDraftIds.length > 0) {
+            if (!allowDiscardConflicted) {
+                throw new Error('この機器は競合しています。個票の「競合を再読込」で確認してください');
+            }
+            if (!window.confirm('競合している機器の未確定入力があります。競合機器の入力を破棄して台帳を閉じますか？')) return false;
+        }
+        if (commitDeviceDrafts('ledger', editableDraftIds)) {
             markDirty();
             scheduleSave({ immediate: true, silent: true });
             render();
         }
-        return true;
+        return conflictDraftIds;
     } catch (err) {
         showToast(`台帳の入力を確認してください: ${err.message}`, 'warning');
         return false;
@@ -335,47 +368,44 @@ function isConfirmedLedgerDevice(id) {
 }
 
 function syncLedgerDraftButtons() {
+    const saveBtn = document.getElementById('ledger-sheet-save-btn');
+    if (saveBtn) {
+        saveBtn.dataset.deviceId = activeLedgerDeviceId === null ? '' : String(activeLedgerDeviceId);
+    }
     updateSaveButtonState();
+    const tabBusy = isSheetTabBusy();
+    const prevBtn = document.getElementById('ledger-sheet-prev-btn');
+    if (prevBtn) {
+        prevBtn.disabled = appState.authExpired || navigatingLedgerSheet || tabBusy || getAdjacentLedgerDeviceId(-1) === null;
+    }
+    const nextBtn = document.getElementById('ledger-sheet-next-btn');
+    if (nextBtn) {
+        nextBtn.disabled = appState.authExpired || navigatingLedgerSheet || tabBusy || getAdjacentLedgerDeviceId(1) === null;
+    }
+    const closeBtn = document.getElementById('close-ledger-detail-pane-btn');
+    if (closeBtn) {
+        closeBtn.disabled = navigatingLedgerSheet || tabBusy;
+    }
     const deleteBtn = document.getElementById('ledger-sheet-delete-btn');
     if (deleteBtn) {
         deleteBtn.hidden = !isCurrentUserAdmin();
         deleteBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || appState.isPinging ||
-            deletingSheetDevice || activeLedgerDeviceId === null || isSaveInFlight() ||
+            deletingSheetDevice || tabBusy || activeLedgerDeviceId === null || isSaveInFlight() ||
             appState.appStatus.state === 'unconfirmed' || hasResourceConflict('devices', activeLedgerDeviceId);
     }
     const historyBtn = document.getElementById('ledger-sheet-history-btn');
     if (historyBtn) {
         const confirmed = isConfirmedLedgerDevice(activeLedgerDeviceId);
         historyBtn.hidden = !isCurrentUserAdmin();
-        historyBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || !confirmed;
+        historyBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || tabBusy || !confirmed;
         historyBtn.title = confirmed
             ? 'この機器の変更履歴を表示します'
             : '保存が完了してから変更履歴を表示できます';
     }
-    const configBtn = document.getElementById('ledger-sheet-config-btn');
-    if (configBtn) {
-        const confirmed = isConfirmedLedgerDevice(activeLedgerDeviceId);
-        configBtn.hidden = !isCurrentUserAdmin();
-        configBtn.disabled = !isCurrentUserAdmin() || appState.authExpired || !confirmed;
-        configBtn.title = confirmed ? 'この機器のConfigを表示します' : '機器の保存が完了してからConfigを利用できます';
-    }
-    const button = document.getElementById('ledger-sheet-save-btn');
-    if (!button) return;
-    button.dataset.deviceId = activeLedgerDeviceId === null ? '' : String(activeLedgerDeviceId);
-    const conflict = activeLedgerDeviceId !== null && hasResourceConflict('devices', activeLedgerDeviceId);
-    const retry = activeLedgerDeviceId !== null && !isSaveInFlight() &&
-        appState.appStatus.state !== 'unconfirmed' && hasResourceChanges('devices', activeLedgerDeviceId);
-    button.hidden = !isCurrentUserAdmin();
-    button.disabled = !isCurrentUserAdmin() || appState.authExpired || activeLedgerDeviceId === null ||
-        (!conflict && !retry && !hasDeviceDraftChanges('sheet', activeLedgerDeviceId));
-    const draft = hasDeviceDraftChanges('sheet', activeLedgerDeviceId);
-    button.textContent = conflict ? '競合を再読込' : draft ? '適用' : '保存';
-    button.title = conflict ? '編集中の内容を破棄して、この機器だけを再読込します'
-        : draft ? '個票の変更を適用し、自動保存します' : '確定済みの変更を送信・再試行します。未適用の入力は確定しません';
 }
-
 eventBus.on('device-drafts:changed', syncLedgerDraftButtons);
 eventBus.on('save-state:changed', syncLedgerDraftButtons);
+eventBus.on('auth:expired', syncLedgerDraftButtons);
 
 export function getLedgerSelectedDeviceIds() {
     return Array.from(ledgerSelectedDeviceIds);
@@ -442,7 +472,7 @@ export function renderLedgerTableHeader() {
                 fixedWidths.last_checked_at = 'calc(19ch + 17px)';
                 delete fixedWidths.last_error;
             }
-            const weights = { name: 160, floor: 88, location: 140, asset_number: 128, serial_number: 144, last_checked_at: 162 };
+            const weights = { name: 160, floor_id: 220, location: 140, asset_number: 128, serial_number: 144, last_checked_at: 162 };
             const flexible = columns.filter(col => !fixedWidths[col.key]);
             const totalWeight = flexible.reduce((sum, col) => sum + (weights[col.key] || 120), 0);
             const fixedSum = columns.filter(col => fixedWidths[col.key]).map(col => fixedWidths[col.key]).join(' + ');
@@ -489,12 +519,12 @@ function clearTemporaryLedgerPreset() {
     renderLedgerTableHeader();
 }
 
-export function openLedger() {
-    setLedgerViewFilters([]);
-    showLedger();
+export function openLedger({ preserveFilters = false } = {}) {
+    if (!preserveFilters) setLedgerViewFilters([]);
+    showLedger({ preserveFilters });
 }
 
-function showLedger() {
+function showLedger({ preserveFilters = false, filters = null, fromDashboard = false } = {}) {
     const overlay =
         document.getElementById(
             'ledger-overlay'
@@ -509,7 +539,21 @@ function showLedger() {
     }
 
     closeLedgerFilterPickers();
-    clearTemporaryLedgerPreset();
+    if (!preserveFilters) {
+        temporaryLedgerPreset = null;
+        temporaryMaintenanceRange = null;
+    }
+
+    updateLedgerFilters();
+    if (filters) {
+        applyLedgerOpeningFilters(filters);
+        if (fromDashboard) {
+            temporaryMaintenanceRange = filters.maintenanceRange ?? null;
+            if (temporaryMaintenanceRange || selectedLedgerValues('ledger-maintenance-expiry-filter').length) {
+                temporaryLedgerPreset = 'maintenance';
+            }
+        }
+    }
 
     const activePreset = getActiveLedgerPreset();
     const presetSelect = document.getElementById('ledger-column-preset');
@@ -517,23 +561,27 @@ function showLedger() {
         presetSelect.value = activePreset;
     }
 
-    updateLedgerFilters();
     renderLedgerTableHeader();
     renderLedgerTable();
     updateLedgerSelectionUI();
 
     overlay.hidden = false;
     registerModalOpen('ledger', overlay, '#ledger-search', { onClose: closeLedger });
+    if (preserveFilters) document.getElementById('ledger-search')?.focus();
+    if (filters) window.requestAnimationFrame(() => document.getElementById('ledger-search')?.focus());
     updateSaveButtonState();
 }
 
 export function openLedgerWithFilters(filters = {}) {
-    showLedger();
+    showLedger({ filters });
+}
+
+function applyLedgerOpeningFilters(filters) {
     const search = document.getElementById('ledger-search');
     if (search) search.value = String(filters.keyword || '');
     const values = {
-        'ledger-facility-filter': filters.facility,
-        'ledger-floor-filter': filters.floor,
+        'ledger-building-filter': filters.buildingId,
+        'ledger-floor-filter': filters.floorId,
         'ledger-status-filter': filters.status,
         'ledger-type-filter': filters.type,
         'ledger-ip-presence-filter': filters.ipPresence,
@@ -543,17 +591,18 @@ export function openLedgerWithFilters(filters = {}) {
     Object.entries(values).forEach(([id, value]) => setLedgerSelectValues(id, value));
     updateLedgerViewFilterOptions(filters.viewId ?? []);
     appState.ledgerSearchHighlightDeviceId = null;
-    renderLedgerTable();
-    window.requestAnimationFrame(() => document.getElementById('ledger-search')?.focus());
 }
 
 
 export async function closeLedger() {
     if (!closeLedgerBulkEdit()) return false;
-    if (!commitLedgerDrafts()) return false;
+    const conflictDraftIds = commitLedgerDrafts({ allowDiscardConflicted: true });
+    if (!conflictDraftIds) return false;
     if (!await closeLedgerDetailPane()) return false;
+    for (const id of conflictDraftIds) discardDeviceDraft('ledger', id);
     closeLedgerFilterPickers();
     closeDeviceTypePicker();
+    temporaryMaintenanceRange = null;
     clearTemporaryLedgerPreset();
     const overlay = document.getElementById('ledger-overlay');
     if (overlay) overlay.hidden = true;
@@ -565,9 +614,9 @@ export async function closeLedger() {
 export function dismissLedgerPopups() {
     const closedDeviceType = closeDeviceTypePicker();
     const closedFilter = closeLedgerFilterPickers();
-    return Boolean(closedDeviceType || closedFilter);
+    const closedConfigMenu = closeConfigMoreMenu();
+    return Boolean(closedDeviceType || closedFilter || closedConfigMenu);
 }
-
 
 export function getLedgerDeviceTypeLabel(
     type
@@ -597,21 +646,13 @@ export function updateLedgerFilters() {
     updateLedgerViewFilterOptions();
     fillLedgerSelect('ledger-maintenance-expiry-filter', Object.keys(MAINTENANCE_EXPIRY_LABELS),
         key => MAINTENANCE_EXPIRY_LABELS[key], false);
-    fillLedgerSelect(
-        'ledger-facility-filter',
-        uniqueSortedValues(
-            appState.devices,
-            'facility'
-        )
-    );
-
-    fillLedgerSelect(
-        'ledger-floor-filter',
-        uniqueSortedValues(
-            appState.devices,
-            'floor'
-        )
-    );
+    const buildings = new Map((appState.buildings || []).map(row => [String(row.id), row.name]));
+    fillLedgerSelect('ledger-building-filter', ['unset', ...buildings.keys()],
+        id => id === 'unset' ? '未設定' : buildings.get(id), false);
+    const floors = new Map((appState.floors || []).map(row =>
+        [String(row.id), viewHierarchyPath({ floor_id: row.id }, appState)]));
+    fillLedgerSelect('ledger-floor-filter', ['unset', ...floors.keys()],
+        id => id === 'unset' ? '未設定' : floors.get(id), false);
 
     const typeOrder = Object.keys(DEVICE_TYPES);
     const typeCandidates = [...new Set([
@@ -674,11 +715,21 @@ export function getFilteredLedgerDevices() {
     ) : null;
 
     const referenceDate = new Date();
+    const floorsById = new Map((appState.floors || []).map(row => [Number(row.id), row]));
+    const buildingIds = filters.buildingIds.length
+        ? new Set((appState.buildings || []).map(row => String(row.id))) : null;
     const devices = appState.devices.filter(device => {
         if (viewDeviceIds && !viewDeviceIds.has(Number(device.id))) return false;
-        if (filters.facility.length && !filters.facility.includes(String(device.facility || ''))) return false;
-        if (filters.floor.length && !filters.floor.includes(String(device.floor || ''))) return false;
-        if (filters.status.length && !filters.status.includes(normalizeStatus(device.status))) return false;
+        const floor = device.floor_id == null ? null : floorsById.get(Number(device.floor_id));
+        const floorId = floor ? String(floor.id) : 'unset';
+        if (buildingIds) {
+            const id = String(floor?.building_id);
+            if (!filters.buildingIds.includes(buildingIds.has(id) ? id : 'unset')) return false;
+        }
+        if (filters.floorIds.length && !filters.floorIds.includes(floorId)) return false;
+        const deviceStatus = normalizeStatus(device.status);
+        const filterStatus = deviceStatus === 'checking' ? 'unknown' : deviceStatus;
+        if (filters.status.length && !filters.status.includes(filterStatus)) return false;
         if (filters.type.length && !filters.type.includes(String(device.type || ''))) return false;
 
         const hasIp = String(device.ip || '').trim() !== '';
@@ -701,8 +752,7 @@ export function getFilteredLedgerDevices() {
             ),
             device.ip,
             ...(device.additional_ips || []).flatMap(row => [row.ip, row.label]),
-            device.facility,
-            device.floor,
+            viewHierarchyPath(device, appState),
             device.location,
             device.manufacturer,
             device.model,
@@ -729,9 +779,19 @@ export function getFilteredLedgerDevices() {
             filters.keyword
         );
     });
-    if (!filters.maintenanceExpiry.length) return devices;
+    if (!temporaryMaintenanceRange && !filters.maintenanceExpiry.length) return devices;
+
+    const dated = [];
+    for (const device of devices) {
+        const date = getMaintenanceExpiryDate(device.maintenance_expiry);
+        if (temporaryMaintenanceRange) {
+            const { start, end } = temporaryMaintenanceRange;
+            if (!date || date < start || (end !== null && date > end)) continue;
+        }
+        dated.push({ device, date });
+    }
     // 年月だけの期限は月末として比較し、未設定は末尾。同期限では元の機器順を保つ。
-    return devices.map(device => ({ device, date: getMaintenanceExpiryDate(device.maintenance_expiry) }))
+    return dated
         .sort((a, b) => (a.date ?? '9999-99-99').localeCompare(b.date ?? '9999-99-99'))
         .map(({ device }) => device);
 }
@@ -749,15 +809,25 @@ export function getLedgerActiveFilterItems() {
             items.push({ key, value, label: `${label}: ${option?.textContent || value}` });
         });
     });
+    if (temporaryMaintenanceRange) {
+        const { label } = temporaryMaintenanceRange;
+        items.push({ key: 'maintenanceRange', value: label, label: `保守期限: ${label}` });
+    }
     if (filters.keyword) items.push({ key: 'keyword', value: filters.keyword, label: `検索: ${filters.keyword}` });
     return items;
 }
 
 
+function changeLedgerMaintenanceExpiryFilter() {
+    temporaryMaintenanceRange = null;
+    renderLedgerTable();
+}
+
 export function renderLedgerActiveFilters() {
-    LEDGER_FILTERS.forEach(({ id, label }) => {
+    LEDGER_FILTERS.forEach(({ key, id, label }) => {
         const select = document.getElementById(id);
-        if (select) syncLedgerFilterPicker(select, label, renderLedgerTable);
+        if (select) syncLedgerFilterPicker(select, label,
+            key === 'maintenanceExpiry' ? changeLedgerMaintenanceExpiryFilter : renderLedgerTable);
     });
     const container =
         document.getElementById(
@@ -802,6 +872,8 @@ export function renderLedgerActiveFilters() {
         clear.addEventListener('click', () => {
             if (item.key === 'keyword') {
                 document.getElementById('ledger-search').value = '';
+            } else if (item.key === 'maintenanceRange') {
+                temporaryMaintenanceRange = null;
             } else {
                 const { id } = LEDGER_FILTERS.find(filter => filter.key === item.key);
                 const values = selectedLedgerValues(id).filter(value => value !== String(item.value));
@@ -828,6 +900,7 @@ export function renderLedgerActiveFilters() {
 
 export function resetLedgerFilters() {
     closeLedgerFilterPickers();
+    temporaryMaintenanceRange = null;
     setLedgerViewFilters([]);
     LEDGER_FILTERS.forEach(({ id }) => setLedgerSelectValues(id, []));
     const search = document.getElementById('ledger-search');
@@ -852,7 +925,9 @@ export function renderLedgerTable() {
     if (!tbody) {
         return;
     }
-    if (!selectedLedgerValues('ledger-maintenance-expiry-filter').length) clearTemporaryLedgerPreset();
+    if (!temporaryMaintenanceRange && !selectedLedgerValues('ledger-maintenance-expiry-filter').length) {
+        clearTemporaryLedgerPreset();
+    }
 
     const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
     let focusedFieldInfo = null;
@@ -960,6 +1035,7 @@ export function createLedgerManagementSchemeCell(device) {
     const td = document.createElement('td');
     const select = document.createElement('select');
     select.dataset.field = 'management_scheme';
+    select.setAttribute('aria-label', ledgerCellAriaLabel(device, 'management_scheme'));
     select.disabled = !isCurrentUserAdmin();
     const options = [
         { value: '', label: '未設定' },
@@ -988,6 +1064,7 @@ export function createLedgerManagementPortCell(device) {
     const td = document.createElement('td');
     const input = document.createElement('input');
     input.dataset.field = 'management_port';
+    input.setAttribute('aria-label', ledgerCellAriaLabel(device, 'management_port'));
     input.type = 'number';
     input.max = '65535';
     input.step = '1';
@@ -1059,12 +1136,16 @@ export function createLedgerRow(device) {
                 cell.textContent = count ? `${count}件` : '—';
                 break;
             }
-            case 'facility':
-                cell = createLedgerInputCell(device, 'facility', 100);
+            case 'floor_id': {
+                cell = document.createElement('td');
+                const select = document.createElement('select');
+                select.setAttribute('aria-label', ledgerCellAriaLabel(device, 'floor_id'));
+                populateFloorSelect(select, appState, device.floor_id);
+                select.disabled = !isCurrentUserAdmin();
+                bindLedgerDraftInput(select, device, 'floor_id');
+                cell.appendChild(select);
                 break;
-            case 'floor':
-                cell = createLedgerInputCell(device, 'floor', 50);
-                break;
+            }
             case 'location':
                 cell = createLedgerInputCell(device, 'location', 150);
                 break;
@@ -1178,8 +1259,9 @@ export function createLedgerPlacementActionCell(
     detailBtn.setAttribute('aria-label', `${device.name || `ID ${device.id}`}の詳細を開く`);
     detailBtn.addEventListener('click', async event => {
         event.stopPropagation();
-        if (!commitLedgerRow(Number(detailBtn.closest('tr')?.dataset.deviceId ?? device.id))) return;
-        await openLedgerDetail(Number(detailBtn.closest('tr')?.dataset.deviceId ?? device.id));
+        const targetId = Number(detailBtn.closest('tr')?.dataset.deviceId ?? device.id);
+        if (!hasResourceConflict('devices', targetId) && !commitLedgerRow(targetId)) return;
+        await openLedgerDetail(targetId);
     });
     actions.appendChild(detailBtn);
 
@@ -1228,7 +1310,7 @@ export function createLedgerInputCell(device, key, maxLength) {
     input.dataset.originalValue = val.trim();
     input.dataset.maxLength = String(maxLength);
     input.dataset.field = key;
-    input.setAttribute('aria-label', key);
+    input.setAttribute('aria-label', ledgerCellAriaLabel(device, key));
 
     /*
      * 一般ユーザーは台帳を閲覧専用にする。
@@ -1261,6 +1343,7 @@ export function createLedgerTextareaCell(device, key, maxLength) {
     textarea.dataset.maxLength = String(maxLength);
     textarea.rows = 2;
     textarea.dataset.field = key;
+    textarea.setAttribute('aria-label', ledgerCellAriaLabel(device, key));
 
     textarea.readOnly =
         !isCurrentUserAdmin();
@@ -1374,8 +1457,6 @@ export async function saveLedgerSheet() {
     if (saved) {
         updateLedgerFilters();
         renderLedgerTable();
-        const dqOverlay = document.getElementById('data-quality-overlay');
-        if (dqOverlay && !dqOverlay.hidden) eventBus.emit('data-quality:render');
     }
     syncLedgerDraftButtons();
     return saved;
@@ -1439,9 +1520,9 @@ export function openLedgerForSearchedDevice(
         searchInput.value = '';
     }
 
-    const facilityFilter =
+    const buildingFilter =
         document.getElementById(
-            'ledger-facility-filter'
+            'ledger-building-filter'
         );
 
     const floorFilter =
@@ -1469,8 +1550,8 @@ export function openLedgerForSearchedDevice(
             'ledger-placement-filter'
         );
 
-    if (facilityFilter) {
-        facilityFilter.value = '';
+    if (buildingFilter) {
+        buildingFilter.value = '';
     }
 
     if (floorFilter) {
@@ -1574,6 +1655,10 @@ export async function deleteSelectedLedgerDevicesCompletely() {
     if (!requireAdminUiAction()) {
         return;
     }
+    if (appState.authExpired || appState.appStatus?.state === 'unconfirmed' || isSaveInFlight()) {
+        showToast('現在の状態では削除できません。保存やログイン状態を確認してください', 'warning');
+        return;
+    }
     const deviceIds = Array.from(ledgerSelectedDeviceIds);
 
     if (deviceIds.length === 0) {
@@ -1638,6 +1723,7 @@ export async function openDataQualityDeviceInLedger(
     }
 
     hideDataQualityForNavigation();
+    focusDataQualityTrigger();
 
     openLedgerForSearchedDevice(
         device.id
@@ -1685,14 +1771,7 @@ export function openDashboardLedger(
             'dashboard:hide-for-navigation'
         );
 
-        openLedgerWithFilters(filters);
-        if (selectedLedgerValues('ledger-maintenance-expiry-filter').length) {
-            temporaryLedgerPreset = 'maintenance';
-            const select = document.getElementById('ledger-column-preset');
-            if (select) select.value = temporaryLedgerPreset;
-            renderLedgerTableHeader();
-            renderLedgerTable();
-        }
+        showLedger({ filters, fromDashboard: true });
         window.requestAnimationFrame(() => {
             appState.isDashboardNavigating = false;
         });
@@ -1725,6 +1804,9 @@ export function clearLedgerSelection() {
 
 eventBus.on('ui:busy-ended', updateLedgerSelectionUI);
 eventBus.on('ledger:selection-changed', updateLedgerSelectionUI);
+eventBus.on('save-state:changed', () => {
+    if (document.getElementById('ledger-overlay')?.hidden === false) updateLedgerSelectionUI();
+});
 
 export function updateLedgerSelectionUI() {
     const validIds = new Set(appState.devices.map(device => Number(device.id)));
@@ -1748,11 +1830,15 @@ export function updateLedgerSelectionUI() {
     if (clearBtn) clearBtn.disabled = appState.isPinging || ledgerSelectedDeviceIds.size === 0;
     const bulkPlaceBtn = document.getElementById('ledger-bulk-place-btn');
     if (bulkPlaceBtn) {
-        bulkPlaceBtn.disabled = ledgerSelectedDeviceIds.size === 0;
+        bulkPlaceBtn.disabled = !isCurrentUserAdmin() || appState.authExpired ||
+            appState.isPinging || isSaveInFlight() || appState.appStatus?.state === 'unconfirmed' ||
+            ledgerSelectedDeviceIds.size === 0;
     }
     const deleteBtn = document.getElementById('ledger-delete-btn');
     if (deleteBtn) {
-        deleteBtn.disabled = !isCurrentUserAdmin() || ledgerSelectedDeviceIds.size === 0;
+        deleteBtn.disabled = !isCurrentUserAdmin() || appState.authExpired ||
+            appState.isPinging || isSaveInFlight() || appState.appStatus?.state === 'unconfirmed' ||
+            ledgerSelectedDeviceIds.size === 0;
     }
     const bulkEditBtn = document.getElementById('ledger-bulk-edit-btn');
     if (bulkEditBtn) {
@@ -1795,22 +1881,32 @@ eventBus.on('resources:ids-remapped', maps => {
     activeLedgerDeviceId = mapped(activeLedgerDeviceId);
     placeTargetDeviceIds = placeTargetDeviceIds.map(mapped);
     remapBulkEditSessionIds(mapped);
+    remapConfigDeviceId(mapped);
     document.querySelectorAll('#ledger-table-body [data-device-id]').forEach(element => {
         element.dataset.deviceId = String(mapped(Number(element.dataset.deviceId)));
     });
     syncLedgerDraftButtons();
 });
 
-eventBus.on('resources:reloaded', () => updateLedgerViewFilterOptions());
+eventBus.on('resources:reloaded', ({ source } = {}) => {
+    if (source !== 'hierarchy-editor') updateLedgerViewFilterOptions();
+});
 eventBus.on('resource:reloaded', () => {
     updateLedgerViewFilterOptions();
 });
-export async function openLedgerDetail(deviceId, { reveal = true, canOpen = () => true } = {}) {
-    if (!canOpen()) return false;
-    if (Number(deviceId) !== activeLedgerDeviceId && !await confirmSheetNavigation()) return false;
-    if (!canOpen()) return false;
+export async function openLedgerDetail(deviceId, { reveal = true, canOpen = () => true, tab, linkId, restoreFocusTo } = {}) {
+    if (isSheetTabBusy() || !canOpen()) return false;
+    if (Number(deviceId) !== activeLedgerDeviceId) {
+        if (!await confirmSheetNavigation()) return false;
+    } else if (tab === 'ports' && !await confirmOpenPortsTab()) {
+        return false;
+    }
+    if (isSheetTabBusy() || !canOpen()) return false;
     const activeRow = document.activeElement?.closest?.('#ledger-table-body tr[data-device-id]');
-    if (activeRow && !commitLedgerRow(Number(activeRow.dataset.deviceId))) return false;
+    if (activeRow) {
+        const activeRowId = Number(activeRow.dataset.deviceId);
+        if (!hasResourceConflict('devices', activeRowId) && !commitLedgerRow(activeRowId)) return false;
+    }
     const device = getDeviceById(deviceId);
     if (!device) return false;
 
@@ -1826,37 +1922,74 @@ export async function openLedgerDetail(deviceId, { reveal = true, canOpen = () =
     if (overlay && reveal) {
         if (overlay.hidden) {
             overlay.hidden = false;
-            registerModalOpen('ledger-device-sheet', overlay, '.modal-close-btn', { onClose: closeLedgerDetailPane });
+            registerModalOpen('ledger-device-sheet', overlay, '.modal-close-btn', { onClose: closeLedgerDetailPane, restoreFocusTo });
         }
     }
 
-    renderLedgerDeviceSheet(device);
+    renderLedgerDeviceSheet(device, { tab });
+    if (tab === 'ports' && linkId != null) await openSheetConnection(linkId);
     syncLedgerDraftButtons();
     return true;
 }
 
 function getAdjacentLedgerDeviceId(direction) {
-    const ids = Array.from(document.querySelectorAll('#ledger-table-body tr[data-device-id]'))
-        .filter(row => !row.hidden)
-        .map(row => Number(row.dataset.deviceId))
-        .filter(id => getDeviceById(id));
+    if (activeLedgerDeviceId === null) return null;
+    const devices = document.getElementById('ledger-overlay')?.hidden === false
+        ? getFilteredLedgerDevices()
+        : appState.devices;
+    const ids = devices.map(device => Number(device.id));
     const index = ids.indexOf(activeLedgerDeviceId);
     return index < 0 ? null : (ids[index + direction] ?? null);
 }
 
-async function navigateLedgerDevice(direction) {
+export async function navigateLedgerDevice(direction) {
+    if (navigatingLedgerSheet || isSheetTabBusy()) return false;
+    const sourceId = activeLedgerDeviceId;
     const deviceId = getAdjacentLedgerDeviceId(direction);
-    if (deviceId === null) return;
-    if (!await openLedgerDetail(deviceId)) return;
-    const body = document.getElementById('ledger-sheet-body');
-    if (body) body.scrollTop = 0;
+    if (sourceId === null || deviceId === null) return false;
+    navigatingLedgerSheet = true;
+    syncLedgerDraftButtons();
+    try {
+        if (!await confirmSheetNavigation()) return false;
+        if (appState.authExpired || activeLedgerDeviceId !== sourceId ||
+            getAdjacentLedgerDeviceId(direction) !== deviceId ||
+            !getDeviceById(sourceId) || !getDeviceById(deviceId)) {
+            return false;
+        }
+        if (!await openLedgerDetail(deviceId)) return false;
+        const body = document.getElementById('ledger-sheet-body');
+        if (body) body.scrollTop = 0;
+        return true;
+    } finally {
+        navigatingLedgerSheet = false;
+        syncLedgerDraftButtons();
+    }
 }
 
 export async function closeLedgerDetailPane() {
+    if (isSheetTabBusy()) return false;
     if (!await confirmSheetNavigation()) return false;
+    finishClosingLedgerDetailPane();
+    return true;
+}
+
+export function refreshOpenLedgerAfterReload() {
+    updateLedgerFilters();
+    if (document.getElementById('ledger-overlay')?.hidden === false) renderLedgerTable();
+    if (document.getElementById('ledger-device-sheet-overlay')?.hidden !== false) return;
+    const device = activeLedgerDeviceId === null ? null : getDeviceById(activeLedgerDeviceId);
+    if (device) renderLedgerDeviceSheet(device);
+    else finishClosingLedgerDetailPane();
+}
+
+function finishClosingLedgerDetailPane() {
     closeDeviceTypePicker();
+    clearSheetTabs();
     const body = document.getElementById('ledger-sheet-body');
-    if (body) body.dataset.activeTab = 'primary';
+    if (body) {
+        body.dataset.activeTab = 'primary';
+        delete body.dataset.deviceId;
+    }
     activeLedgerDeviceId = null;
     const rows = document.querySelectorAll('#ledger-table-body tr');
     rows.forEach(tr => tr.classList.remove('ledger-row-active'));
@@ -1867,17 +2000,15 @@ export async function closeLedgerDetailPane() {
         registerModalClose('ledger-device-sheet');
     }
 
-    // データ品質管理が開いている場合は、編集内容を反映して再描画
+    // 診断へ戻ったときに、保存済みの変更を確認する。
     const dqOverlay = document.getElementById('data-quality-overlay');
     if (dqOverlay && !dqOverlay.hidden) {
         eventBus.emit('data-quality:render');
     }
     syncLedgerDraftButtons();
-    return true;
 }
-
 export async function deleteActiveLedgerDevice() {
-    if (!requireAdminUiAction() || appState.authExpired || deletingSheetDevice ||
+    if (!requireAdminUiAction() || appState.authExpired || deletingSheetDevice || isSheetTabBusy() ||
         isSaveInFlight() || appState.appStatus.state === 'unconfirmed') return false;
     const deviceId = activeLedgerDeviceId;
     if (deviceId === null || hasResourceConflict('devices', deviceId)) return false;
@@ -1885,13 +2016,13 @@ export async function deleteActiveLedgerDevice() {
     deletingSheetDevice = true;
     syncLedgerDraftButtons();
     try {
-        while (hasDeviceDraftChanges('sheet', deviceId)) {
+        while (hasDeviceDraftChanges('sheet', deviceId) || hasUnsavedSheetTabDraft()) {
             if (!await confirmSheetNavigation({ saveBeforeLeaving: true })) return false;
         }
         // 確認・保存中に別の個票へ移った場合や、保存中に追加下書きが発生した場合は削除へ進まない。
         if (activeLedgerDeviceId !== deviceId || !requireAdminUiAction() || appState.authExpired ||
-            isSaveInFlight() || appState.appStatus.state === 'unconfirmed' ||
-            hasDeviceDraftChanges('sheet', deviceId)) return false;
+            isSheetTabBusy() || isSaveInFlight() || appState.appStatus.state === 'unconfirmed' ||
+            hasDeviceDraftChanges('sheet', deviceId) || hasUnsavedSheetTabDraft()) return false;
         const device = getDeviceById(deviceId);
         if (!device) return false;
         const deleted = await deleteDeviceCompletely([deviceId], { deviceName: device.name || `ID ${deviceId}` });
@@ -1921,6 +2052,7 @@ async function showLedgerDestination(deviceId, viewId) {
         .find(item => Number(item.view.id) === viewId);
     if (!destination) return;
     const { switchView } = await import('./view-manager-modal.js');
+    if (getOpenBuildingId() != null && !await closeBuildingView()) return;
     if (!await switchView(viewId) || Number(appState.currentViewId) !== viewId) {
         if (activeLedgerDeviceId === deviceId) renderLedgerDeviceSheet(getDeviceById(deviceId));
         return;
@@ -1970,33 +2102,12 @@ export async function openActiveDeviceHistory() {
         targetType: 'device', targetId: Number(device.id), targetName: device.name || ''
     }), '変更履歴');
 }
-
-export async function openActiveDeviceConfig() {
-    return openActiveDeviceRecordPanel(device => openDeviceConfig(device, {
-        getAdjacentDeviceId: getAdjacentLedgerDeviceId,
-        navigate: navigateConfigLedgerDevice
-    }), 'Config');
-}
-
-async function navigateConfigLedgerDevice(direction, targetId) {
-    const sourceId = activeLedgerDeviceId;
-    const unavailable = id => !isConfirmedLedgerDevice(id) || hasResourceConflict('devices', id) ||
-        hasResourceChanges('devices', id);
-    if (!requireAdminUiAction() || appState.authExpired || deletingSheetDevice ||
-        getAdjacentLedgerDeviceId(direction) !== targetId || unavailable(sourceId) || unavailable(targetId)) return null;
-    if (!await confirmSheetNavigation({ saveBeforeLeaving: true })) return null;
-    await waitForActiveResourceSave();
-    if (appState.authExpired || activeLedgerDeviceId !== sourceId ||
-        getAdjacentLedgerDeviceId(direction) !== targetId || unavailable(sourceId) || unavailable(targetId) ||
-        hasDeviceDraftChanges('sheet', sourceId)) return null;
-    if (!await openLedgerDetail(targetId, { reveal: false })) return null;
-    const body = document.getElementById('ledger-sheet-body');
-    if (body) body.scrollTop = 0;
-    return getDeviceById(targetId);
-}
-
 export function openLedgerPlaceViewModal() {
     if (!requireAdminUiAction()) return;
+    if (appState.authExpired || appState.appStatus?.state === 'unconfirmed' || isSaveInFlight()) {
+        showToast('現在の状態では配置できません。保存やログイン状態を確認してください', 'warning');
+        return;
+    }
     const selectedIds = getLedgerSelectedDeviceIds();
     if (selectedIds.length === 0) {
         showToast('配置する機器を選択してください', 'warning');
@@ -2055,6 +2166,10 @@ export function closeLedgerPlaceViewModal() {
 
 export async function confirmPlaceDevicesToView() {
     if (!requireAdminUiAction()) return;
+    if (appState.authExpired || appState.appStatus?.state === 'unconfirmed' || isSaveInFlight()) {
+        showToast('現在の状態では配置できません。保存やログイン状態を確認してください', 'warning');
+        return;
+    }
     const viewSelect = document.getElementById('ledger-place-view-select');
     if (!viewSelect || !viewSelect.value) {
         showToast('配置先のビューを選択してください', 'warning');
@@ -2062,6 +2177,10 @@ export async function confirmPlaceDevicesToView() {
     }
 
     const targetViewId = Number(viewSelect.value);
+    if (hasResourceConflict('views', targetViewId)) {
+        showToast('配置先のビューが競合しています。対象を再読込してください', 'warning');
+        return;
+    }
     const targetView = (appState.views || []).find(v => Number(v.id) === targetViewId);
     if (!targetView) {
         showToast('配置先のビューが見つかりません', 'warning');

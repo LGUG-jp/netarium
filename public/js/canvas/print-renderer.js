@@ -210,7 +210,7 @@ export function renderPrintSheet(model) {
     }
     for (const node of model.nodes) {
         const definition = DEVICE_TYPES[node.type] || DEVICE_TYPES.other;
-        const card = htmlElement('div', 'print-device');
+        const card = htmlElement('div', node.rackViewId ? 'print-device print-rack' : 'print-device');
         const icon = htmlElement('img', 'print-device-icon');
         icon.src = node.icon || definition.icon;
         icon.alt = '';

@@ -106,16 +106,28 @@ function requirePageAuthentication(bool $allowPasswordChange = false): void
     }
 }
 
-function requireApiAuthentication(bool $allowPasswordChange = false): void
+function sendApiAuthenticationRequired(): never
+{
+    sendAuthDenial([
+        'ok' => false,
+        'error' => '認証が必要です',
+        'login_required' => true,
+    ], 401, 'authentication_required');
+}
+
+function requireApiSession(): void
 {
     startAppSession();
 
-    if (!isAuthenticated() || !refreshAuthenticatedUser()) {
-        sendAuthDenial([
-            'ok' => false,
-            'error' => '認証が必要です',
-            'login_required' => true,
-        ], 401, 'authentication_required');
+    if (!isAuthenticated()) {
+        sendApiAuthenticationRequired();
+    }
+}
+
+function requireApiAuthentication(bool $allowPasswordChange = false): void
+{
+    if (!refreshAuthenticatedUser()) {
+        sendApiAuthenticationRequired();
     }
 
     if (!$allowPasswordChange && mustChangePassword()) {
@@ -157,8 +169,6 @@ function requireAdminPageRole(): void
 
 function requireAdminApiRole(): void
 {
-    requireApiAuthentication();
-
     if (!isAdminUser()) {
         sendAuthDenial([
             'ok' => false,
@@ -183,7 +193,7 @@ function recordAccessDenial(string $reason): ?string
     }
 }
 
-function sendAuthDenial(array $data, int $status, string $reason): void
+function sendAuthDenial(array $data, int $status, string $reason): never
 {
     $requestId = recordAccessDenial($reason);
     if ($requestId !== null) {
@@ -192,7 +202,7 @@ function sendAuthDenial(array $data, int $status, string $reason): void
     sendAuthJson($data, $status);
 }
 
-function sendAuthJson(array $data, int $status = 200): void
+function sendAuthJson(array $data, int $status = 200): never
 {
     http_response_code($status);
     header('Content-Type: application/json; charset=UTF-8');

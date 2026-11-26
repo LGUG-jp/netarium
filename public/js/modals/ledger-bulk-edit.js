@@ -9,6 +9,7 @@ import { showToast, showStatusMessage } from '../ui/toast.js';
 import { markDirty } from '../ui/status-bar.js';
 import { scheduleSave } from '../core/save-queue.js';
 import { render } from '../canvas/renderer.js';
+import { populateFloorSelect, viewHierarchyPath } from '../core/building-hierarchy.js';
 
 export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, renderTable }) {
     let bulkEditSession = null;
@@ -34,8 +35,10 @@ export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, rende
                 label.append(checkbox, document.createTextNode(` ${field.label}を変更する`));
                 const current = document.createElement('p');
                 current.textContent = `現在値: ${summarizeBulkValues(session, field.key)}`;
-                const input = document.createElement(field.options ? 'select' : 'input');
-                if (field.options) {
+                const input = document.createElement(field.options || field.key === 'floor_id' ? 'select' : 'input');
+                if (field.key === 'floor_id') {
+                    populateFloorSelect(input, appState, null);
+                } else if (field.options) {
                     for (const choice of field.options) {
                         const option = document.createElement('option');
                         option.value = choice.value;
@@ -72,7 +75,7 @@ export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, rende
                 [field.key, document.getElementById(`ledger-bulk-value-${field.key}`).value]));
             const overlay = document.getElementById('ledger-bulk-edit-overlay');
             overlay.hidden = false;
-            registerModalOpen('ledger-bulk-edit', overlay, '#ledger-bulk-change-facility', { onClose: closeLedgerBulkEdit });
+            registerModalOpen('ledger-bulk-edit', overlay, '#ledger-bulk-change-floor_id', { onClose: closeLedgerBulkEdit });
         } catch (error) {
             showToast(error.message, 'warning');
         }
@@ -101,6 +104,9 @@ export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, rende
         document.getElementById('ledger-bulk-edit-confirm').hidden = true;
         document.getElementById('ledger-bulk-edit-error').textContent = '';
         bulkEditUpdates = null;
+        const form = document.getElementById('ledger-bulk-edit-form');
+        const firstFocus = form?.querySelector('input:not(:disabled), select:not(:disabled), button:not(:disabled)');
+        firstFocus?.focus?.({ preventScroll: true });
     }
 
     function showLedgerBulkEditError(error) {
@@ -116,7 +122,12 @@ export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, rende
             const updates = {};
             for (const field of BULK_DEVICE_FIELDS) {
                 if (document.getElementById(`ledger-bulk-change-${field.key}`).checked) {
-                    updates[field.key] = document.getElementById(`ledger-bulk-value-${field.key}`).value;
+                    const inputEl = document.getElementById(`ledger-bulk-value-${field.key}`);
+                    if (inputEl.validity?.badInput) {
+                        throw new Error(`${field.label}は数値で入力してください`);
+                    }
+                    const value = inputEl.value;
+                    updates[field.key] = field.key === 'floor_id' ? (value === '' ? null : Number(value)) : value;
                 }
             }
             const plan = prepareDeviceBulkEdit(bulkEditSession, updates);
@@ -141,12 +152,12 @@ export function createLedgerBulkEdit({ selectedDeviceIds, closeDetailPane, rende
                 const value = plan.updates[field.key];
                 const clearing = value === '' || value === null;
                 after.className = clearing ? 'ledger-bulk-edit-after ledger-bulk-edit-clearing' : 'ledger-bulk-edit-after';
-                after.textContent = `変更後: ${clearing ? '空欄にする' : field.options?.find(option => option.value === value)?.label || value}`;
+                after.textContent = `変更後: ${clearing ? '未設定にする' : field.key === 'floor_id' ? viewHierarchyPath({ floor_id: value }, appState) : field.options?.find(option => option.value === value)?.label || value}`;
                 row.append(label, before, arrow, after);
                 preview.appendChild(row);
             }
             document.getElementById('ledger-bulk-edit-warning').textContent = plan.placedCount
-                ? `選択中のうち${plan.placedCount}台はビューに配置済みです。施設・フロアを変更しても配置先や座標は変更されません。` : '';
+                ? `選択中のうち${plan.placedCount}台はビューに配置済みです。設置フロアを変更しても配置先や座標は変更されません。` : '';
             document.getElementById('ledger-bulk-edit-apply').textContent = `${bulkEditSession.ids.length}台に適用`;
             document.getElementById('ledger-bulk-edit-error').textContent = '';
             document.getElementById('ledger-bulk-edit-form').hidden = true;

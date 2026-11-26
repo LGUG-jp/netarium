@@ -2,7 +2,7 @@ import { appState, getCurrentView, getDeviceById, allocateLocalId } from '../cor
 import { validateRackLayout, toSaveRackShelf } from '../core/rack-layout.js';
 import { DEVICE_TYPES } from '../core/constants.js';
 import { isCurrentUserAdmin, requireAdminUiAction } from '../ui/access-control.js';
-import { hasResourceConflict, isSaveInFlight, scheduleSave } from '../core/save-queue.js';
+import { flushSaveQueue, hasResourceConflict, isSaveInFlight, scheduleSave } from '../core/save-queue.js';
 import { markDirty } from '../ui/status-bar.js';
 import { showToast } from '../ui/toast.js';
 import { openPanel, closePanel, closeLinkPanel } from '../ui/property-panel.js';
@@ -24,7 +24,7 @@ export const shelfMembers = id => members().filter(row => eq(row.shelf_id, id)).
 export function shelfForDevice(id) { return shelfById(members().find(row => eq(row.device_id, id))?.shelf_id); }
 export function shelfEditable(ids = [appState.currentViewId]) {
     return isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging && !isSaveInFlight() &&
-        appState.appStatus.state !== 'unconfirmed' && !ids.some(id => hasResourceConflict('views', id));
+        appState.appStatus?.state !== 'unconfirmed' && !ids.some(id => hasResourceConflict('views', id));
 }
 const rackName = id => appState.views.find(row => eq(row.id, id))?.name || 'ラック';
 export function shelfLocation(shelf) {
@@ -115,16 +115,25 @@ function closeShelfDialog({ confirmIfDirty = false } = {}) {
 export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 1, shelfId = null }) {
     if (!requireAdminUiAction() || !shelfEditable([viewId])) return;
     closeShelfDialog();
-    const origin = appState.currentViewId;
+    let origin = appState.currentViewId;
 
     let currentShelfId = shelfId != null ? Number(shelfId) : null;
     let previous = currentShelfId != null ? shelfById(currentShelfId) : null;
     let waitingCreation = currentShelfId == null;
     let isSavingShelf = false;
+    let shelfSaveTargetViews = null;
     let isAddingDevice = false;
     let pendingShelfTransfer = null;
     let pendingDeviceTransfer = null;
-    const shelfSnapshot = () => JSON.stringify([shelfById(currentShelfId), shelves(), members(), appState.views, appState.rackMounts]);
+    const sortById = rows => [...(rows || [])].sort((a, b) => Number(a?.id ?? 0) - Number(b?.id ?? 0));
+    const sortByDeviceId = rows => [...(rows || [])].sort((a, b) => Number(a?.device_id ?? 0) - Number(b?.device_id ?? 0));
+    const shelfSnapshot = () => JSON.stringify([
+        shelfById(currentShelfId),
+        sortById(shelves()),
+        sortByDeviceId(members()),
+        sortById(appState.views),
+        sortByDeviceId(appState.rackMounts)
+    ]);
     let initialSnapshot = shelfSnapshot();
     let membershipSnapshotChanged = false;
     const fields = {};
@@ -386,7 +395,8 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
         snapshot[2] = snapshot[2].filter(row => !eq(row.device_id, deviceId));
         const member = members().find(row => eq(row.device_id, deviceId));
         if (member) snapshot[2].push({ ...member });
-        snapshot[4] = snapshot[4].filter(row => !eq(row.device_id, deviceId));
+        snapshot[2] = sortByDeviceId(snapshot[2]);
+        snapshot[4] = sortByDeviceId(snapshot[4].filter(row => !eq(row.device_id, deviceId)));
         initialSnapshot = JSON.stringify(snapshot);
         membershipSnapshotChanged = true;
     }
@@ -403,6 +413,7 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
             updateAllStates();
             return;
         }
+        if (previous && !isDirty()) return;
         let row, next;
         try {
             row = toSaveRackShelf({
@@ -442,13 +453,24 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
         pendingShelfTransfer = null;
         shelfConfirmation.hide();
         isSavingShelf = true;
+        shelfSaveTargetViews = new Set([Number(viewId), Number(destination)].filter(id => Number.isFinite(id) && id > 0));
         currentShelfId = row.id;
         updateAllStates();
 
-        if (!commit({ rackShelves: next })) {
-            isSavingShelf = false;
-            updateAllStates();
-            return;
+        // 先にローカルへ反映する。markDirty() の pending 通知は保存結果ではない。
+        appState.rackShelves = next;
+        markDirty();
+        const saving = flushSaveQueue({ silent: true });
+        eventBus.emit('rack:changed');
+        try {
+            await saving;
+        } finally {
+            if (dialog === overlay && isSavingShelf) {
+                isSavingShelf = false;
+                shelfSaveTargetViews = null;
+                shelfError.textContent = '棚板の保存を確認できませんでした。保存状態を確認してください。';
+                updateAllStates();
+            }
         }
     }
 
@@ -577,6 +599,12 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
         isDirty,
         hideCandidates: () => deviceInput.hideCandidates(),
         onIdsRemapped(maps) {
+            viewId = mappedResourceId(maps.views, viewId);
+            origin = mappedResourceId(maps.views, origin);
+            dialogViewId = mappedResourceId(maps.views, dialogViewId);
+            if (shelfSaveTargetViews) {
+                shelfSaveTargetViews = new Set([...shelfSaveTargetViews].map(id => Number(mappedResourceId(maps.views, id))));
+            }
             const snapshot = JSON.parse(initialSnapshot);
             for (const shelf of [snapshot[0], ...snapshot[1]].filter(Boolean)) {
                 shelf.id = mappedResourceId(maps.rack_shelves, shelf.id);
@@ -591,6 +619,10 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
                 mount.device_id = mappedResourceId(maps.devices, mount.device_id);
                 mount.view_id = mappedResourceId(maps.views, mount.view_id);
             }
+            snapshot[1] = sortById(snapshot[1]);
+            snapshot[2] = sortByDeviceId(snapshot[2]);
+            snapshot[3] = sortById(snapshot[3]);
+            snapshot[4] = sortByDeviceId(snapshot[4]);
             initialSnapshot = JSON.stringify(snapshot);
             if (currentShelfId != null && maps.rack_shelves?.[currentShelfId] != null) {
                 currentShelfId = Number(maps.rack_shelves[currentShelfId]);
@@ -605,48 +637,50 @@ export function openShelfDialog({ viewId, face = 'front', startU = 1, heightU = 
             updateAllStates();
         },
         onResourcesSaved(data) {
+            const savedShelf = isSavingShelf && data?.rack_shelves?.find(row => eq(row.id, currentShelfId));
+            if (savedShelf &&
+                [...shelfSaveTargetViews].every(id => data.views.some(row => eq(row.id, id)))) {
+                isSavingShelf = false;
+                shelfSaveTargetViews = null;
+                waitingCreation = false;
+                membershipSnapshotChanged = false;
+                if (!eq(savedShelf.view_id, viewId)) {
+                    closeShelfDialog();
+                    showToast('棚板の設定を保存しました');
+                    return;
+                }
+                previous = shelfById(currentShelfId);
+                if (previous) {
+                    baselineSnapshot = JSON.stringify({
+                        name: previous.name,
+                        view_id: previous.view_id,
+                        start_u: previous.start_u,
+                        height_u: previous.height_u,
+                        face: previous.face,
+                        depth: previous.depth
+                    });
+                    initialSnapshot = shelfSnapshot();
+                }
+                updateAllStates();
+                showToast('棚板の設定を保存しました');
+                return;
+            }
             if (!membershipSnapshotChanged && !isAddingDevice) return;
             const snapshot = JSON.parse(initialSnapshot);
             for (const view of snapshot[3]) {
                 const saved = data.views.find(row => eq(row.id, view.id));
                 if (saved) view.resource_revision = saved.resource_revision;
             }
+            snapshot[3] = sortById(snapshot[3]);
             initialSnapshot = JSON.stringify(snapshot);
             membershipSnapshotChanged = false;
         },
-        onSaveStateChanged(state) {
-            if (!isCurrentUserAdmin() || appState.authExpired || appState.appStatus.state === 'unconfirmed' || hasResourceConflict('views', origin)) {
+        onSaveStateChanged() {
+            if (!isCurrentUserAdmin() || appState.authExpired || appState.appStatus?.state === 'unconfirmed' || hasResourceConflict('views', origin)) {
                 closeShelfDialog();
                 return;
             }
-            if (isSaveInFlight()) return;
-
-            if (isSavingShelf) {
-                if (state === 'saved') {
-                    isSavingShelf = false;
-                    waitingCreation = false;
-                    previous = shelfById(currentShelfId);
-                    if (previous) {
-                        baselineSnapshot = JSON.stringify({
-                            name: previous.name,
-                            view_id: previous.view_id,
-                            start_u: previous.start_u,
-                            height_u: previous.height_u,
-                            face: previous.face,
-                            depth: previous.depth
-                        });
-                        initialSnapshot = JSON.stringify([previous, shelves(), members(), appState.views, appState.rackMounts]);
-                    }
-                    updateAllStates();
-                    showToast('棚板の設定を保存しました');
-                } else if (state === 'error' || state === 'conflict') {
-                    isSavingShelf = false;
-                    shelfError.textContent = '棚板の保存に失敗しました。再試行してください。';
-                    updateAllStates();
-                }
-            } else {
-                updateAllStates();
-            }
+            if (!isSaveInFlight()) updateAllStates();
         }
     };
 
@@ -673,8 +707,11 @@ function openShelfDeviceDialog(shelfId) {
     if (!requireAdminUiAction() || !shelf || !shelfEditable([shelf.view_id]) || !eq(shelf.view_id, appState.currentViewId)) return;
     openShelfDialog({ viewId: shelf.view_id, shelfId: shelf.id });
 }
-export function closeShelfPanel() {
-    closeShelfDeviceDialog(); closeShelfDialog();
+export function closeShelfPanel({ keepDialog = false } = {}) {
+    if (!keepDialog) {
+        closeShelfDeviceDialog();
+        closeShelfDialog();
+    }
     document.getElementById('rack-shelf-panel')?.remove(); selectedShelfId = null;
 }
 export async function showShelfPanel(id) {
@@ -695,7 +732,7 @@ export async function showShelfPanel(id) {
 }
 function renderShelfPanel() {
     document.getElementById('rack-shelf-panel')?.remove();
-    const shelf = shelfById(selectedShelfId); if (!shelf || !eq(shelf.view_id, appState.currentViewId)) { closeShelfPanel(); return; }
+    const shelf = shelfById(selectedShelfId); if (!shelf || !eq(shelf.view_id, appState.currentViewId)) { closeShelfPanel({ keepDialog: Boolean(activeShelfDialog) }); return; }
     const panel = el('aside', 'rack-shelf-panel'); panel.id = 'rack-shelf-panel'; panel.setAttribute('aria-label', '棚板の詳細');
     const header = el('div', 'panel-header'), title = el('h3', 'rack-shelf-panel-title'), icon = el('img', 'rack-shelf-icon');
     icon.src = 'assets/icons/toolbar/shelf.svg'; icon.alt = ''; title.append(icon, el('span', '', shelf.name));
@@ -741,8 +778,8 @@ function renderShelfPanel() {
     document.body.appendChild(panel);
 }
 eventBus.on('rack:changed', () => { if (selectedShelfId != null) renderShelfPanel(); });
-eventBus.on('save-state:changed', state => {
-    if (activeShelfDialog) activeShelfDialog.onSaveStateChanged(state);
+eventBus.on('save-state:changed', () => {
+    if (activeShelfDialog) activeShelfDialog.onSaveStateChanged();
     else if (!shelfEditable()) setShelfAdding(false);
     if (selectedShelfId != null) renderShelfPanel();
 });
@@ -755,6 +792,18 @@ eventBus.on('resources:ids-remapped', maps => {
     }
 });
 eventBus.on('device-panel:opened', closeShelfPanel);
+eventBus.on('resources:reloaded', () => {
+    setShelfAdding(false);
+    closeShelfDialog();
+    closeShelfPanel();
+});
+eventBus.on('resource:reloaded', ({ kind, id }) => {
+    if (kind !== 'views') return;
+    if (dialog && (eq(id, dialogViewId) || eq(id, appState.currentViewId))) {
+        closeShelfDialog();
+    }
+    if (selectedShelfId != null) renderShelfPanel();
+});
 eventBus.on('canvas:render-complete', () => {
     if (dialog && !eq(dialogViewId, appState.currentViewId)) closeShelfDialog();
     if (getCurrentView()?.view_type !== 'rack' || (selectedShelfId != null && !eq(shelfById(selectedShelfId)?.view_id, appState.currentViewId))) { setShelfAdding(false); closeShelfDialog(); closeShelfPanel(); }

@@ -35,3 +35,24 @@ test('追加IPは管理IP空欄を許可し、IPv4・機器内重複・用途100
     assert.ok(validateDeviceValues({ ...input, ip: '192.0.2.8' }).errors.additional_ips);
     assert.ok(validateDeviceValues({ ...input, additional_ips: [...input.additional_ips, { ip: '192.0.2.8', label: '' }] }).errors.additional_ips);
 });
+
+test('設置フロアの解除と正整数を検証し、旧施設・階の原文を保持する', () => {
+    const input = { name: '試験機器', facility: ' 旧施設 ', floor: '　旧階　', floor_id: 12 };
+    const result = validateDeviceValues(input);
+    assert.deepEqual(result.errors, {});
+    assert.equal(result.values.floor_id, 12);
+    assert.equal(result.values.facility, input.facility);
+    assert.equal(result.values.floor, input.floor);
+    const paddedLimit = validateDeviceValues({
+        ...input,
+        facility: ` ${'棟'.repeat(100)} `,
+        floor: `　${'階'.repeat(50)} `
+    });
+    assert.deepEqual(paddedLimit.errors, {});
+    assert.equal(paddedLimit.values.facility, ` ${'棟'.repeat(100)} `);
+    assert.equal(paddedLimit.values.floor, `　${'階'.repeat(50)} `);
+    assert.equal(validateDeviceValues({ ...input, floor_id: '' }).values.floor_id, null);
+    for (const floor_id of [0, -1, 1.5, '12', NaN]) {
+        assert.ok(validateDeviceValues({ ...input, floor_id }).errors.floor_id);
+    }
+});

@@ -103,12 +103,14 @@ class PingService
         $failurePatterns = [
             '/Request\s+timed\s+out/i',
             '/Destination\s+(host|net|network)\s+unreachable/i',
+            '/TTL\s+expired\s+in\s+transit/i',
             '/General\s+failure/i',
             '/could\s+not\s+find\s+host/i',
             '/transmit\s+failed/i',
             '/要求がタイムアウト/u',
             '/宛先ホストに到達できません/u',
             '/宛先ネットワークに到達できません/u',
+            '/転送中に\s*TTL\s*が期限切れ/u',
             '/一般エラー/u',
             '/ホストが見つかりません/u',
             '/転送に失敗/u',
@@ -167,7 +169,7 @@ class PingService
         }
 
         $isUnreachable = preg_match(
-            '/Destination (?:Host|Net|Network) Unreachable|Network is unreachable|Operation not permitted/i',
+            '/Destination (?:Host|Net|Network) Unreachable|Network is unreachable|Operation not permitted|Time to live exceeded|TTL expired in transit/i',
             $text
         ) === 1;
         $isTimeout = !$isUnreachable && preg_match(
@@ -220,6 +222,10 @@ class PingService
             return '';
         }
 
+        if (preg_match('//u', $text) === 1) {
+            return $text;
+        }
+
         /*
          * Windows日本語環境のコマンド出力は、
          * 通常CP932またはSJIS-win。
@@ -268,7 +274,7 @@ class PingService
             $lines,
             static function ($line): bool {
                 return preg_match(
-                    '/timed\s+out|unreachable|failure|could\s+not\s+find\s+host|transmit\s+failed|タイムアウト|到達できません|一般エラー|ホストが見つかりません|転送に失敗/iu',
+                    '/timed\s+out|unreachable|failure|TTL\s+expired|Time\s+to\s+live\s+exceeded|could\s+not\s+find\s+host|transmit\s+failed|タイムアウト|到達できません|TTL\s*が期限切れ|一般エラー|ホストが見つかりません|転送に失敗/iu',
                     (string)$line
                 ) === 1;
             }

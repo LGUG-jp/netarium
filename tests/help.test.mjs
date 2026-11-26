@@ -371,3 +371,65 @@ test('タブ閉鎖: native closeで例外が発生しても案内を表示する
     await btn.dispatch('click');
     assert.equal(notice.hidden, false);
 });
+
+test('ヘルプ6ページ: 内部リンク・アンカー・画像参照と旧アンカーリダイレクトが整合する', () => {
+    const publicDir = new URL('../public/', import.meta.url);
+    const pages = ['help.html', 'help-canvas.html', 'help-devices.html', 'help-views.html', 'help-insights.html', 'help-admin.html'];
+    const idsByPage = new Map();
+    const htmlByPage = new Map();
+
+    for (const page of pages) {
+        const html = readFileSync(new URL(page, publicDir), 'utf8');
+        htmlByPage.set(page, html);
+        const ids = new Set();
+        for (const match of html.matchAll(/\sid="([^"]+)"/g)) ids.add(match[1]);
+        idsByPage.set(page, ids);
+
+        for (const match of html.matchAll(/<img[^>]+src="([^"]+)"/g)) {
+            const src = match[1];
+            assert.doesNotThrow(() => readFileSync(new URL(src, publicDir)), `${page}: 画像が見つかりません (${src})`);
+        }
+        for (const match of html.matchAll(/<a[^>]+href="(assets\/[^"]+)"/g)) {
+            const href = match[1];
+            assert.doesNotThrow(() => readFileSync(new URL(href, publicDir)), `${page}: 拡大画像リンクが見つかりません (${href})`);
+        }
+        for (const match of html.matchAll(/href="(help[^"#]*)(#[^"]+)?"/g)) {
+            const targetPage = match[1] || page;
+            const anchor = match[2]?.slice(1);
+            assert.ok(idsByPage.has(targetPage) || pages.includes(targetPage), `${page}: 不明な遷移先 (${targetPage})`);
+            if (anchor) {
+                const targetHtml = htmlByPage.get(targetPage) ?? readFileSync(new URL(targetPage, publicDir), 'utf8');
+                assert.ok(targetHtml.includes(`id="${anchor}"`), `${page}: ${targetPage}#${anchor} のアンカーがありません`);
+            }
+        }
+    }
+
+    const { LEGACY_ANCHORS, handleLegacyAnchorRedirect } = runInNewContext(`${helpScript}\n({ LEGACY_ANCHORS, handleLegacyAnchorRedirect });`);
+    for (const [legacyId, dest] of Object.entries(LEGACY_ANCHORS)) {
+        const [destPage, destAnchor] = dest.split('#');
+        assert.ok(pages.includes(destPage), `LEGACY_ANCHORS[${legacyId}]: 不明なページ (${destPage})`);
+        assert.ok(idsByPage.get(destPage)?.has(destAnchor), `LEGACY_ANCHORS[${legacyId}]: ${dest} のアンカーがありません`);
+
+        let replaced = null;
+        handleLegacyAnchorRedirect({
+            location: {
+                pathname: '/help.html',
+                hash: `#${legacyId}`,
+                replace(url) { replaced = url; }
+            }
+        });
+        assert.equal(replaced, dest);
+    }
+
+    for (const inheritedKey of ['toString', 'constructor', 'valueOf', '__proto__']) {
+        let replaced = null;
+        handleLegacyAnchorRedirect({
+            location: {
+                pathname: '/help.html',
+                hash: `#${inheritedKey}`,
+                replace(url) { replaced = url; }
+            }
+        });
+        assert.equal(replaced, null, `継承プロパティ #${inheritedKey} ではリダイレクトしない`);
+    }
+});

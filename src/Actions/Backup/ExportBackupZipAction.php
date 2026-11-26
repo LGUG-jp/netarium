@@ -6,6 +6,7 @@ namespace Netarium\Actions\Backup;
 use PDO;
 use Throwable;
 use Netarium\Actions\ActionInterface;
+use Netarium\Core\ApiException;
 use Netarium\Core\AuditLog;
 use Netarium\Core\Request;
 use Netarium\Services\Backup\BackupService;
@@ -27,7 +28,7 @@ class ExportBackupZipAction implements ActionInterface
         } catch (Throwable $e) {
             AuditLog::finish('failure', [
                 'target_type' => 'backup',
-            ], 500);
+            ], $e instanceof ApiException ? $e->getHttpStatus() : 500);
 
             error_log(sprintf(
                 '[Netarium ExportBackupZip] Export failed: request_id=%s %s: %s',

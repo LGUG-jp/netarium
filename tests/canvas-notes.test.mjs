@@ -88,7 +88,7 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         return new Response(JSON.stringify({ ok: true, revision: requests.length + 1, saved_at: '2026-10-06T00:00:00Z',
             id_maps: { devices: {}, views: {}, placements: {}, links: {}, canvas_notes: Object.fromEntries(payload.views.flatMap(v => v.canvas_notes ?? []).map(n => [n.id, n.id])) },
             devices: [], views: payload.views.map(v => ({ ...v.view, resource_revision: (v.expected_revision || 0) + 1 })),
-            placements: [], links: [], canvas_notes: payload.views.flatMap(v => v.canvas_notes ?? []),
+            placements: [], view_link_routes: [], canvas_notes: payload.views.flatMap(v => v.canvas_notes ?? []),
             rack_settings: payload.views.flatMap(v => v.rack_settings ? [v.rack_settings] : []),
             rack_mounts: payload.views.flatMap(v => v.rack_mounts || []),
             affected_view_ids: payload.views.map(v => v.id), deleted_device_ids: [], deleted_view_ids: [] }));
@@ -152,6 +152,8 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
 
     await t.test('補助平面文字も1000文字まで入力・保存でき、1001文字は保存せず入力を保持する', async () => {
         setup(); await notes.toggleCanvasNoteMode();
+        appState.views.push({ id: 2, resource_revision: 1, name: '別ビュー', view_type: 'topology' });
+        resource.resetResourceBaseline(appState);
         await renderer.onCanvasClick({ target: appState.canvas, clientX: 110, clientY: 120 });
         const textarea = currentElement().querySelector('textarea');
         const text = '𠀀'.repeat(1000);
@@ -164,12 +166,32 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         await oversized.typeText(text + '𠀀');
         await key('Enter', oversized, { ctrlKey: true }); await settle();
         assert.equal(requests.length, 1);
-        assert.equal(appState.canvasNotes[0].text, text + '𠀀');
+        assert.equal(appState.canvasNotes[0].text, text);
+        assert.equal(document.activeElement, oversized);
+        assert.equal(oversized.value, text + '𠀀');
+        assert.equal(oversized.getAttribute('aria-invalid'), 'true');
+        assert.equal(notes.hasUnappliedCanvasNoteText(), true);
+
+        notes.finishCanvasNotes('view');
+        appState.currentViewId = 2;
+        notes.renderCanvasNotes();
+        appState.views.find(view => view.id === 2).name = '別ビューを変更';
+        await settle();
+        assert.deepEqual(requests[1].views.map(view => view.id), [2]);
+        assert.equal(requests[1].views[0].view.name, '別ビューを変更');
+
+        appState.currentViewId = 1;
+        notes.renderCanvasNotes();
+        assert.equal(currentElement().querySelector('.canvas-note-text').textContent, text);
+        await notes.selectCanvasNote(appState.canvasNotes[0].id);
         notes.beginCanvasNoteText();
         const corrected = currentElement().querySelector('textarea');
+        assert.equal(corrected.value, text + '𠀀');
         await corrected.typeText(text.slice(2));
+        assert.equal(corrected.getAttribute('aria-invalid'), null);
         await key('Enter', corrected, { ctrlKey: true }); await settle();
         assert.equal(requests.at(-1).views[0].canvas_notes[0].text, text.slice(2));
+        assert.equal(notes.hasUnappliedCanvasNoteText(), false);
     });
     await t.test('新規入力を直ちに開始し、入力中のDelete/Ctrl+K/IMEをcanvasへ渡さず確定時だけ保存', async () => {
         setup(); await notes.toggleCanvasNoteMode();
@@ -190,6 +212,18 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         for (const target of [currentElement(), element('note-finish-btn'), new Node('input')]) await renderer.onCanvasClick({ target, clientX: 300, clientY: 300 });
         assert.equal(appState.canvasNotes.length, before);
         await key('Escape', document.activeElement); await settle(); assert.equal(appState.noteMode, false);
+    });
+    await t.test('メモ選択中もフッターの表示操作に Enter を渡す', async () => {
+        setup(); await create();
+        assert.equal(appState.selectedCanvasNoteId, appState.canvasNotes[0].id);
+        const controls = new Node('div', 'canvas-view-controls');
+        const zoom = controls.appendChild(new Node('button', 'zoom-in-btn'));
+        zoom.focus();
+        let prevented = false;
+        await key('Enter', zoom, { preventDefault() { prevented = true; } });
+        assert.equal(prevented, false);
+        assert.equal(currentElement().querySelector('textarea'), null);
+        assert.equal(document.activeElement, zoom);
     });
     await t.test('保存中の再描画でも本文下書きとフォーカスを保持しblurで確定', async () => {
         setup(); const note = await create('元');
@@ -295,6 +329,11 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         showCanvasContextToolbar('floor-plan', () => {}); await settle();
         assert.equal(appState.canvasNotes[0].text, '切替時に確定'); assert.equal(appState.selectedCanvasNoteId, null);
         assert.equal(element('canvas-context-toolbar').dataset.activeContext, 'floor-plan');
+        await notes.selectCanvasNote(appState.canvasNotes[0].id);
+        appState.editingLinkGroupKey = '1:1:2';
+        notes.renderCanvasNotes();
+        assert.equal(appState.selectedCanvasNoteId, null);
+        appState.editingLinkGroupKey = null;
         await notes.toggleCanvasNoteMode(); await enterPlacementMode(); assert.equal(appState.noteMode, false);
     });
     await t.test('Delete確認の取消・削除とviewerの読取専用、click時に背景色ボタンへフォーカスを奪われない', async () => {
@@ -370,6 +409,28 @@ test('キャンバスメモの作成・編集・座標・保存・権限', async
         assert.equal(requests.at(-1).views[0].canvas_notes[0].text, editor.value);
         assert.equal(rackEditors()[0], editor);
         assert.equal(appState.rackMounts.length, 0);
+    });
+    await t.test('ラックメモの過長入力は別のメモを保存しても残り、修正後に保存できる', async () => {
+        const { DEFAULT_CANVAS_NOTE } = await import('../public/js/core/canvas-note-data.js');
+        setupRack([
+            { ...DEFAULT_CANVAS_NOTE, id: 11, view_id: 1, text: '保存済み' },
+            { ...DEFAULT_CANVAS_NOTE, id: 12, view_id: 1, text: '別のメモ' }
+        ]);
+        const [editor, other] = rackEditors();
+        const oversized = '𠀀'.repeat(1001);
+        await editor.typeText(oversized); await editor.dispatch('blur');
+        assert.equal(editor.value, oversized);
+        assert.equal(editor.getAttribute('aria-invalid'), 'true');
+        assert.equal(requests.length, 0);
+
+        await other.typeText('別のメモを修正'); await other.dispatch('blur'); await settle();
+        assert.deepEqual(requests[0].views[0].canvas_notes.map(note => note.text), ['保存済み', '別のメモを修正']);
+        assert.equal(rackEditors()[0].value, oversized);
+
+        const restored = rackEditors()[0];
+        await restored.typeText('修正済み'); await restored.dispatch('blur'); await settle();
+        assert.deepEqual(requests[1].views[0].canvas_notes.map(note => note.text), ['修正済み', '別のメモを修正']);
+        assert.equal(restored.getAttribute('aria-invalid'), null);
     });
     await t.test('複数の既存メモは本文・色・書式・座標を保持し、個別編集とビュー切替に対応する', async () => {
         const { DEFAULT_CANVAS_NOTE } = await import('../public/js/core/canvas-note-data.js');

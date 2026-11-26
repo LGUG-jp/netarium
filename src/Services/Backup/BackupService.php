@@ -16,16 +16,23 @@ use Netarium\Core\ResourceId;
 use Netarium\Repositories\AppMetaRepository;
 use Netarium\Services\FloorPlan\FloorPlanService;
 use Netarium\Services\Storage\CapacityService;
+use Netarium\Services\Quality\QualityNotApplicable;
 use Netarium\Services\Topology\DeviceFields;
 use Netarium\Services\Topology\LinkRoute;
 use Netarium\Services\Topology\CanvasNote;
 use Netarium\Services\Topology\LinkSystemService;
 use Netarium\Services\Topology\ChangeHistoryService;
 use Netarium\Services\Topology\DeviceConfigService;
+use Netarium\Services\Topology\BuildingHierarchyService;
+use Netarium\Services\Topology\LegacyLinkMigration;
+use Netarium\Services\Topology\ConnectionSaveService;
 
 
 class BackupService
 {
+    private const QUALITY_NOT_APPLICABLE_QUERY = 'SELECT device_id, link_id, field FROM quality_not_applicable
+        ORDER BY device_id, link_id, field';
+
     private PDO $db;
     private AppMetaRepository $appMetaRepo;
 
@@ -187,7 +194,7 @@ class BackupService
                 floor,
                 view_type,
                 sort_order,
-                memo
+                memo" . ($schemaVersion >= 24 ? ', floor_id' : '') . ($schemaVersion >= 27 ? ', show_connections' : '') . "
             FROM views
             ORDER BY sort_order, id
         ")->fetchAll();
@@ -215,7 +222,7 @@ class BackupService
                 department,
                 maintenance_vendor,
                 install_date,
-                maintenance_expiry" . ($schemaVersion >= 18 ? ', ip_segment_id' : '') . "
+                maintenance_expiry" . ($schemaVersion >= 18 ? ', ip_segment_id' : '') . ($schemaVersion >= 25 ? ', floor_id' : '') . "
             FROM devices
             ORDER BY id
         ")->fetchAll();
@@ -242,29 +249,17 @@ class BackupService
             ORDER BY id
         ")->fetchAll();
 
-        $links = $this->db->query("
-            SELECT
-                id,
-                view_id,
-                from_id,
-                to_id,
-                system_id,
-                label,
-                from_port,
-                to_port,
-                vlan,
-                memo,
-                route_mode,
-                manual_route
-            FROM links
-            ORDER BY id
-        ")->fetchAll();
-
-        foreach ($links as &$link) {
-            $link['manual_route'] = json_decode((string)$link['manual_route'], true, 512, JSON_THROW_ON_ERROR);
-            $link = array_merge($link, LinkRoute::normalize($link));
+        if ($schemaVersion >= 27) {
+            $links = $this->db->query('SELECT * FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $links = $this->db->query('SELECT id, view_id, from_id, to_id, system_id, label, from_port, to_port,
+                vlan, memo, route_mode, manual_route FROM links ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($links as &$link) {
+                $link['manual_route'] = Request::decodeJson($link['manual_route']);
+                $link = array_replace($link, LinkRoute::normalize($link));
+            }
+            unset($link);
         }
-        unset($link);
 
         $floorPlans = $this->db->query("
             SELECT
@@ -370,6 +365,47 @@ class BackupService
                 // Web構成情報ZIPは各機器の直近1世代のみ。採番状態は空履歴の機器も含めて保持する。
                 'device_configs' => $this->db->query('SELECT id, device_id, generation, content, created_at, actor_user_id, actor_name, memo FROM device_configs AS config WHERE id = (SELECT latest.id FROM device_configs AS latest WHERE latest.device_id = config.device_id ORDER BY latest.created_at DESC, latest.generation DESC LIMIT 1) ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
             ] : []),
+            ...($schemaVersion >= 24 ? [
+                'buildings' => $this->db->query('SELECT id, name, sort_order'
+                    . ($schemaVersion >= 26 ? ', building_view_enabled' : '')
+                    . ' FROM buildings ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
+                'floors' => $this->db->query('SELECT id, building_id, name, sort_order, representative_view_id, scale, offset_x, offset_y, rotation FROM floors ORDER BY sort_order, id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+            ...($schemaVersion >= 27 ? $this->fetchBackupConnectionTables($schemaVersion) : []),
+            ...($schemaVersion >= 29 ? [
+                'quality_not_applicable' => $this->db->query(self::QUALITY_NOT_APPLICABLE_QUERY)->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
+        ];
+    }
+
+    private function qualityNotApplicableFingerprint(): string
+    {
+        $hash = hash_init('sha256');
+        $rows = $this->db->query(self::QUALITY_NOT_APPLICABLE_QUERY);
+        while (($row = $rows->fetch(PDO::FETCH_NUM)) !== false) {
+            hash_update($hash, json_encode($row, JSON_THROW_ON_ERROR));
+        }
+        return hash_final($hash);
+    }
+
+    /** Connection tables shared by the Web archive and full database contract. */
+    public function fetchBackupConnectionTables(int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): array
+    {
+        $routes = $this->db->query('SELECT * FROM view_link_routes ORDER BY view_id, device_a_id, device_b_id')->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($routes as &$route) { $route['manual_route'] = Request::decodeJson($route['manual_route']); }
+        unset($route);
+        $conflicts = $this->db->query('SELECT * FROM legacy_link_conflicts ORDER BY legacy_link_id')->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($conflicts as &$conflict) { $conflict['payload'] = Request::decodeJson($conflict['payload']); }
+        unset($conflict);
+        return [
+            'device_ports' => $this->db->query('SELECT * FROM device_ports ORDER BY id')->fetchAll(PDO::FETCH_ASSOC),
+            'view_link_routes' => $routes,
+            'legacy_link_conflicts' => $conflicts,
+            'resource_sequences' => $this->db->query("SELECT name, value FROM resource_sequences
+                WHERE name IN ('device_ports', 'links') ORDER BY name")->fetchAll(PDO::FETCH_ASSOC),
+            ...($schemaVersion >= 28 ? [
+                'legacy_link_vlans' => $this->db->query('SELECT link_id, vlan FROM legacy_link_vlans ORDER BY link_id')->fetchAll(PDO::FETCH_ASSOC),
+            ] : []),
         ];
     }
 
@@ -464,6 +500,14 @@ class BackupService
                 'change_history' => count($tables['change_history']),
                 'device_configs' => count($tables['device_configs']),
                 'device_config_states' => count($tables['device_config_states']),
+                'buildings' => count($tables['buildings']),
+                'floors' => count($tables['floors']),
+                'device_ports' => count($tables['device_ports']),
+                'view_link_routes' => count($tables['view_link_routes']),
+                'legacy_link_conflicts' => count($tables['legacy_link_conflicts']),
+                'legacy_link_vlans' => count($tables['legacy_link_vlans']),
+                'quality_not_applicable' => count($tables['quality_not_applicable']),
+                'resource_sequences' => count($tables['resource_sequences']),
                 'files' => 1,
                 'total_bytes' => $entry['size'],
             ],
@@ -946,7 +990,11 @@ class BackupService
                 $schemaVersion >= 17 ? ['device_ip_addresses'] : [],
                 $schemaVersion >= 18 ? ['address_spaces', 'ip_segments'] : [],
                 $schemaVersion >= 19 ? ['change_history'] : [],
-                $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : []),
+                $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : [],
+                $schemaVersion >= 24 ? ['buildings', 'floors'] : [],
+                $schemaVersion >= 27 ? ['device_ports', 'view_link_routes', 'legacy_link_conflicts', 'resource_sequences'] : [],
+                $schemaVersion >= 28 ? ['legacy_link_vlans'] : [],
+                $schemaVersion >= 29 ? ['quality_not_applicable'] : []),
             'manifest.summary'
         );
 
@@ -1069,6 +1117,20 @@ class BackupService
         return $text;
     }
 
+    private function requireLegacyLocation(mixed $value, string $field, int $maxLength): string
+    {
+        $this->requireJsonString($value, $field, $maxLength);
+        return $value;
+    }
+
+    private function requireBackupFlag(mixed $value, string $field): int
+    {
+        if ($value !== 0 && $value !== 1) {
+            throw new ApiException("{$field}は0または1の整数である必要があります", 400);
+        }
+        return $value;
+    }
+
     public function requireExactBackupKeys(array $row, array $expectedKeys, string $label): void
     {
         $keys = array_keys($row);
@@ -1160,6 +1222,8 @@ class BackupService
         }
 
         $expectedKeys = ['id', 'resource_revision', 'name', 'facility', 'floor', 'view_type', 'sort_order', 'memo'];
+        if ($schemaVersion >= 24) { $expectedKeys[] = 'floor_id'; }
+        if ($schemaVersion >= 27) { $expectedKeys[] = 'show_connections'; }
         $viewsById = [];
 
         foreach ($views as $view) {
@@ -1186,11 +1250,13 @@ class BackupService
                 'id' => $id,
                 'resource_revision' => $this->requireJsonInteger($view['resource_revision'], 'views.resource_revision', 1),
                 'name' => $name,
-                'facility' => $this->requireJsonString($view['facility'] ?? '', 'views.facility', 100, true),
-                'floor' => $this->requireJsonString($view['floor'] ?? '', 'views.floor', 50, true),
+                'facility' => $this->requireLegacyLocation($view['facility'], 'views.facility', 100),
+                'floor' => $this->requireLegacyLocation($view['floor'], 'views.floor', 50),
                 'view_type' => $type,
                 'sort_order' => $this->requireJsonInteger($view['sort_order'], 'views.sort_order', -10000, 10000),
                 'memo' => $this->requireJsonString($view['memo'] ?? '', 'views.memo', 1000, true),
+                ...($schemaVersion >= 24 ? ['floor_id' => $view['floor_id']] : []),
+                ...($schemaVersion >= 27 ? ['show_connections' => $this->requireBackupFlag($view['show_connections'], 'views.show_connections')] : []),
             ];
         }
 
@@ -1206,6 +1272,7 @@ class BackupService
             'resource_revision',
         ];
         if ($schemaVersion >= 18) { $expectedKeys[] = 'ip_segment_id'; }
+        if ($schemaVersion >= 25) { $expectedKeys[] = 'floor_id'; }
 
         $devicesById = [];
         $allowedTypes = [
@@ -1248,10 +1315,11 @@ class BackupService
                 'type' => $type,
                 'ip' => $ip,
                 ...($schemaVersion >= 18 ? ['ip_segment_id' => $this->backupSegmentId($device['ip_segment_id'], 'devices.ip_segment_id')] : []),
+                ...($schemaVersion >= 25 ? ['floor_id' => $device['floor_id']] : []),
                 'x' => $this->requireJsonNumber($device['x'], 'devices.x'),
                 'y' => $this->requireJsonNumber($device['y'], 'devices.y'),
-                'facility' => $this->requireJsonString($device['facility'] ?? '', 'devices.facility', 100, true),
-                'floor' => $this->requireJsonString($device['floor'] ?? '', 'devices.floor', 50, true),
+                'facility' => $this->requireLegacyLocation($device['facility'], 'devices.facility', 100),
+                'floor' => $this->requireLegacyLocation($device['floor'], 'devices.floor', 50),
                 'location' => $this->requireJsonString($device['location'] ?? '', 'devices.location', 150, true),
                 'manufacturer' => $this->requireJsonString($device['manufacturer'] ?? '', 'devices.manufacturer', 100, true),
                 'model' => $this->requireJsonString($device['model'] ?? '', 'devices.model', 100, true),
@@ -1571,6 +1639,7 @@ class BackupService
         array $placements,
         array $systems = []
     ): array {
+        if (!array_is_list($links)) { throw new ApiException('linksの一覧形式が不正です', 400); }
         $expectedKeys = ['id', 'view_id', 'from_id', 'to_id', 'system_id', 'label', 'from_port', 'to_port', 'vlan', 'memo', 'route_mode', 'manual_route'];
         $result = [];
         $seenLinkIds = [];
@@ -1622,17 +1691,182 @@ class BackupService
                 'from_id' => $fromId,
                 'to_id' => $toId,
                 'system_id' => LinkSystemService::normalizeSystemId($row['system_id'], $systems),
-                'label' => $this->requireJsonString($row['label'] ?? '', 'links.label', 100, true),
-                'from_port' => $this->requireJsonString($row['from_port'] ?? '', 'links.from_port', 50, true),
-                'to_port' => $this->requireJsonString($row['to_port'] ?? '', 'links.to_port', 50, true),
-                'vlan' => $this->requireJsonString($row['vlan'] ?? '', 'links.vlan', 100, true),
-                'memo' => $this->requireJsonString($row['memo'] ?? '', 'links.memo', 1000, true),
+                'label' => $this->requireExactBackupString($row['label'], 'links.label', 100),
+                'from_port' => $this->requireExactBackupString($row['from_port'], 'links.from_port', 50),
+                'to_port' => $this->requireExactBackupString($row['to_port'], 'links.to_port', 50),
+                'vlan' => $this->requireExactBackupString($row['vlan'], 'links.vlan', 100),
+                'memo' => $this->requireExactBackupString($row['memo'], 'links.memo', 1000),
                 'route_mode' => $route['route_mode'],
                 'manual_route' => $route['manual_route'],
             ];
         }
 
         return $result;
+    }
+
+    /** Validate the shared Web/full connection contract for the source schema. */
+    public function validateBackupConnectionTables(
+        array $tables, array $deviceIds, array $viewsById, array $systems,
+        int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
+    ): array
+    {
+        $result = [];
+        $portOwners = $portNames = $occupied = $pairs = $unnamedPairs = $linkIds = $legacyIds = $routeKeys = [];
+        $maxIds = ['device_ports' => 0, 'links' => 0];
+        $id = static fn(mixed $value, string $field): int => ResourceId::parse($value, $field, ResourceId::MAX_RESTORE);
+        $keys = [
+            'device_ports' => ['id', 'device_id', 'name', 'memo', 'resource_revision'],
+            'links' => ['id', 'from_id', 'to_id', 'from_port_id', 'to_port_id', 'system_id', 'label', 'memo', 'resource_revision'],
+            'legacy_link_conflicts' => ['legacy_link_id', 'view_id', 'device_a_id', 'device_b_id', 'reason', 'payload'],
+            'view_link_routes' => ['view_id', 'device_a_id', 'device_b_id', 'manual_route'],
+            'resource_sequences' => ['name', 'value'],
+        ];
+        if ($schemaVersion >= 28) {
+            $keys['device_ports'][] = 'vlan';
+            $keys['legacy_link_vlans'] = ['link_id', 'vlan'];
+        } else {
+            $keys['links'][] = 'vlan';
+        }
+        $pendingVlanIds = [];
+        foreach ($keys as $table => $columns) {
+            $rows = $this->requireBackupTable($tables, $table);
+            if (!array_is_list($rows)) { throw new ApiException("{$table}の一覧形式が不正です", 400); }
+            $result[$table] = [];
+            foreach ($rows as $row) {
+                if (!is_array($row)) { throw new ApiException("{$table}の行形式が不正です", 400); }
+                $this->requireExactBackupKeys($row, $columns, $table);
+                if ($table === 'device_ports' || $table === 'links') {
+                    $row['id'] = $id($row['id'], "$table.id");
+                    $row['resource_revision'] = $this->requireJsonInteger($row['resource_revision'], "$table.resource_revision");
+                    $maxIds[$table] = max($maxIds[$table], $row['id']);
+                    $this->requireExactBackupString($row['memo'], "$table.memo", 1000);
+                }
+                switch ($table) {
+                    case 'device_ports':
+                        $deviceId = $row['device_id'] = $id($row['device_id'], 'device_ports.device_id');
+                        $name = $this->requireExactBackupString($row['name'], 'device_ports.name', 50, false);
+                        if ($schemaVersion >= 28 && !ConnectionSaveService::isValidPortVlan($row['vlan'])) {
+                            throw new ApiException('device_ports.vlanは1行・200文字以内で入力してください', 400);
+                        }
+                        if ($schemaVersion >= 28 && trim($row['vlan']) !== $row['vlan']) {
+                            throw new ApiException('device_ports.vlanの前後に空白を含めることはできません', 400);
+                        }
+                        if (!isset($deviceIds[$deviceId]) || LegacyLinkMigration::normalizePortName($name) !== $name
+                            || isset($portOwners[$row['id']]) || isset($portNames[$deviceId][$name])) {
+                            throw new ApiException('機器ポートの所属・名前・IDが不正です', 400);
+                        }
+                        $portOwners[$row['id']] = $deviceId;
+                        $portNames[$deviceId][$name] = true;
+                        break;
+                    case 'links':
+                        if (isset($linkIds[$row['id']])) { throw new ApiException('links.idが重複しています', 400); }
+                        $linkIds[$row['id']] = true;
+                        foreach (['from', 'to'] as $side) {
+                            $deviceField = $side . '_id';
+                            $portField = $side . '_port_id';
+                            $deviceId = $row[$deviceField] = $id($row[$deviceField], "links.$deviceField");
+                            if (!isset($deviceIds[$deviceId])) {
+                                throw new ApiException('linksが存在しない機器を参照しています', 400);
+                            }
+                            if ($row[$portField] === null) { continue; }
+                            $portId = $row[$portField] = $id($row[$portField], "links.$portField");
+                            if (($portOwners[$portId] ?? null) !== $deviceId || isset($occupied[$portId])) {
+                                throw new ApiException('接続ポートの所属または占有状態が不正です', 400);
+                            }
+                            $occupied[$portId] = true;
+                        }
+                        $a = min($row['from_id'], $row['to_id']);
+                        $b = max($row['from_id'], $row['to_id']);
+                        if ($a === $b) { throw new ApiException('同一機器間の接続は登録できません', 400); }
+                        if ($row['from_port_id'] === null && $row['to_port_id'] === null) {
+                            if (isset($unnamedPairs[$a][$b])) { throw new ApiException('ポート未指定の接続が重複しています', 400); }
+                            $unnamedPairs[$a][$b] = true;
+                        }
+                        $pairs[$a][$b] = true;
+                        $row['system_id'] = LinkSystemService::normalizeSystemId($row['system_id'], $systems);
+                        $this->requireExactBackupString($row['label'], 'links.label', 100);
+                        if ($schemaVersion < 28) {
+                            $this->requireExactBackupString($row['vlan'], 'links.vlan', 100);
+                        }
+                        break;
+                    case 'view_link_routes':
+                    case 'legacy_link_conflicts':
+                        $viewId = $row['view_id'] = $id($row['view_id'], "$table.view_id");
+                        $a = $row['device_a_id'] = $id($row['device_a_id'], "$table.device_a_id");
+                        $b = $row['device_b_id'] = $id($row['device_b_id'], "$table.device_b_id");
+                        if ($a >= $b) { throw new ApiException("{$table}の機器ペアが不正です", 400); }
+                        if ($table === 'view_link_routes') {
+                            if (!isset($viewsById[$viewId], $deviceIds[$a], $deviceIds[$b], $pairs[$a][$b])
+                                || ($viewsById[$viewId]['view_type'] ?? '') === 'rack' || isset($routeKeys[$viewId][$a][$b])) {
+                                throw new ApiException('ビューの手動経路の参照または重複が不正です', 400);
+                            }
+                            $routeKeys[$viewId][$a][$b] = true;
+                            $row['manual_route'] = LinkRoute::normalize(['route_mode' => 'manual', 'manual_route' => $row['manual_route']])['manual_route'];
+                        } else {
+                            $legacyId = $row['legacy_link_id'] = $id($row['legacy_link_id'], 'legacy_link_conflicts.legacy_link_id');
+                            if (isset($legacyIds[$legacyId]) || isset($linkIds[$legacyId])) {
+                                throw new ApiException('移行保留接続のIDが重複しています', 400);
+                            }
+                            $this->validateBackupLegacyConflict($row);
+                            $legacyIds[$legacyId] = true;
+                            $maxIds['links'] = max($maxIds['links'], $legacyId);
+                            $pairs[$a][$b] = true;
+                        }
+                        break;
+                    case 'resource_sequences':
+                        $name = $row['name'];
+                        $value = $row['value'];
+                        if (!is_string($name) || !isset($maxIds[$name]) || !is_int($value)
+                            || $value < $maxIds[$name] || $value > ResourceId::MAX_RESTORE) {
+                            throw new ApiException('接続の採番状態が不正です', 400);
+                        }
+                        unset($maxIds[$name]);
+                        break;
+                    case 'legacy_link_vlans':
+                        $linkId = $row['link_id'];
+                        if (!is_int($linkId)) {
+                            throw new ApiException('legacy_link_vlans.link_id は整数である必要があります', 400);
+                        }
+                        $id($linkId, 'legacy_link_vlans.link_id');
+                        $vlan = $this->requireExactBackupString($row['vlan'], 'legacy_link_vlans.vlan', 100);
+                        if (!self::hasLegacyVlan($vlan) || !isset($linkIds[$linkId]) || isset($pendingVlanIds[$linkId])) {
+                            throw new ApiException('未移行VLANの値またはIDが不正です', 400);
+                        }
+                        $pendingVlanIds[$linkId] = true;
+                        break;
+                }
+                $result[$table][] = $row;
+            }
+        }
+        if ($maxIds !== []) { throw new ApiException('接続の採番状態が不足しています', 400); }
+        return $result;
+    }
+
+    private function validateBackupLegacyConflict(array $row): void
+    {
+        $payload = $row['payload'];
+        if (!is_array($payload) || !in_array($row['reason'], ['port_collision', 'ambiguous_pair', 'invalid_manual_route'], true)) {
+            throw new ApiException('移行保留接続の形式が不正です', 400);
+        }
+        $this->requireExactBackupKeys($payload, ['id', 'view_id', 'from_id', 'to_id', 'system_id', 'label',
+            'from_port', 'to_port', 'vlan', 'memo', 'route_mode', 'manual_route'], 'legacy_link_conflicts.payload');
+        foreach (['id', 'view_id', 'from_id', 'to_id', 'system_id'] as $field) {
+            if ($field === 'system_id' && $payload[$field] === null) { continue; }
+            if (!is_int($payload[$field])) { throw new ApiException("payload.$fieldは整数である必要があります", 400); }
+            ResourceId::parse($payload[$field], "payload.$field", ResourceId::MAX_RESTORE);
+        }
+        if ($payload['id'] !== $row['legacy_link_id'] || $payload['view_id'] !== $row['view_id']
+            || min($payload['from_id'], $payload['to_id']) !== $row['device_a_id']
+            || max($payload['from_id'], $payload['to_id']) !== $row['device_b_id']
+            || !in_array($payload['route_mode'], ['auto', 'manual'], true)
+            || !is_array($payload['manual_route']) || !array_is_list($payload['manual_route'])
+            || count($payload['manual_route']) > LinkRoute::MAX_POINTS) {
+            throw new ApiException('移行保留接続の元データが不正です', 400);
+        }
+        // A quarantined route can be invalid; keep its original points verbatim.
+        foreach (['label' => 100, 'from_port' => 50, 'to_port' => 50, 'vlan' => 100, 'memo' => 1000] as $field => $length) {
+            $this->requireExactBackupString($payload[$field], "payload.$field", $length);
+        }
     }
 
     public function validateBackupLinkSystems(array $rows): array
@@ -1815,15 +2049,64 @@ class BackupService
         return $meta;
     }
 
+    /** Validate suppression state against the devices and shared links it applies to. */
+    public function validateBackupQualityNotApplicable(array $rows, array $devicesById, array $links): void
+    {
+        if (!array_is_list($rows)) {
+            throw new ApiException('quality_not_applicableの一覧形式が不正です', 400);
+        }
+        if ($rows === []) { return; }
+
+        $linksById = array_column($links, null, 'id');
+        $deviceFields = $linkFields = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                throw new ApiException('quality_not_applicableの行形式が不正です', 400);
+            }
+            $this->requireExactBackupKeys($row, ['device_id', 'link_id', 'field'], 'quality_not_applicable');
+            $deviceId = $row['device_id'];
+            $linkId = $row['link_id'];
+            $field = $row['field'];
+            if (!is_int($deviceId) || $deviceId < 1 || $deviceId > ResourceId::MAX_RESTORE || !isset($devicesById[$deviceId])) {
+                throw new ApiException('quality_not_applicable.device_idが不正です', 400);
+            }
+            if ($linkId === null) {
+                if (!in_array($field, QualityNotApplicable::DEVICE_FIELDS, true)
+                    || !QualityNotApplicable::isMissing($devicesById[$deviceId], $field)) {
+                    throw new ApiException('設定不要の機器項目が不正か、入力済みです', 400);
+                }
+                if (isset($deviceFields[$deviceId][$field])) {
+                    throw new ApiException('設定不要の機器項目が重複しています', 400);
+                }
+                $deviceFields[$deviceId][$field] = true;
+                continue;
+            }
+            if (!is_int($linkId) || $linkId < 1 || $linkId > ResourceId::MAX_RESTORE || !isset($linksById[$linkId])) {
+                throw new ApiException('quality_not_applicable.link_idが不正です', 400);
+            }
+            $link = $linksById[$linkId];
+            if (!in_array($field, QualityNotApplicable::LINK_FIELDS, true)
+                || $link[$field === 'from_port' ? 'from_id' : 'to_id'] !== $deviceId
+                || !QualityNotApplicable::isMissing($link, $field)) {
+                throw new ApiException('設定不要の接続端点が不正か、ポートが指定済みです', 400);
+            }
+            if (isset($linkFields[$linkId][$field])) {
+                throw new ApiException('設定不要の接続端点が重複しています', 400);
+            }
+            $linkFields[$linkId][$field] = true;
+        }
+    }
+
     public function validateCompleteBackupRestoreData(
         array $tables,
         array $config = [],
         int $schemaVersion = APP_DATABASE_SCHEMA_VERSION
     ): array
     {
-        if (!in_array($schemaVersion, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23], true)) {
+        if (!BackupCompatibilityPolicy::isSupportedSchema($schemaVersion)) {
             throw new ApiException('未対応の構成スキーマです', 400);
         }
+        $limits = CapacityService::limits($config);
         $this->requireExactBackupKeys($tables, array_merge(['views', 'devices', 'device_monitor_status',
             'device_placements', 'links', 'link_systems', 'canvas_notes', 'view_floor_plans', 'device_images', 'app_meta'],
             $schemaVersion >= 12 ? ['rack_settings', 'rack_mounts'] : [],
@@ -1832,8 +2115,12 @@ class BackupService
             $schemaVersion >= 17 ? ['device_ip_addresses'] : [],
             $schemaVersion >= 18 ? ['address_spaces', 'ip_segments'] : [],
             $schemaVersion >= 19 ? ['change_history'] : [],
-            $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : []), 'テーブル');
-        $this->validateRestoreIds($tables);
+            $schemaVersion >= 20 ? ['device_configs', 'device_config_states'] : [],
+            $schemaVersion >= 24 ? ['buildings', 'floors'] : [],
+            $schemaVersion >= 27 ? ['device_ports', 'view_link_routes', 'legacy_link_conflicts', 'resource_sequences'] : [],
+            $schemaVersion >= 28 ? ['legacy_link_vlans'] : [],
+            $schemaVersion >= 29 ? ['quality_not_applicable'] : []), 'テーブル');
+        $this->validateRestoreIds($tables, $schemaVersion);
         $notes = $this->requireBackupTable($tables, 'canvas_notes');
         foreach ($notes as $row) {
             if (!is_array($row)) {
@@ -1852,12 +2139,28 @@ class BackupService
         $validatedSystems = $this->validateBackupLinkSystems($this->requireBackupTable($tables, 'link_systems'));
 
         $validatedViews = $this->validateBackupViews($views, $config, $schemaVersion);
+        if ($schemaVersion >= 24) {
+            BuildingHierarchyService::validateBackupRows(
+                $this->requireBackupTable($tables, 'buildings'),
+                $this->requireBackupTable($tables, 'floors'),
+                $views,
+                $schemaVersion >= 26
+            );
+        }
         $validatedDevices = $this->validateBackupDevices($devices, $schemaVersion);
+        if ($schemaVersion >= 25) {
+            $floorIds = array_fill_keys(array_column($tables['floors'], 'id'), true);
+            foreach ($validatedDevices as $device) { BuildingHierarchyService::normalizeFloorId($device['floor_id'], $floorIds); }
+        }
         $deviceIds = array_fill_keys(array_keys($validatedDevices), true);
 
         $validatedStatuses = $this->validateBackupMonitorStatuses($monitorStatuses, $deviceIds);
         $validatedPlacements = $this->validateBackupPlacements($placements, $deviceIds, $validatedViews);
-        $validatedLinks = $this->validateBackupLinks($links, $deviceIds, $validatedViews, $validatedPlacements, $validatedSystems);
+        $connections = $schemaVersion >= 27
+            ? $this->validateBackupConnectionTables($tables, $deviceIds, $validatedViews, $validatedSystems, $schemaVersion)
+            : ['links' => $this->validateBackupLinks($links, $deviceIds, $validatedViews, $validatedPlacements, $validatedSystems)];
+        $notApplicableRows = $schemaVersion >= 29 ? $this->requireBackupTable($tables, 'quality_not_applicable') : [];
+        $this->validateBackupQualityNotApplicable($notApplicableRows, $validatedDevices, $connections['links']);
         $validatedNotes = CanvasNote::normalizeRows($notes, $validatedViews);
         $validatedFloorPlans = $this->validateBackupFloorPlans(
             $floorPlans,
@@ -1904,7 +2207,7 @@ class BackupService
             [$rackSettings, $rackMounts, $rackShelves, $rackShelfDevices] = \Netarium\Services\Topology\RackLayout::validate(
                 $rackSettings, $rackMounts, $validatedViews, $validatedDevices, $rackShelves, $rackShelfDevices
             );
-            foreach (array_merge($validatedPlacements, $validatedLinks, $validatedFloorPlans) as $row) {
+            foreach (array_merge($validatedPlacements, $schemaVersion < 27 ? $connections['links'] : [], $validatedFloorPlans) as $row) {
                 if (($validatedViews[$row['view_id']]['view_type'] ?? '') === 'rack') {
                     throw new ApiException('ラックビューにXY配置・配線・図面は保存できません', 400);
                 }
@@ -1926,7 +2229,7 @@ class BackupService
             'devices' => array_values($validatedDevices),
             'device_monitor_status' => $validatedStatuses,
             'device_placements' => $validatedPlacements,
-            'links' => $validatedLinks,
+            ...$connections,
             'link_systems' => array_values($validatedSystems),
             'canvas_notes' => $validatedNotes,
             'view_floor_plans' => $validatedFloorPlans,
@@ -1952,6 +2255,11 @@ class BackupService
                 array_keys($validatedDevices),
                 $limits['device_configs']['max_total_bytes'] ?? DeviceConfigService::DEFAULT_MAX_TOTAL_BYTES
             ) : []),
+            ...($schemaVersion >= 24 ? [
+                'buildings' => $tables['buildings'],
+                'floors' => $tables['floors'],
+            ] : []),
+            ...($schemaVersion >= 29 ? ['quality_not_applicable' => $notApplicableRows] : []),
         ];
     }
 
@@ -1981,6 +2289,20 @@ class BackupService
         if ($manifest['schema_version'] >= 20) {
             $mapping += ['device_configs' => 'device_configs', 'device_config_states' => 'device_config_states'];
         }
+        if ($manifest['schema_version'] >= 24) {
+            $mapping += ['buildings' => 'buildings', 'floors' => 'floors'];
+        }
+        if ($manifest['schema_version'] >= 27) {
+            foreach (['device_ports', 'view_link_routes', 'legacy_link_conflicts', 'resource_sequences'] as $table) {
+                $mapping[$table] = $table;
+            }
+        }
+        if ($manifest['schema_version'] >= 28) {
+            $mapping['legacy_link_vlans'] = 'legacy_link_vlans';
+        }
+        if ($manifest['schema_version'] >= 29) {
+            $mapping['quality_not_applicable'] = 'quality_not_applicable';
+        }
         foreach ($mapping as $key => $table) {
             if (($manifest['summary'][$key] ?? null) !== count($this->requireBackupTable($tables, $table))) {
                 throw new ApiException('マニフェストの件数が一致しません: ' . $key, 400);
@@ -1995,7 +2317,8 @@ class BackupService
     public function convertBackupRestoreData(array $tables, int $sourceSchemaVersion, array $config = []): array
     {
         // Validate the source contract without adding fields or rewriting metadata.
-        $this->validateCompleteBackupRestoreData($tables, $config, $sourceSchemaVersion);
+        $source = $this->validateCompleteBackupRestoreData($tables, $config, $sourceSchemaVersion);
+        if ($sourceSchemaVersion === APP_DATABASE_SCHEMA_VERSION) { return $source; }
         if ($sourceSchemaVersion === 11) {
             $tables['rack_settings'] = [];
             $tables['rack_mounts'] = [];
@@ -2039,7 +2362,71 @@ class BackupService
             foreach ($tables['view_floor_plans'] as &$floorPlan) { $floorPlan['rotation'] = 0; }
             unset($floorPlan);
         }
+        if ($sourceSchemaVersion < 24) {
+            $tables['buildings'] = [];
+            $tables['floors'] = [];
+            foreach ($tables['views'] as &$view) { $view['floor_id'] = null; }
+            unset($view);
+        }
+        if ($sourceSchemaVersion < 25) {
+            foreach ($tables['devices'] as &$device) { $device['floor_id'] = null; }
+            unset($device);
+            \Netarium\Services\Topology\LegacyHierarchyMigration::convert($tables);
+        }
+        if ($sourceSchemaVersion < 26 && APP_DATABASE_SCHEMA_VERSION >= 26) {
+            foreach ($tables['buildings'] as &$building) { $building['building_view_enabled'] = 1; }
+            unset($building);
+        }
+        if ($sourceSchemaVersion < 27 && APP_DATABASE_SCHEMA_VERSION >= 27) {
+            foreach ($tables['views'] as &$view) { $view['show_connections'] = 1; }
+            unset($view);
+            $converted = LegacyLinkMigration::convert($source['links']);
+            $counts = $converted['counts'];
+            if ($counts['total'] !== count($source['links']) || $counts['converted'] + $counts['held'] !== $counts['total']
+                || $counts['held'] !== count($converted['legacy_link_conflicts'])) {
+                throw new RuntimeException('旧配線の移行件数が一致しません');
+            }
+            unset($converted['counts']);
+            foreach (['device_ports', 'links'] as $table) {
+                foreach ($converted[$table] as &$row) { $row['resource_revision'] = 1; }
+                unset($row);
+            }
+            $tables = array_replace($tables, $converted);
+            $tables['resource_sequences'] = [
+                ['name' => 'device_ports', 'value' => max([0, ...array_column($tables['device_ports'], 'id')])],
+                ['name' => 'links', 'value' => max([0, ...array_column($source['links'], 'id')])],
+            ];
+        }
+        if ($sourceSchemaVersion < 28 && APP_DATABASE_SCHEMA_VERSION >= 28) {
+            $linksWithVlan = $sourceSchemaVersion === 27 ? $source['links'] : $tables['links'];
+            $tables['legacy_link_vlans'] = self::pendingLegacyLinkVlans($linksWithVlan);
+            foreach ($tables['links'] as &$link) { unset($link['vlan']); }
+            unset($link);
+            foreach ($tables['device_ports'] as &$port) { $port['vlan'] = ''; }
+            unset($port);
+        }
+        if ($sourceSchemaVersion < 29 && APP_DATABASE_SCHEMA_VERSION >= 29) {
+            $tables['quality_not_applicable'] = [];
+        }
         return $this->validateCompleteBackupRestoreData($tables, $config, APP_DATABASE_SCHEMA_VERSION);
+    }
+
+    private static function hasLegacyVlan(string $vlan): bool
+    {
+        // Match the explicit SQLite trim character set; preserve the original value.
+        return trim($vlan, "\t\n\v\f\r ") !== '';
+    }
+
+    /** Build the v28 pending rows from already validated v27 connections. */
+    public static function pendingLegacyLinkVlans(array $links): array
+    {
+        $pending = [];
+        foreach ($links as $link) {
+            if (self::hasLegacyVlan($link['vlan'])) {
+                $pending[] = ['link_id' => $link['id'], 'vlan' => $link['vlan']];
+            }
+        }
+        return $pending;
     }
 
     private function validateImageDigest(mixed $value): string
@@ -2094,13 +2481,13 @@ class BackupService
         return $report;
     }
 
-    private function validateRestoreIds(array $tables): void
+    private function validateRestoreIds(array $tables, int $schemaVersion = APP_DATABASE_SCHEMA_VERSION): void
     {
         foreach ([
             'views' => ['id'],
             'devices' => ['id'],
             'device_placements' => ['id', 'device_id', 'view_id'],
-            'links' => ['id', 'view_id', 'from_id', 'to_id', 'system_id'],
+            'links' => $schemaVersion < 27 ? ['id', 'view_id', 'from_id', 'to_id', 'system_id'] : ['id', 'from_id', 'to_id', 'system_id'],
             'link_systems' => ['id'],
             'canvas_notes' => ['id', 'view_id'],
             'device_images' => ['id', 'device_id'],
@@ -2119,6 +2506,17 @@ class BackupService
                 }
             }
         }
+        foreach (['buildings' => ['id'], 'floors' => ['id', 'building_id', 'representative_view_id'],
+            'views' => ['floor_id'], 'devices' => ['floor_id']] as $table => $fields) {
+            foreach ($tables[$table] ?? [] as $row) {
+                if (!is_array($row)) { throw new ApiException("{$table}の行形式が不正です", 400); }
+                foreach ($fields as $field) {
+                    if (($row[$field] ?? null) !== null) {
+                        ResourceId::parse($row[$field], "{$table}.{$field}", ResourceId::MAX_RESTORE);
+                    }
+                }
+            }
+        }
     }
 
     private function validateRestoreIdState(): void
@@ -2128,11 +2526,13 @@ class BackupService
         foreach ([
             'devices' => 'devices', 'views' => 'views', 'placements' => 'device_placements',
             'links' => 'links', 'canvas_notes' => 'canvas_notes', 'link_systems' => 'link_systems',
+            'device_ports' => 'device_ports',
             'device_images' => 'device_images',
             'rack_shelves' => 'rack_shelves',
             'address_spaces' => 'address_spaces', 'ip_segments' => 'ip_segments',
             'change_history' => 'change_history',
             'device_configs' => 'device_configs',
+            'buildings' => 'buildings', 'floors' => 'floors',
         ] as $name => $table) {
             $counter = in_array($name, ['device_images', 'address_spaces', 'ip_segments', 'change_history', 'device_configs'], true)
                 ? ($sqliteSequences[$name] ?? 0) : ($sequences[$name] ?? null);
@@ -2160,22 +2560,24 @@ class BackupService
         int $monitorRevision,
         int $sourceDataRevision,
         int $sourceMonitorRevision,
-        int $expiresAt
+        int $expiresAt,
+        ?string $sourceQualityFingerprint = null
     ): string {
-        return hash_hmac(
-            'sha256',
-            implode('|', [
-                $token,
-                $userId,
-                $zipHash,
-                (string)$dataRevision,
-                (string)$monitorRevision,
-                (string)$sourceDataRevision,
-                (string)$sourceMonitorRevision,
-                (string)$expiresAt,
-            ]),
-            $this->getBackupRestoreSigningKey()
-        );
+        $payload = implode('|', [
+            $token,
+            $userId,
+            $zipHash,
+            (string)$dataRevision,
+            (string)$monitorRevision,
+            (string)$sourceDataRevision,
+            (string)$sourceMonitorRevision,
+            (string)$expiresAt,
+        ]);
+        // 旧プレビューの署名は検証できるが、比較元の指紋がないため復元には使えない。
+        if ($sourceQualityFingerprint !== null) {
+            $payload .= '|' . $sourceQualityFingerprint;
+        }
+        return hash_hmac('sha256', $payload, $this->getBackupRestoreSigningKey());
     }
 
     public function previewBackupRestore(array $upload, array $config): array
@@ -2342,6 +2744,7 @@ class BackupService
             $userId = (string)currentUserId();
             $sourceDataRevision = $this->appMetaRepo->getDataRevision();
             $sourceMonitorRevision = $this->appMetaRepo->getMonitorRevision();
+            $sourceQualityFingerprint = $this->qualityNotApplicableFingerprint();
             $dataRevision = max(1, (int)($validatedData['app_meta']['data_revision'] ?? '1'));
             $monitorRevision = max(1, (int)($validatedData['app_meta']['monitor_revision'] ?? '1'));
 
@@ -2353,7 +2756,8 @@ class BackupService
                 $monitorRevision,
                 $sourceDataRevision,
                 $sourceMonitorRevision,
-                $expiresAt
+                $expiresAt,
+                $sourceQualityFingerprint
             );
 
             $capacity = [
@@ -2374,6 +2778,7 @@ class BackupService
                 'monitor_revision' => $monitorRevision,
                 'source_data_revision' => $sourceDataRevision,
                 'source_monitor_revision' => $sourceMonitorRevision,
+                'source_quality_fingerprint' => $sourceQualityFingerprint,
                 'expires_at' => $expiresAt,
                 'signature' => $signature,
                 'manifest' => $manifestData,
@@ -2405,10 +2810,17 @@ class BackupService
                     'application_version' => $manifestData['application_version'] ?? null,
                     'counts' => [
                         'views' => count($validatedData['views']),
+                        'buildings' => count($validatedData['buildings']),
+                        'floors' => count($validatedData['floors']),
                         'devices' => count($validatedData['devices']),
                         'device_monitor_status' => count($validatedData['device_monitor_status']),
                         'device_placements' => count($validatedData['device_placements']),
                         'links' => count($validatedData['links']),
+                        'device_ports' => count($validatedData['device_ports']),
+                        'view_link_routes' => count($validatedData['view_link_routes']),
+                        'legacy_link_conflicts' => count($validatedData['legacy_link_conflicts']),
+                        'legacy_link_vlans' => count($validatedData['legacy_link_vlans']),
+                        'quality_not_applicable' => count($validatedData['quality_not_applicable']),
                         'link_systems' => count($validatedData['link_systems']),
                         'canvas_notes' => count($validatedData['canvas_notes']),
                         'floor_plans' => count($validatedData['view_floor_plans']),
@@ -2612,18 +3024,25 @@ class BackupService
         string $restoredAt
     ): void
     {
+        $this->db->exec('DELETE FROM quality_not_applicable');
         $this->db->exec('DELETE FROM device_configs');
         $this->db->exec('DELETE FROM device_config_states');
         $this->db->exec('DELETE FROM device_ip_addresses');
         $this->db->exec('DELETE FROM rack_mounts');
         $this->db->exec('DELETE FROM rack_shelves');
         $this->db->exec('DELETE FROM rack_settings');
+        $this->db->exec('DELETE FROM legacy_link_conflicts');
+        $this->db->exec('DELETE FROM view_link_routes');
         $this->db->exec('DELETE FROM links');
+        $this->db->exec('DELETE FROM device_ports');
         $this->db->exec('DELETE FROM link_systems');
         $this->db->exec('DELETE FROM device_placements');
         $this->db->exec('DELETE FROM canvas_notes');
         $this->db->exec('DELETE FROM view_floor_plans');
+        $this->db->exec('UPDATE floors SET representative_view_id = NULL');
         $this->db->exec('DELETE FROM views');
+        $this->db->exec('DELETE FROM floors');
+        $this->db->exec('DELETE FROM buildings');
         $this->db->exec('DELETE FROM device_images');
         $this->db->exec('DELETE FROM device_monitor_status');
         $this->db->exec('DELETE FROM devices');
@@ -2639,7 +3058,7 @@ class BackupService
         }
         // Web構成ZIPが所有するキーだけを置換し、認証・環境の状態は保持する。
         $this->db->exec("DELETE FROM app_meta WHERE meta_key IN
-            ('data_revision', 'monitor_revision', 'last_saved_at', 'last_monitored_at')");
+            ('data_revision', 'monitor_revision', 'last_saved_at', 'last_monitored_at', 'legacy_hierarchy_migration', 'legacy_link_migration')");
 
         // 参照元を削除した後にマスタを復元。世代はtriggerで新規発行する。
         $systemStmt = $this->db->prepare('INSERT INTO link_systems (id, name, color_key) VALUES (:id, :name, :color_key)');
@@ -2647,9 +3066,18 @@ class BackupService
             $systemStmt->execute(['id' => $system['id'], 'name' => $system['name'], 'color_key' => $system['color_key']]);
         }
 
+        // 代表ビューの循環参照は所属ビューの復元後に設定する。
+        foreach (['buildings', 'floors'] as $table) {
+            foreach ($backupData[$table] as $row) {
+                if ($table === 'floors') { $row['representative_view_id'] = null; }
+                $fields = array_keys($row);
+                $this->db->prepare("INSERT INTO {$table} (" . implode(', ', $fields)
+                    . ') VALUES (:' . implode(', :', $fields) . ')')->execute($row);
+            }
+        }
         $viewStmt = $this->db->prepare("
-            INSERT INTO views (id, name, facility, floor, view_type, sort_order, memo)
-            VALUES (:id, :name, :facility, :floor, :view_type, :sort_order, :memo)
+            INSERT INTO views (id, name, facility, floor, view_type, sort_order, memo, floor_id, show_connections)
+            VALUES (:id, :name, :facility, :floor, :view_type, :sort_order, :memo, :floor_id, :show_connections)
         ");
 
         foreach ($backupData['views'] as $view) {
@@ -2661,7 +3089,15 @@ class BackupService
                 ':view_type' => $view['view_type'],
                 ':sort_order' => $view['sort_order'],
                 ':memo' => $view['memo'],
+                ':floor_id' => $view['floor_id'],
+                ':show_connections' => $view['show_connections'],
             ]);
+        }
+        $representativeStmt = $this->db->prepare('UPDATE floors SET representative_view_id = :view_id WHERE id = :id');
+        foreach ($backupData['floors'] as $floor) {
+            if ($floor['representative_view_id'] !== null) {
+                $representativeStmt->execute([':view_id' => $floor['representative_view_id'], ':id' => $floor['id']]);
+            }
         }
 
         $deviceStmt = $this->db->prepare("
@@ -2669,12 +3105,12 @@ class BackupService
                 id, name, type, ip, ip_segment_id, x, y, facility, floor, location,
                 manufacturer, model, asset_number, serial_number, mac_address, memo,
                 management_scheme, management_port, department, maintenance_vendor,
-                install_date, maintenance_expiry
+                install_date, maintenance_expiry, floor_id
             ) VALUES (
                 :id, :name, :type, :ip, :ip_segment_id, :x, :y, :facility, :floor, :location,
                 :manufacturer, :model, :asset_number, :serial_number, :mac_address, :memo,
                 :management_scheme, :management_port, :department, :maintenance_vendor,
-                :install_date, :maintenance_expiry
+                :install_date, :maintenance_expiry, :floor_id
             )
         ");
 
@@ -2689,6 +3125,7 @@ class BackupService
                 ':y' => $dev['y'],
                 ':facility' => $dev['facility'],
                 ':floor' => $dev['floor'],
+                ':floor_id' => $dev['floor_id'],
                 ':location' => $dev['location'],
                 ':manufacturer' => $dev['manufacturer'],
                 ':model' => $dev['model'],
@@ -2749,26 +3186,41 @@ class BackupService
             ]);
         }
 
-        $linkStmt = $this->db->prepare("
-            INSERT INTO links (id, view_id, from_id, to_id, system_id, label, from_port, to_port, vlan, memo, route_mode, manual_route)
-            VALUES (:id, :view_id, :from_id, :to_id, :system_id, :label, :from_port, :to_port, :vlan, :memo, :route_mode, :manual_route)
-        ");
-
-        foreach ($backupData['links'] as $lk) {
-            $linkStmt->execute([
-                ':id' => $lk['id'],
-                ':view_id' => $lk['view_id'],
-                ':from_id' => $lk['from_id'],
-                ':to_id' => $lk['to_id'],
-                ':system_id' => $lk['system_id'],
-                ':label' => $lk['label'],
-                ':from_port' => $lk['from_port'],
-                ':to_port' => $lk['to_port'],
-                ':vlan' => $lk['vlan'],
-                ':memo' => $lk['memo'],
-                ':route_mode' => $lk['route_mode'],
-                ':manual_route' => json_encode($lk['manual_route'], JSON_THROW_ON_ERROR),
-            ]);
+        // Restore IDs, but issue fresh resource revisions as for devices/views.
+        $portStmt = $this->db->prepare('INSERT INTO device_ports (id, device_id, name, memo, vlan)
+            VALUES (:id, :device_id, :name, :memo, :vlan)');
+        foreach ($backupData['device_ports'] as $port) {
+            unset($port['resource_revision']);
+            $portStmt->execute($port);
+        }
+        $linkStmt = $this->db->prepare('INSERT INTO links (id, from_id, to_id, from_port_id, to_port_id, system_id, label, memo)
+            VALUES (:id, :from_id, :to_id, :from_port_id, :to_port_id, :system_id, :label, :memo)');
+        foreach ($backupData['links'] as $link) {
+            unset($link['resource_revision']);
+            $linkStmt->execute($link);
+        }
+        $notApplicableStmt = $this->db->prepare('INSERT INTO quality_not_applicable (device_id, link_id, field)
+            VALUES (:device_id, :link_id, :field)');
+        foreach ($backupData['quality_not_applicable'] as $row) {
+            $notApplicableStmt->execute($row);
+        }
+        $routeStmt = $this->db->prepare('INSERT INTO view_link_routes (view_id, device_a_id, device_b_id, manual_route)
+            VALUES (:view_id, :device_a_id, :device_b_id, :manual_route)');
+        foreach ($backupData['view_link_routes'] as $route) {
+            $route['manual_route'] = json_encode($route['manual_route'], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            $routeStmt->execute($route);
+        }
+        $conflictStmt = $this->db->prepare('INSERT INTO legacy_link_conflicts (legacy_link_id, view_id, device_a_id, device_b_id, reason, payload)
+            VALUES (:legacy_link_id, :view_id, :device_a_id, :device_b_id, :reason, :payload)');
+        foreach ($backupData['legacy_link_conflicts'] as $conflict) {
+            $conflict['payload'] = json_encode($conflict['payload'], JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+            $conflictStmt->execute($conflict);
+        }
+        $sequenceStmt = $this->db->prepare('UPDATE resource_sequences SET value = MAX(value, CAST(:value AS INTEGER)) WHERE name = :name');
+        foreach ($backupData['resource_sequences'] as $sequence) { $sequenceStmt->execute($sequence); }
+        $vlanStmt = $this->db->prepare('INSERT INTO legacy_link_vlans (link_id, vlan) VALUES (:link_id, :vlan)');
+        foreach ($backupData['legacy_link_vlans'] as $row) {
+            $vlanStmt->execute($row);
         }
 
         $noteStmt = $this->db->prepare('INSERT INTO canvas_notes (' . implode(', ', CanvasNote::COLUMNS)
@@ -2912,10 +3364,15 @@ class BackupService
         $preview = $this->loadBackupRestorePreview((string)$config['backup_restore_directory'], $token);
         $workDir = (string)$preview['_work_dir'];
         $userId = (string)currentUserId();
+        $sourceQualityFingerprint = $preview['source_quality_fingerprint'] ?? null;
+        if ($sourceQualityFingerprint !== null && !is_string($sourceQualityFingerprint)) {
+            throw new ApiException('復元プレビューを利用できません', 403);
+        }
         $signature = $this->createBackupRestoreSignature(
             $token, (string)$preview['user_id'], (string)$preview['zip_hash'],
             (int)$preview['data_revision'], (int)$preview['monitor_revision'],
-            (int)$preview['source_data_revision'], (int)$preview['source_monitor_revision'], (int)$preview['expires_at']
+            (int)$preview['source_data_revision'], (int)$preview['source_monitor_revision'], (int)$preview['expires_at'],
+            $sourceQualityFingerprint
         );
         if ((string)$preview['user_id'] !== $userId || !hash_equals($signature, (string)$preview['signature'])) {
             throw new ApiException('復元プレビューを利用できません', 403);
@@ -2924,10 +3381,14 @@ class BackupService
             $this->removeDirectoryTree($workDir);
             throw new ApiException('復元プレビューの有効期限が切れました。再度アップロードしてください', 410);
         }
+        if ($sourceQualityFingerprint === null) {
+            throw new ApiException('この復元プレビューは利用できません。再度プレビューしてください', 409);
+        }
         $currentDataRevision = $this->appMetaRepo->getDataRevision();
         $currentMonitorRevision = $this->appMetaRepo->getMonitorRevision();
         if ($currentDataRevision !== (int)$preview['source_data_revision']
-            || $currentMonitorRevision !== (int)$preview['source_monitor_revision']) {
+            || $currentMonitorRevision !== (int)$preview['source_monitor_revision']
+            || !hash_equals($sourceQualityFingerprint, $this->qualityNotApplicableFingerprint())) {
             throw new ApiException('プレビュー後に現行データが更新されています。再度プレビューしてください', 409);
         }
         $zipPath = $workDir . DIRECTORY_SEPARATOR . 'upload.zip';
@@ -2947,7 +3408,7 @@ class BackupService
                 'data/netarium.json' => ['size' => strlen($json), 'sha256' => hash('sha256', $json)],
                 'manifest.json' => [],
             ], (string)$config['application_version']);
-            $tables = $this->validateBackupDataDocument(json_decode($json, true, 512, JSON_THROW_ON_ERROR));
+            $tables = $this->validateBackupDataDocument(Request::decodeJson($json));
             $this->validateBackupSummary($tables, $manifest);
             $data = $this->convertBackupRestoreData($tables, $manifest['schema_version'], $config);
         } finally {
@@ -2977,13 +3438,18 @@ class BackupService
             $this->validateRestoreIds($data);
             $this->validateRestoreIdState();
             $this->replaceDatabaseFromBackup($data, $currentDataRevision + 1, $currentMonitorRevision + 1, $restoredAt);
+            foreach (['links', 'device_ports', 'view_link_routes', 'legacy_link_conflicts', 'legacy_link_vlans', 'quality_not_applicable'] as $table) {
+                if ((int)$this->db->query("SELECT COUNT(*) FROM $table")->fetchColumn() !== count($data[$table])) {
+                    throw new RuntimeException("{$table}の復元件数が一致しません");
+                }
+            }
             $this->db->commit();
         } catch (Throwable $e) {
             if ($this->db->inTransaction()) {
                 $this->db->rollBack();
             }
             if ($e instanceof PDOException && Database::isBusy($e)) {
-                throw new ApiException('別の更新処理が実行されています。再度復元してください', 409);
+                throw new ApiException('別の更新処理が実行されています。再度復元してください', 409, ['reason' => 'operation_busy']);
             }
             throw $e;
         }

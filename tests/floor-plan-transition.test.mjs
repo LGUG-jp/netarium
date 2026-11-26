@@ -17,6 +17,8 @@ const { getTopModalContainer } = await import('../public/js/core/modal-focus.js'
 const { onKeyDown } = await import('../public/js/canvas/selection.js');
 const { eventBus } = await import('../public/js/core/event-bus.js');
 const context = await import('../public/js/ui/canvas-context-toolbar.js');
+const { enterPlacementMode } = await import('../public/js/ui/placement-mode.js');
+const { DEFAULT_DEVICE_WIDTH, DEFAULT_DEVICE_HEIGHT, DEFAULT_VIEW_SCALE } = await import('../public/js/core/constants.js');
 document.readyState = 'loading';
 const { registerStaticListeners } = await import('../public/js/main.js');
 registerStaticListeners();
@@ -52,7 +54,10 @@ async function http(url, options = {}) {
     if (failure) {
         const current = failure; failure = null;
         if (current === 'network') throw new TypeError('connection lost');
-        if (current === 'busy') return json({ ok: false, error: '現在、別の更新処理が実行されています。少し待ってから再度保存してください' }, 409);
+        if (current === 'busy') return json({
+            ok: false, error: '現在、バックアップ復元処理中です。処理完了後に再度実行してください',
+            details: { reason: 'operation_busy' }
+        }, 409);
         return json({ ok: false, error: '保存できません', details: { conflicts: [{ kind: 'views', id: 1, name: '合成フロア' }] } }, current);
     }
     const expected = Number(payload.expected_revision ?? payload.views?.[0]?.expected_revision);
@@ -63,7 +68,8 @@ async function http(url, options = {}) {
         assert.equal(payload.views.length, 1);
         Object.assign(server.views[0], payload.views[0].view, { resource_revision: expected + 1 });
         return json({ ok: true, revision: server.revision, views: structuredClone(server.views), devices: [],
-            placements: [], links: [], canvas_notes: [], id_maps: {}, deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [1] });
+            placements: [], view_link_routes: payload.views[0].view_link_routes, canvas_notes: [], id_maps: {},
+            deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: [1] });
     }
     if (action === 'update_floor_plan_settings') {
         const { expected_revision: _expected, ...settings } = payload;
@@ -97,6 +103,9 @@ beforeEach(async () => {
     appState.views = [normalizeView({ id: 1, resource_revision: 1, name: '合成フロア', view_type: 'floor' })];
     appState.currentViewId = 1; appState.dataRevision = 1;
     appState.floorPlans = []; appState.devices = []; appState.placements = []; appState.links = []; appState.canvasNotes = [];
+    appState.floorRackPlacements = []; appState.rackSettings = [];
+    appState.buildings = []; appState.floors = [];
+    appState.devicePorts = []; appState.viewLinkRoutes = [];
     appState.selectedPlacementIds = new Set(); appState.viewStates = new Map();
     appState.authExpired = false; appState.isPinging = false; appState.isFloorPlanUpdating = false;
     appState.linkMode = false; appState.noteMode = false; appState.editingLinkId = null;
@@ -107,7 +116,8 @@ beforeEach(async () => {
     appState.resourceConflicts = { devices: new Map(), views: new Map() };
     appState.appStatus = { dirty: false, state: 'saved', lastSavedAt: null, lastError: null };
     resource.resetResourceBaseline(appState);
-    server = { revision: 1, views: structuredClone(appState.views), floor_plans: [], devices: [], placements: [], links: [], canvas_notes: [] };
+    server = { revision: 1, views: structuredClone(appState.views), floor_plans: [], devices: [], placements: [],
+        links: [], device_ports: [], view_link_routes: [], canvas_notes: [] };
     requests = []; failure = null; held = null; release = null;
     globalThis.fetch = http;
     layer.replaceChildren();
@@ -119,6 +129,18 @@ const flush = () => queue.flushSaveQueue({ silent: true });
 const image = () => layer.querySelector('.floor-plan-image');
 const coords = () => [appState.floorPlans[0].x, appState.floorPlans[0].y, appState.floorPlans[0].scale];
 const escape = () => onKeyDown({ key: 'Escape', target: document.activeElement, preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+
+const installCommonLink = () => {
+    const link = { id: 12, from_id: 1, to_id: 2, from_port_id: null, to_port_id: null,
+        system_id: null, label: '保存前', memo: '', resource_revision: 1 };
+    appState.devices = [1, 2].map(id => ({ id, name: `機器${id}`, type: 'switch', resource_revision: 1 }));
+    appState.links = [link];
+    server.devices = structuredClone(appState.devices);
+    server.links = [structuredClone(link)];
+    resource.resetResourceBaseline(appState);
+    return link;
+};
+
 function imageFile(name = 'synthetic.png', type = 'image/png') {
     if (dimensions.error) return new File(['invalid'], name, { type });
     let bytes;
@@ -178,10 +200,65 @@ test('図面操作は編集中の種別が物理の場合だけ表示し、種�
     assert.equal(actions.hidden, true);
     assert.equal(dom.get('vm-rack-fields').hidden, false);
     assert.equal(dom.get('vm-type').disabled, true);
+    assert.equal(dom.get('vm-rack-destination').textContent, '未配置');
+    assert.equal(dom.get('vm-rack-go-to-placement').hidden, true);
     appState.views = [];
     manager.loadSelectedViewIntoForm();
     assert.equal(actions.hidden, true, '対象ビューがない場合も図面操作を残さない');
     assert.equal(requests.length, 0);
+});
+
+test('ラックパレットとビュー管理の配置先操作は同じアイコンを表示してフォーカスする', async () => {
+    const placePanel = dom.add('div', 'palette-place-panel');
+    const rackList = dom.add('div', 'placement-rack-list', placePanel);
+    await manager.closeViewManager();
+    appState.buildings = [{ id: 1, name: '本館' }];
+    appState.floors = [{ id: 10, building_id: 1, name: '2階' }, { id: 11, building_id: 1, name: '3階' }];
+    appState.views.push(
+        normalizeView({ id: 2, name: '試験ラック', resource_revision: 1, view_type: 'rack', floor_id: 11 }),
+        normalizeView({ id: 3, name: '設備配置図', resource_revision: 1, view_type: 'floor', floor_id: 10 })
+    );
+    appState.rackSettings = [{ view_id: 2, total_u: 42, location: '' }];
+    const ref = { floor_view_id: 3, rack_view_id: 2, x: 5000, y: 2000 };
+    appState.floorRackPlacements.push(ref);
+    resource.resetResourceBaseline(appState);
+    Object.assign(appState.viewState, { minScale: 0.05, maxScale: 3 });
+    const label = '本館 / 2階 / 設備配置図';
+    const centered = scale => {
+        assert.equal(appState.currentViewId, 3);
+        const icon = devices.querySelector('[data-rack-view-id="2"]')?.querySelector('.floor-rack-trigger');
+        assert.ok(icon && document.activeElement === icon, '配置先のラックアイコンにフォーカスする');
+        assert.equal(appState.viewState.scale, scale);
+        assert.equal(appState.viewState.panX, 600 - (ref.x + DEFAULT_DEVICE_WIDTH / 2) * scale);
+        assert.equal(appState.viewState.panY, 400 - (ref.y + DEFAULT_DEVICE_HEIGHT / 2) * scale);
+    };
+
+    appState.viewStates.set(3, { scale: DEFAULT_VIEW_SCALE / 2, panX: 0, panY: 0 });
+    enterPlacementMode({ tab: 'rack' });
+    const rack = rackList.children[0];
+    assert.ok(rack.textContent.includes(label));
+    await rack.querySelector('button').dispatch('click');
+    centered(DEFAULT_VIEW_SCALE);
+    assert.equal(placePanel.hidden, true);
+
+    await manager.switchView(1);
+    appState.viewStates.set(3, { scale: DEFAULT_VIEW_SCALE * 2, panX: 0, panY: 0 });
+    manager.openViewManager();
+    const search = dom.get('view-manager-search');
+    search.value = '試験ラック';
+    manager.renderViewManagerList();
+    await dom.get('view-manager-list').querySelector('[data-view-id="2"]').dispatch('click');
+    const jump = dom.get('vm-rack-go-to-placement');
+    assert.equal(dom.get('vm-floor-id').value, '11', 'ラック自身の所属フロアは配置先と独立');
+    assert.equal(dom.get('vm-rack-destination').textContent, label);
+    assert.equal(jump.hidden, false);
+    assert.equal(await jump.onclick(), true);
+    centered(DEFAULT_VIEW_SCALE * 2);
+    assert.equal(dom.get('view-manager-overlay').hidden, true);
+    search.value = '';
+    placePanel.remove();
+    assert.deepEqual(appState.floorRackPlacements, [ref]);
+    assert.deepEqual(requests, []);
 });
 
 test('図面の登録と削除で登録状態と操作名を切り替える', async () => {
@@ -200,6 +277,98 @@ test('図面の登録と削除で登録状態と操作名を切り替える', as
     assert.equal(dom.get('vm-floor-plan-status').hidden, true);
     assert.equal(button.textContent, registerLabel);
     assert.equal(button.disabled, false);
+});
+
+test('図面登録と削除の一時拒否で版競合扱いせず、復元完了後は再試行できる', async () => {
+    await dom.get('vm-floor-plan-btn').dispatch('click');
+    failure = 'busy';
+    await choose();
+    assert.equal(appState.appStatus.state, 'saved');
+    assert.equal(appState.floorPlans.length, 0);
+    await choose();
+    assert.equal(appState.floorPlans[0].original_name, 'synthetic.png');
+
+    failure = 'busy';
+    await floor.deleteCurrentFloorPlan();
+    assert.equal(appState.appStatus.state, 'saved');
+    assert.equal(appState.floorPlans[0].original_name, 'synthetic.png');
+    assert.equal(queue.hasResourceConflict('views', 1), false);
+    await floor.deleteCurrentFloorPlan();
+    assert.equal(appState.floorPlans.length, 0);
+});
+
+test('図面登録と削除の版競合をビュー管理の再読込で解消し、新しい版で再試行する', async () => {
+    const reopenAfterReload = async () => {
+        assert.equal(queue.hasResourceConflict('views', 1), true);
+        floor.closeFloorPlanManager();
+        const reload = dom.get('view-conflict-reload-btn');
+        assert.equal(reload.hidden, false);
+        await reload.dispatch('click');
+        assert.equal(queue.hasResourceConflict('views', 1), false);
+        await dom.get('vm-floor-plan-btn').dispatch('click');
+    };
+
+    await dom.get('vm-floor-plan-btn').dispatch('click');
+    server.views[0].resource_revision = ++server.revision;
+    failure = 409;
+    await choose();
+    await reopenAfterReload();
+    await choose();
+    assert.equal(appState.floorPlans[0].original_name, 'synthetic.png');
+
+    server.views[0].resource_revision = ++server.revision;
+    server.floor_plans[0].original_name = 'remote.png';
+    server.floor_plans[0].revision++;
+    failure = 409;
+    await floor.deleteCurrentFloorPlan();
+    await reopenAfterReload();
+    assert.equal(dom.get('floor-plan-file-name').textContent, 'remote.png');
+    await floor.deleteCurrentFloorPlan();
+    assert.equal(server.floor_plans.length, 0);
+});
+
+test('移設元ビューの競合再読込では、差し替え済みの移設先図面に新しいビュー版を割り当てない', async () => {
+    const viewB = normalizeView({ id: 2, resource_revision: 1, name: '移設先', view_type: 'floor' });
+    const rack = normalizeView({ id: 3, resource_revision: 1, name: '移設ラック', view_type: 'rack' });
+    appState.views.push(viewB, rack);
+    appState.rackSettings = [{ view_id: 3, total_u: 42, location: '' }];
+    appState.floorRackPlacements = [{ floor_view_id: 1, rack_view_id: 3, x: 20, y: 30 }];
+    appState.floorPlans = [freshPlan(), freshPlan({ view_id: 2, original_name: 'before.png' })];
+    Object.assign(server, {
+        revision: 3,
+        views: structuredClone(appState.views),
+        floor_plans: structuredClone(appState.floorPlans),
+        rack_settings: structuredClone(appState.rackSettings),
+        floor_rack_placements: [{ ...appState.floorRackPlacements[0], floor_view_id: 2 }]
+    });
+    server.views[0].resource_revision = 2;
+    server.views[1].resource_revision = 3;
+    Object.assign(server.floor_plans[1], { original_name: 'after.png', revision: 2 });
+    resource.resetResourceBaseline(appState);
+
+    await dom.get('vm-floor-plan-btn').dispatch('click');
+    failure = 409;
+    await floor.deleteCurrentFloorPlan();
+    floor.closeFloorPlanManager();
+    await dom.get('view-conflict-reload-btn').dispatch('click');
+    assert.equal(queue.hasResourceConflict('views', 1), false);
+    assert.deepEqual(appState.floorRackPlacements.map(row => row.floor_view_id), [2]);
+    assert.equal(appState.views.find(row => row.id === 2).resource_revision, 1);
+    await manager.closeViewManager();
+    assert.equal(dom.get('view-manager-overlay').hidden, true);
+    assert.equal(await manager.switchView(2), true);
+
+    floor.openFloorPlanManager();
+    assert.equal(dom.get('floor-plan-file-name').textContent, 'before.png');
+    assert.equal(dom.get('floor-plan-delete-btn').disabled, true);
+    floor.closeFloorPlanManager();
+    manager.openViewManager();
+    const reload = dom.get('view-conflict-reload-btn');
+    assert.equal(reload.hidden, false);
+    await reload.dispatch('click');
+    await dom.get('vm-floor-plan-btn').dispatch('click');
+    assert.equal(dom.get('floor-plan-file-name').textContent, 'after.png');
+    assert.equal(dom.get('floor-plan-delete-btn').disabled, false);
 });
 
 for (const [label, block] of [
@@ -472,8 +641,9 @@ test('未確認図面と5設定が一致しても差替/別操作の図面revisi
     assert.equal(image().src, '/replacement.png?revision=3');
 });
 
-for (const aggregate of ['view', 'placements', 'links', 'canvas_notes']) {
+for (const aggregate of ['view', 'placements', 'view_link_routes', 'canvas_notes']) {
     test(`未確認図面の5設定一致でも別画面による${aggregate}更新は競合として保持し、古いaggregateを上書きしない`, async () => {
+        if (aggregate === 'view_link_routes') installCommonLink();
         await registerPlan(); await edit(); failure = 'network';
         await key(image(), 'ArrowRight', true); await flush();
         assert.equal(appState.appStatus.state, 'unconfirmed');
@@ -482,7 +652,9 @@ for (const aggregate of ['view', 'placements', 'links', 'canvas_notes']) {
         server.views[0].resource_revision = 4; server.revision = 4;
         if (aggregate === 'view') server.views[0].name = '別画面の新しい名称';
         else if (aggregate === 'placements') server.placements = [{ id: 11, view_id: 1, device_id: 1, x: 500, y: 600 }];
-        else if (aggregate === 'links') server.links = [{ id: 12, view_id: 1, from_id: 1, to_id: 2, bandwidth: '1G' }];
+        else if (aggregate === 'view_link_routes') server.view_link_routes = [
+            { view_id: 1, device_a_id: 1, device_b_id: 2, manual_route: [{ x: 100, y: 50 }] }
+        ];
         else server.canvas_notes = [{ id: 13, view_id: 1, x: 50, y: 80, text: '別画面の新しいメモ' }];
         const remote = structuredClone(server);
         assert.equal(await queue.confirmPendingSave(), 'conflict');
@@ -495,6 +667,23 @@ for (const aggregate of ['view', 'placements', 'links', 'canvas_notes']) {
         assert.equal(requests.filter(row => row.action === 'save_resources').length, 0);
     });
 }
+
+test('未確認図面の保存は別画面の共通接続属性更新と競合しない', async () => {
+    const link = installCommonLink();
+    await registerPlan(); await edit(); failure = 'network';
+    await key(image(), 'ArrowRight', true); await flush();
+    assert.equal(appState.appStatus.state, 'unconfirmed');
+    server.floor_plans[0].x = 10;
+    server.floor_plans[0].revision = 2;
+    server.views[0].resource_revision = 3;
+    server.links = [{ ...link, label: '別画面の更新', resource_revision: 2 }];
+    server.revision = 4;
+    assert.equal(await queue.confirmPendingSave(), 'saved');
+    assert.equal(queue.hasResourceConflict('views', 1), false);
+    assert.deepEqual(coords(), [10, 0, 1]);
+    assert.equal(appState.views[0].resource_revision, 3);
+    assert.deepEqual(requests.filter(row => row.action === 'save_connections' || row.action === 'save_resources'), []);
+});
 
 for (const operation of ['replace', 'delete']) {
     test(`dirty viewを持つ図面${operation}は共通保存後の現行revisionを使い自己競合しない`, async () => {

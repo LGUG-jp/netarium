@@ -1,6 +1,19 @@
 /** Floor symbols reference existing rack views; they are never inventory devices. */
 export const floorRackPlacements = data => data.floorRackPlacements || data.floor_rack_placements || [];
 
+/** A rack's own floor limits new placements, not existing references. */
+export function canPlaceFloorRack(rack, view) {
+    return view?.view_type === 'floor' && (rack.floor_id == null ||
+        (view.floor_id != null && Number(rack.floor_id) === Number(view.floor_id)));
+}
+
+export function getFloorRackDestination(data, rackViewId) {
+    const placement = floorRackPlacements(data).find(row => Number(row.rack_view_id) === Number(rackViewId));
+    if (!placement) return null;
+    const view = data.views.find(row => row.view_type === 'floor' && Number(row.id) === Number(placement.floor_view_id));
+    return view ? { placement, view } : null;
+}
+
 export function toSaveFloorRackPlacement(row) {
     return { floor_view_id: Number(row.floor_view_id), rack_view_id: Number(row.rack_view_id),
         x: Number(row.x), y: Number(row.y) };

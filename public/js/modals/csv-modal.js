@@ -15,6 +15,12 @@ import {
     startAuthenticatedDownload
 } from '../core/api-client.js';
 import {
+    getPendingSave,
+    hasPendingChanges,
+    isSaveInFlight
+} from '../core/save-queue.js';
+import { hasAnyDeviceDraftChanges } from '../core/device-drafts.js';
+import {
     formatStatusTime,
     setTextContent
 } from '../core/utils.js';
@@ -31,8 +37,7 @@ import {
     registerModalOpen
 } from '../core/modal-focus.js';
 import {
-    renderLedgerTable,
-    updateLedgerFilters
+    openLedger
 } from './ledger-modal.js';
 
 let devicesCsvImportToken = null;
@@ -53,7 +58,16 @@ export function canStartDeviceCsvDownload() {
         return false;
     }
 
-    if (appState.isSaving) {
+    if (appState.authExpired) {
+        showToast(
+            '認証が失効しています。別タブで再ログインしてから画面を再読み込みしてください',
+            'warning'
+        );
+
+        return false;
+    }
+
+    if (appState.isSaving || isSaveInFlight()) {
         showToast(
             '保存処理中です。完了後に実行してください',
             'warning'
@@ -71,9 +85,15 @@ export function canStartDeviceCsvDownload() {
         return false;
     }
 
-    if (appState.appStatus.dirty) {
+    if (
+        appState.appStatus?.dirty ||
+        hasPendingChanges() ||
+        Boolean(getPendingSave()) ||
+        hasAnyDeviceDraftChanges() ||
+        (typeof window.hasAnyUnappliedChanges === 'function' && window.hasAnyUnappliedChanges())
+    ) {
         showToast(
-            '保存待ちの変更があります。保存完了を待ち、保存失敗時は「保存」で再試行してください',
+            '保存待ちまたは未適用の変更があります。保存完了を待ち、保存失敗時は「保存」で再試行してください',
             'warning'
         );
 
@@ -206,6 +226,8 @@ export function openDevicesCsvImport() {
         ''
     );
 
+    document.getElementById('devices-csv-import-spec')?.setAttribute('open', '');
+
     overlay.hidden = false;
 
     updateDevicesCsvImportButtons();
@@ -223,7 +245,7 @@ export function closeDevicesCsvImport() {
     finishDevicesCsvImport();
 }
 
-function finishDevicesCsvImport() {
+function finishDevicesCsvImport({ restoreFocus = true } = {}) {
     const fileInput = document.getElementById('devices-csv-import-file');
     if (fileInput) fileInput.value = '';
 
@@ -236,7 +258,7 @@ function finishDevicesCsvImport() {
         overlay.hidden = true;
     }
 
-    registerModalClose('csv_import');
+    registerModalClose('csv_import', { restoreFocus });
     devicesCsvImportToken = null;
     devicesCsvImportRows = [];
     devicesCsvImportSummary = null;
@@ -332,6 +354,13 @@ export function formatDevicesCsvChangeValue(
     return text === ''
         ? '(空欄)'
         : text;
+}
+
+function formatDevicesCsvFloorValue(value) {
+    if (value == null || String(value) === '') return '未設定';
+    const floor = (appState.floors || []).find(row => Number(row.id) === Number(value));
+    const building = floor && (appState.buildings || []).find(row => Number(row.id) === Number(floor.building_id));
+    return building ? `${value}（${building.name} / ${floor.name}）` : String(value);
 }
 
 
@@ -458,7 +487,7 @@ export function createDevicesCsvChangesElement(
 
         values.appendChild(
             createDevicesCsvValueElement(
-                change.before,
+                field === 'floor_id' ? formatDevicesCsvFloorValue(change.before) : change.before,
                 'csv-import-change-before'
             )
         );
@@ -475,9 +504,10 @@ export function createDevicesCsvChangesElement(
 
         values.appendChild(
             createDevicesCsvValueElement(
-                field === 'additional_ips' && change.after === '[]'
-                    ? (operation === 'insert' ? '[]（追加 IP なし）' : '[]（全削除）')
-                    : change.after,
+                field === 'floor_id' ? formatDevicesCsvFloorValue(change.after)
+                    : field === 'additional_ips' && change.after === '[]'
+                        ? (operation === 'insert' ? '[]（追加 IP なし）' : '[]（全削除）')
+                        : change.after,
                 'csv-import-change-after'
             )
         );
@@ -785,6 +815,8 @@ export function renderDevicesCsvImportPreview(
     devicesCsvImportCanCommit =
         data.can_commit === true;
 
+    document.getElementById('devices-csv-import-spec')?.removeAttribute('open');
+
     const result =
         document.getElementById(
             'devices-csv-import-result'
@@ -985,6 +1017,16 @@ export async function commitDevicesCsvImport() {
 
     const summary =
         devicesCsvImportSummary || {};
+    const warningRows = devicesCsvImportRows.filter(row =>
+        (row.operation === 'insert' || row.operation === 'update') && row.warnings?.length
+    );
+    const actionableWarnings = warningRows
+        .flatMap(row => row.warnings.map(warning =>
+            `行 ${row.line ?? '?'}: ${typeof warning === 'object' ? warning.message : warning}`
+        ));
+    const warningPreview = actionableWarnings.length > 20
+        ? [...actionableWarnings.slice(0, 20), `...他 ${actionableWarnings.length - 20} 件`].join('\n')
+        : actionableWarnings.join('\n');
 
     if (
         !confirm(
@@ -992,15 +1034,13 @@ export async function commitDevicesCsvImport() {
             `新規: ${Number(summary.insert) || 0}件\n` +
             `更新: ${Number(summary.update) || 0}件\n` +
             `変更なし: ${Number(summary.unchanged) || 0}件\n` +
-            `警告行: ${Number(summary.warning) || 0}件\n\n` +
+            `警告行: ${warningRows.length}件\n\n` +
             (
-                Number(summary.warning) > 0
+                warningRows.length > 0
                     ? '警告内容を確認したうえで取込を実行してください。\n'
                     : ''
             ) +
-            devicesCsvImportRows.flatMap(row => (row.warnings || []).map(warning =>
-                `行 ${row.line ?? '?'}: ${typeof warning === 'object' ? warning.message : warning}`
-            )).join('\n') + '\n\n' +
+            warningPreview + '\n\n' +
             '配置と接続は変更されません。'
         )
     ) {
@@ -1058,12 +1098,14 @@ export async function commitDevicesCsvImport() {
                 responseMonitorRevision;
         }
 
-        finishDevicesCsvImport();
+        if (!await loadData()) {
+            setTextContent('devices-csv-import-message',
+                '取込は完了しましたが、データの再読み込みに失敗しました。画面を再読み込みして台帳を確認してください。');
+            return;
+        }
 
-        await loadData();
-
-        updateLedgerFilters();
-        renderLedgerTable();
+        finishDevicesCsvImport({ restoreFocus: false });
+        openLedger({ preserveFilters: true });
 
         showStatusMessage(
             data.message ||
@@ -1074,7 +1116,14 @@ export async function commitDevicesCsvImport() {
     } catch (err) {
         console.error(err);
 
-        if (err.status === 409) {
+        const revisionConflict = err.status === 409 && err.details?.reason !== 'operation_busy';
+        if (err.status === 401 || revisionConflict || err.status === 410) {
+            devicesCsvImportToken = null;
+            devicesCsvImportCanCommit = false;
+            setTextContent('devices-csv-import-message', '');
+        }
+
+        if (revisionConflict) {
             markConflict(
                 err.message
             );

@@ -18,6 +18,11 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
     const resource = await import('../public/js/core/resource-save.js');
     const { eventBus } = await import('../public/js/core/event-bus.js');
     const { render } = await import('../public/js/canvas/renderer.js');
+    const { onKeyDown } = await import('../public/js/canvas/selection.js');
+    const { getPlacementHistoryAvailability } = await import('../public/js/core/placement-history.js');
+    const historyKey = (key, shiftKey = false) => onKeyDown({
+        key, ctrlKey: true, shiftKey, target: dom.get('canvas'), preventDefault() {}, stopImmediatePropagation() {}
+    });
     let requests = [], device;
     const points = new Map();
     globalThis.fetch = async (_url, options) => {
@@ -26,8 +31,10 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
         return new Response(JSON.stringify({
             ok: true, revision: 2, id_maps: {}, devices: [],
             views: payload.views.map(operation => ({ ...operation.view, resource_revision: 2 })),
-            placements: payload.views.flatMap(operation => operation.placements),
-            links: [], canvas_notes: [], affected_view_ids: payload.views.map(operation => operation.id),
+            // PDO で REAL 列へ保存した値を応答に使う場合の有効桁数。
+            placements: payload.views.flatMap(operation => operation.placements).map(row =>
+                ({ ...row, x: Number(row.x.toPrecision(14)), y: Number(row.y.toPrecision(14)) })),
+            view_link_routes: [], canvas_notes: [], affected_view_ids: payload.views.map(operation => operation.id),
             deleted_device_ids: [], deleted_view_ids: []
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };
@@ -59,6 +66,7 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
     });
     function reset() {
         queue.clearPendingSave();
+        eventBus.emit('resources:reloaded');
         requests = [];
         points.clear();
         Object.assign(appState, {
@@ -173,23 +181,55 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
         assert.equal(requests.length, 1);
     });
 
-    await scenario('ズーム中の複数選択はup時にもworld換算で同じ移動量を使う', async () => {
+    await scenario('複数選択のズーム換算と小数座標の保存後も、一括で元に戻してやり直せる', async () => {
         appState.devices.push(normalizeDevice({ id: 2, name: '試験機器2', type: 'pc', ip: '', resource_revision: 1 }));
         appState.placements.push({ id: 2, device_id: 2, view_id: 1, x: 300, y: 300 });
         appState.selectedPlacementIds.add(2);
-        appState.viewState.scale = 2;
+        appState.viewState.scale = 3;
         resource.resetResourceBaseline(appState);
         await device.dispatch('pointerdown', pointer(7, 100, 100, device));
-        await finish(7, 'pointerup', [130, 150]);
-        assert.deepEqual(position(), { x: 115, y: 125 });
-        assert.deepEqual(
-            { x: appState.placements[1].x, y: appState.placements[1].y },
-            { x: 315, y: 325 }
-        );
+        await finish(7, 'pointerup', [132, 150]);
+        const moved = [[100 + 32 / 3, 100 + 50 / 3], [300 + 32 / 3, 300 + 50 / 3]];
         await queue.flushSaveQueue({ silent: true });
         assert.equal(requests.length, 1);
-        assert.deepEqual(requests[0].views[0].placements.map(p => [p.x, p.y]),
-            [[115, 125], [315, 325]]);
+        assert.deepEqual(requests[0].views[0].placements.map(p => [p.x, p.y]), moved);
+        assert.deepEqual(position(), { x: Number(moved[0][0].toPrecision(14)), y: Number(moved[0][1].toPrecision(14)) });
+        await historyKey('z');
+        await queue.flushSaveQueue({ silent: true });
+        assert.deepEqual(requests[1].views[0].placements.map(p => [p.x, p.y]), [[100, 100], [300, 300]]);
+        assert.equal(getPlacementHistoryAvailability(1).undo, false, 'グループ移動全体で履歴1件');
+        await historyKey('z', true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.deepEqual(requests[2].views[0].placements.map(p => [p.x, p.y]), moved);
+    });
+
+    await scenario('開始位置への復帰と1px未満の移動は保存せず、やり直し履歴を保つ', async () => {
+        appState.viewState.scale = 3;
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await move(7, 115, 118);
+        await finish(7, 'pointerup', [100, 100]);
+        assert.deepEqual(position(), { x: 100, y: 100 });
+        assert.equal(requests.length, 0);
+        assert.equal(getPlacementHistoryAvailability(1).undo, false);
+
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await finish(7, 'pointerup', [130, 100]);
+        await queue.flushSaveQueue({ silent: true });
+        await historyKey('z');
+        await queue.flushSaveQueue({ silent: true });
+        const countBefore = requests.length;
+        device = appState.deviceLayer.querySelector('[data-placement-id="1"]');
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await move(7, 115, 118);
+        await finish(7, 'pointerup', [101, 100]);
+        await queue.flushSaveQueue({ silent: true });
+        assert.deepEqual(position(), { x: 100, y: 100 });
+        assert.equal(device.style.transform, 'translate(100px, 100px)');
+        assert.equal(requests.length, countBefore);
+        assert.equal(getPlacementHistoryAvailability(1).undo, false);
+        await historyKey('z', true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.deepEqual(position(), { x: 110, y: 100 });
     });
 
     await scenario('upの位置でも左上境界へクランプする', async () => {
@@ -321,6 +361,42 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
         });
     }
 
+    await scenario('別ビューの再読込では継続し、対象ビューの再読込では移動を破棄する', async () => {
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await move(7, 125, 135);
+        eventBus.emit('resource:reloaded', { kind: 'views', id: 2 });
+        assert.equal(appState.canvas.hasPointerCapture(7), true);
+        appState.placements = [{ ...appState.placements[0], x: 400, y: 450 }];
+        resource.resetResourceBaseline(appState);
+        eventBus.emit('resource:reloaded', { kind: 'views', id: 1 });
+        render();
+        await finish(7, 'pointerup', [155, 165]);
+        assert.deepEqual(position(), { x: 400, y: 450 });
+        assert.equal(appState.canvas.hasPointerCapture(7), false);
+        assert.equal(getPlacementHistoryAvailability(1).undo, false);
+        assert.equal(requests.length, 0);
+    });
+
+    await scenario('確定時にグループの配置が消えたら部分移動を保存せず、次の操作へ復帰する', async () => {
+        appState.devices.push(normalizeDevice({ id: 2, name: '試験機器2', type: 'pc', resource_revision: 1 }));
+        appState.placements.push({ id: 2, device_id: 2, view_id: 1, x: 300, y: 300 });
+        appState.selectedPlacementIds.add(2);
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await move(7, 125, 135);
+        appState.placements.pop();
+        await finish(7, 'pointerup', [NaN, NaN]); // 最終座標を再適用できない終了通知。
+        assert.deepEqual(position(), { x: 100, y: 100 });
+        assert.equal(requests.length, 0);
+        resource.resetResourceBaseline(appState);
+
+        await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+        await finish(7, 'pointerup', [125, 135]);
+        await queue.flushSaveQueue({ silent: true });
+        await historyKey('z');
+        await queue.flushSaveQueue({ silent: true });
+        assert.deepEqual(position(), { x: 100, y: 100 });
+    });
+
     for (const type of ['pointerup', 'pointercancel']) {
         await scenario(`機器移動中の別ポインターの${type}で保存・終了しない`, async () => {
             await device.dispatch('pointerdown', pointer(7, 100, 100, device));
@@ -374,5 +450,63 @@ test('機器ドラッグとCanvasパンは開始したポインターのイベ�
         await finish(7, 'pointercancel');
         assert.equal(appState.canvas.classList.contains('panning'), false);
         assert.equal(appState.canvas.hasPointerCapture(7), false);
+    });
+
+    await scenario('noteMode・authExpired・ビュー競合中はドラッグを開始せず位置と保存対象を変えない', async () => {
+        for (const mutate of [
+            () => { appState.noteMode = true; },
+            () => { appState.authExpired = true; },
+            () => { appState.resourceConflicts.views.set(1, {}); }
+        ]) {
+            reset();
+            mutate();
+            await device.dispatch('pointerdown', pointer(7, 100, 100, device));
+            await move(7, 160, 180);
+            await finish(7);
+            assert.deepEqual(position(), { x: 100, y: 100 });
+            assert.equal(appState.canvas.hasPointerCapture(7), false);
+            assert.equal(requests.length, 0);
+        }
+    });
+
+    await scenario('openPanelの確認待ち中にpointerupが来た場合は確認承認後でもドラッグを中断する', async () => {
+        const { appendPhpTemplates } = await import('./helpers/workspace-dom.mjs');
+        const panelWrapper = document.createElement('div');
+        appendPhpTemplates(panelWrapper, tag => document.createElement(tag), ['templates/components/property_panel.php']);
+        document.body.appendChild(panelWrapper);
+        const panel = await import('../public/js/ui/property-panel.js');
+        try {
+            appState.devices.push(normalizeDevice({ id: 2, name: '試験機器2', type: 'pc', ip: '', resource_revision: 1 }));
+            appState.placements.push({ id: 2, device_id: 2, view_id: 1, x: 300, y: 300 });
+            resource.resetResourceBaseline(appState);
+
+            const deviceB = document.createElement('div');
+            deviceB.className = 'device';
+            deviceB.dataset.placementId = '2';
+            appState.deviceLayer.append(deviceB);
+            drag.makePlacementDraggable(deviceB, appState.placements[1]);
+
+            assert.equal(await panel.openPanel(appState.devices[0]), true);
+            const nameInput = document.getElementById('p-name');
+            nameInput.value = '未適用の名称';
+            await nameInput.dispatch('input');
+
+            await deviceB.dispatch('pointerdown', pointer(7, 300, 300, deviceB));
+            const moving = move(7, 350, 360);
+            await setImmediate();
+            const finishing = finish(7, 'pointerup', [360, 370]);
+            const discardBtn = document.getElementById('unsaved-changes-discard');
+            assert.ok(discardBtn, '未保存確認ダイアログが表示される');
+            await discardBtn.dispatch('click');
+            await moving;
+            await finishing;
+            await queue.flushSaveQueue({ silent: true });
+
+            assert.deepEqual({ x: appState.placements[1].x, y: appState.placements[1].y }, { x: 300, y: 300 });
+            assert.equal(requests.length, 0);
+        } finally {
+            await panel.closePanel();
+            panelWrapper.remove();
+        }
     });
 });

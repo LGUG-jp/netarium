@@ -48,7 +48,10 @@
                         tabindex="-1" hidden aria-label="登録または差し替える図面ファイル">
                     <div id="floor-plan-file-error" class="form-error" aria-live="polite" hidden></div>
                     <p class="form-support">
-                        入力はPNG/JPEG（最大<?= (int)($appConfig['floor_plan_upload_max_bytes'] / (1024 * 1024)) ?>MiB）。長辺<?= (int)$appConfig['floor_plan_max_dimension'] ?>px以下へ自動縮小して保存します。詳細は<a href="help-views.html#floor-plans" target="_blank" rel="noopener">ヘルプ</a>を参照してください。
+                        入力はPNG/JPEG（最大<?= (int)($appConfig['floor_plan_upload_max_bytes'] / (1024 * 1024)) ?>MiB）。長辺<?= (int)$appConfig['floor_plan_max_dimension'] ?>px以下へ自動縮小して保存します。
+                    </p>
+                    <p class="form-support">
+                        詳細は<a href="help-views.html#floor-plans" target="_blank" rel="noopener">ヘルプ</a>を参照してください。
                     </p>
                 </div>
             </div>

@@ -119,7 +119,7 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
                 devices: savedDevices,
                 views: savedViews,
                 placements: [placement1],
-                links: [],
+                view_link_routes: [],
                 canvas_notes: [],
                 deleted_device_ids: payload.devices?.filter(d => d.operation === 'delete').map(d => d.id) || [],
                 deleted_view_ids: payload.views?.filter(v => v.operation === 'delete').map(v => v.id) || [],
@@ -186,14 +186,22 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
     const origFetch = globalThis.fetch;
     let deferredSaveCalls = 0;
     let imageUploadCalls = 0;
+    let uploadedDeviceRevision = 0;
     globalThis.fetch = async (url, options) => {
         if (url.includes('action=upload_device_image')) {
             imageUploadCalls++;
             if (Number(options.body.get('revision')) !== nextRevision - 1) {
                 return new Response(JSON.stringify({ ok: false, error: '画像登録のrevisionが古いです' }), { status: 409 });
             }
+            const currentDevRev = state.devices.find(d => d.id === 10)?.resource_revision || 1;
+            if (Number(options.body.get('expected_device_revision')) !== currentDevRev) {
+                return new Response(JSON.stringify({ ok: false, error: '機器のdevice_revisionが古いです' }), { status: 409 });
+            }
+            uploadedDeviceRevision = currentDevRev + 1;
             return new Response(JSON.stringify({
                 ok: true, revision: nextRevision++,
+                previous_device_revision: currentDevRev,
+                device_revision: uploadedDeviceRevision,
                 images: [{ id: 1, device_id: 10, caption: '' }]
             }));
         }
@@ -236,7 +244,12 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
     await imageUpload;
     assert.equal(imageUploadCalls, 1);
     assert.equal(state.deviceImages[0].device_id, 10);
-    assert.equal(state.devices.find(device => device.id === 10).resource_revision, savedAttributeRevision);
+    assert.equal(
+        state.devices.find(device => device.id === 10).resource_revision,
+        savedAttributeRevision + 1,
+        '画像登録応答の device_revision で機器の resource_revision を同期すること'
+    );
+    assert.equal(uploadedDeviceRevision, savedAttributeRevision + 1);
 
     assert.equal(state.isSaving, false);
     assert.equal(deferredSaveCalls, 2, '保存中の追加変更によって2回目のsave_resourcesが自動実行されたこと');
@@ -244,6 +257,13 @@ test('共通保存キューと自動保存 (Issue #82) の総合検証', async (
     assert.equal(state.devices.find(device => device.id === 10).ip, '10.0.0.1');
     assert.equal(state.appStatus.state, 'saved');
     assert.equal(saveBtn.disabled, true);
+
+    // 画像登録後の属性編集で更新後の resource_revision が expected_revision に使われること
+    state.devices.find(d => d.id === 10).memo = '画像登録後の更新';
+    assert.equal(await window.flushSaveQueue({ silent: true }), true);
+    const afterImageSaveCall = fetchCalls.filter(f => f.action === 'save_resources').at(-1);
+    assert.equal(afterImageSaveCall.body.devices[0].expected_revision, uploadedDeviceRevision);
+    assert.equal(afterImageSaveCall.body.devices[0].device.memo, '画像登録後の更新');
 
     // 5. 409 競合時の挙動 (Phase 5D-1 & 5D-3)
     globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error: '機器 SW-01 は他で更新されました' }), { status: 409 });
@@ -334,7 +354,7 @@ test('各操作確定時の自動保存と二重操作解消 (Issue #82)', async
         if (url.includes('action=save_resources')) {
             const body = JSON.parse(options.body);
             saveCalls.push(body);
-            const idMaps = { devices: {}, views: {}, placements: {}, links: {} };
+            const idMaps = { devices: {}, views: {}, placements: {} };
             const savedViews = [];
             for (const v of body.views || []) {
                 if (v.operation === 'create') {
@@ -343,19 +363,26 @@ test('各操作確定時の自動保存と二重操作解消 (Issue #82)', async
                 } else {
                     savedViews.push({ ...v.view, id: v.id, resource_revision: (v.expected_revision || 1) + 1 });
                 }
-                for (const l of v.links || []) {
-                    idMaps.links[l.id] = l.id;
-                }
             }
             return new Response(JSON.stringify({
                 ok: true, revision: 10, saved_at: new Date().toISOString(),
                 id_maps: idMaps,
                 devices: [], views: savedViews,
                 placements: body.views?.[0]?.placements || [],
-                links: body.views?.[0]?.links || [],
+                view_link_routes: body.views?.[0]?.view_link_routes || [],
                 canvas_notes: [],
                 deleted_device_ids: [], deleted_view_ids: [],
                 affected_view_ids: body.views?.map(v => v.id) || []
+            }));
+        }
+        if (url.includes('action=save_connections')) {
+            const body = JSON.parse(options.body);
+            saveCalls.push(body);
+            return new Response(JSON.stringify({
+                ok: true, revision: 11, saved_at: new Date().toISOString(),
+                id_maps: { links: { 1: 101 }, device_ports: {} },
+                links: body.links.map(({ id, link }) => ({ ...link, id: id + 100, resource_revision: 1 })),
+                device_ports: [], deleted_link_ids: [], deleted_device_port_ids: [], removed_view_link_routes: [], views: []
             }));
         }
         return new Response(JSON.stringify({ ok: true }));
@@ -385,6 +412,8 @@ test('各操作確定時の自動保存と二重操作解消 (Issue #82)', async
         { id: 2, device_id: 2, view_id: 1, x: 50, y: 50 }
     ];
     appState.links = [];
+    appState.devicePorts = [];
+    appState.viewLinkRoutes = [];
     appState.currentViewId = 1;
     appState.nextViewId = 2;
     appState.nextLinkId = 1;
@@ -409,8 +438,14 @@ test('各操作確定時の自動保存と二重操作解消 (Issue #82)', async
     handleLinkModeClick(appState.devices[1]);
     await setImmediate();
     await new Promise(r => setTimeout(r, 20));
-    assert.equal(saveCalls.length, 1, 'リンク作成で即時save_resourcesが呼ばれること');
-    assert.equal(appState.links.length, 1);
+    assert.equal(saveCalls.length, 1, 'リンク作成で即時save_connectionsが呼ばれること');
+    assert.deepEqual(saveCalls[0].links, [{
+        operation: 'create', id: 1, link: {
+            from_id: 1, to_id: 2, from_port_id: null, to_port_id: null, system_id: null, label: '', memo: ''
+        }
+    }]);
+    assert.equal(Object.hasOwn(saveCalls[0], 'views'), false);
+    assert.deepEqual(appState.links.map(({ id, resource_revision }) => [id, resource_revision]), [[101, 1]]);
 
     // 3. ビュー管理モーダルの開閉 (registerModalOpen/registerModalCloseが正常に動作すること)
     openViewManager();

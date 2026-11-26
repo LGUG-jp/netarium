@@ -170,42 +170,4 @@ class FloorPlanRepository
 
         $stmt->execute([':view_id' => $viewId]);
     }
-
-    /**
-     * フロア図面の表示設定更新
-     */
-    public function updateSettings(
-        int $viewId,
-        float $x,
-        float $y,
-        float $scale,
-        float $opacity,
-        int $isVisible,
-        int $revision,
-        string $updatedAt
-    ): void {
-        $stmt = $this->db->prepare("
-            UPDATE view_floor_plans
-            SET
-                x = :x,
-                y = :y,
-                scale = :scale,
-                opacity = :opacity,
-                is_visible = :is_visible,
-                revision = :revision,
-                updated_at = :updated_at
-            WHERE view_id = :view_id
-        ");
-
-        $stmt->execute([
-            ':view_id' => $viewId,
-            ':x' => $x,
-            ':y' => $y,
-            ':scale' => $scale,
-            ':opacity' => $opacity,
-            ':is_visible' => $isVisible,
-            ':revision' => $revision,
-            ':updated_at' => $updatedAt,
-        ]);
-    }
 }

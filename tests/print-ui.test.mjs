@@ -18,7 +18,7 @@ function setup(t) {
         ],
         placements: [{ id: 1, view_id: 1, device_id: 1, x: 100, y: 100 },
             { id: 2, view_id: 1, device_id: 2, x: 400, y: 100 }],
-        links: [{ id: 1, view_id: 1, from_id: 1, to_id: 2, label: '合成配線' }],
+        links: [{ id: 1, from_id: 1, to_id: 2, label: '合成配線', resource_revision: 1 }],
         linkSystems: [],
         canvasNotes: [{ id: 1, view_id: 1, text: '<b>合成メモ</b>\n2行目', x: 150, y: 300, width: 220, height: 120,
             background_color: '#FFF3B0', background_opacity: 0.5, text_color: '#263238', font_size: 20 }],
@@ -120,11 +120,17 @@ test('一括選択解除・配線とラベルの依存・図面対象外・viewp
     await dom.get('palette-print-btn').dispatch('click');
     assert.equal(dom.get('print-floorPlan').disabled, true);
     assert.equal(dom.get('print-floorPlan').checked, false);
+    assert.equal(dom.get('print-type-rack').disabled, true);
+    assert.equal(dom.get('print-type-rack').checked, false);
+    assert.equal(dom.get('print-device-count').textContent, '9 / 9種類を印刷');
     await dom.get('print-clear-all').dispatch('click');
     assert.equal(dom.get('print-type-switch').checked, false);
+    assert.equal(dom.get('print-device-count').textContent, '0 / 9種類を印刷');
     assert.equal(dom.get('print-sheet-container').children[0].querySelectorAll('.print-device').length, 0);
     await dom.get('print-select-all').dispatch('click');
     assert.equal(dom.get('print-type-switch').checked, true);
+    assert.equal(dom.get('print-type-rack').checked, false);
+    assert.equal(dom.get('print-device-count').textContent, '9 / 9種類を印刷');
     assert.equal(dom.get('print-sheet-container').children[0].querySelectorAll('.print-device').length, 2);
     assert.equal(dom.get('print-notes').parentElement.querySelector('strong').textContent, 'キャンバスメモ');
     await change(dom, 'print-links', false);
@@ -452,4 +458,38 @@ test('ラックの名称・種別・IP設定は独立し、名称OFFの空き領
             assert.equal(text(other), '');
         }
     }
+});
+
+test('物理配置図の印刷設定ではラックのON/OFFと一括選択・解除でラック本体とラック接続を制御できる', async t => {
+    const dom = setup(t);
+    appState.views.push({ id: 2, name: '収容ラック', view_type: 'rack' });
+    appState.placements = appState.placements.slice(0, 1);
+    appState.floorRackPlacements = [{ floor_view_id: 1, rack_view_id: 2, x: 400, y: 100 }];
+    appState.rackMounts = [{ view_id: 2, device_id: 2, face: 'front', start_u: 1, height_u: 1, width_slot: 'full' }];
+    await dom.get('palette-print-btn').dispatch('click');
+    assert.equal(dom.get('print-type-rack').disabled, false);
+    assert.equal(dom.get('print-type-rack').checked, true);
+    assert.equal(dom.get('print-device-count').textContent, '10 / 10種類を印刷');
+    const sheet = () => dom.get('print-sheet-container').children[0];
+    assert.equal(sheet().querySelectorAll('.print-device').length, 2);
+    assert.equal(sheet().querySelectorAll('.print-rack').length, 1);
+    assert.equal(sheet().querySelectorAll('.print-wire').length, 1);
+
+    await change(dom, 'print-type-rack', false);
+    assert.equal(dom.get('print-device-count').textContent, '9 / 10種類を印刷');
+    assert.equal(sheet().querySelectorAll('.print-device').length, 1);
+    assert.equal(sheet().querySelectorAll('.print-rack').length, 0);
+    assert.equal(sheet().querySelectorAll('.print-wire').length, 0);
+
+    await dom.get('print-select-all').dispatch('click');
+    assert.equal(dom.get('print-type-rack').checked, true);
+    assert.equal(dom.get('print-device-count').textContent, '10 / 10種類を印刷');
+    assert.equal(sheet().querySelectorAll('.print-device').length, 2);
+    assert.equal(sheet().querySelectorAll('.print-wire').length, 1);
+
+    await dom.get('print-clear-all').dispatch('click');
+    assert.equal(dom.get('print-type-rack').checked, false);
+    assert.equal(dom.get('print-device-count').textContent, '0 / 10種類を印刷');
+    assert.equal(sheet().querySelectorAll('.print-device').length, 0);
+    assert.equal(sheet().querySelectorAll('.print-wire').length, 0);
 });

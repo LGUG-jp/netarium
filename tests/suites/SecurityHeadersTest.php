@@ -139,4 +139,52 @@ final class SecurityHeadersTest extends TestCase
             $server->stop();
         }
     }
+
+    public function testStaticCspDeliveryBoundariesAndSessionGcLifetime(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $webConfig = (string)file_get_contents($root . '/public/web.config');
+        $this->assertStringContains('<location path="healthcheck.php">', $webConfig);
+
+        $apacheConf = (string)file_get_contents($root . '/docker/apache.conf');
+        $this->assertMatchesRegex('/<FilesMatch\s+"[^"]*html\?[^"]*">/', $apacheConf);
+
+        $helpHtml = (string)file_get_contents($root . '/public/help.html');
+        $this->assertFalse((bool)preg_match('/\bstyle\s*=/i', $helpHtml), 'help.html must not contain inline style attributes');
+
+        $phpIni = parse_ini_file($root . '/docker/php.ini', false, INI_SCANNER_TYPED);
+        $this->assertSame(43200, $phpIni['session.gc_maxlifetime'] ?? null);
+        $this->assertTrue(
+            in_array($phpIni['session.upload_progress.enabled'] ?? null, [0, false], true),
+            'Docker must disable session upload progress'
+        );
+
+        $tmpStorage = sys_get_temp_dir() . '/netarium_session_gc_' . bin2hex(random_bytes(6));
+        mkdir($tmpStorage, 0700, true);
+        try {
+            $cmd = [
+                PHP_BINARY,
+                '-r',
+                '$_ENV["NETARIUM_STORAGE_DIR"] = ' . var_export($tmpStorage, true) . ';'
+                . 'require ' . var_export($root . '/bootstrap.php', true) . ';'
+                . 'startAppSession();'
+                . 'echo ini_get("session.gc_maxlifetime");',
+            ];
+            $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            $this->assertTrue(is_resource($proc));
+            fclose($pipes[0]);
+            $out = stream_get_contents($pipes[1]);
+            $err = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $this->assertSame(0, proc_close($proc), $err);
+            $this->assertTrue((int)$out >= APP_SESSION_ABSOLUTE_SECONDS);
+        } finally {
+            foreach (glob($tmpStorage . '/sessions/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($tmpStorage . '/sessions');
+            @rmdir($tmpStorage);
+        }
+    }
 }

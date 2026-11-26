@@ -331,7 +331,7 @@ class CsvTest extends TestCase
                 ON CONFLICT(device_id) DO UPDATE SET status='green',last_checked_at='2026-01-01 00:00:00'");
             $additional = $db->query('SELECT * FROM device_ip_addresses')->fetchAll(\PDO::FETCH_ASSOC);
             $makeRow = static function (array $device, string $ip, string $memo = ''): array {
-                $row = array_fill(0, 20, '');
+                $row = array_fill(0, count(self::CSV_COLUMNS), '');
                 $row[0] = (string)$device['id'];
                 $row[1] = $device['name'];
                 $row[2] = $device['type'];
@@ -382,7 +382,7 @@ class CsvTest extends TestCase
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
-            $row = array_fill(0, 20, '');
+            $row = array_fill(0, count(self::CSV_COLUMNS), '');
             $row[1] = 'CSV PC';
             $row[2] = 'pc';
             $row[13] = 'PCメモ';
@@ -439,7 +439,7 @@ class CsvTest extends TestCase
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
             $before = $this->csvDatabaseState($db);
             foreach (['9007199254740992', '9007199254740993', '999999999999999999999999999999', '1.5'] as $id) {
-                $row = array_fill(0, 20, '');
+                $row = array_fill(0, count(self::CSV_COLUMNS), '');
                 $row[0] = $id;
                 $row[1] = 'Unsafe CSV ID';
                 $row[2] = 'switch';
@@ -459,7 +459,7 @@ class CsvTest extends TestCase
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
             $rows = [];
             foreach (['Last safe CSV ID', 'Exhausted CSV ID'] as $name) {
-                $row = array_fill(0, 20, '');
+                $row = array_fill(0, count(self::CSV_COLUMNS), '');
                 $row[1] = $name;
                 $row[2] = 'switch';
                 $row[4] = json_encode([['ip' => '198.51.100.' . (count($rows) + 101), 'label' => '採番ロールバック']]);
@@ -524,7 +524,7 @@ class CsvTest extends TestCase
             }
             foreach (['A', '𠀀'] as $character) {
                 $data = $client->get('/api.php?action=load')->assertOk()->getJson();
-                $row = array_fill(0, 20, '');
+                $row = array_fill(0, count(self::CSV_COLUMNS), '');
                 $row[0] = (string)$data['devices'][0]['id'];
                 $row[1] = '拒否時に反映してはいけない';
                 $row[2] = 'switch';
@@ -604,7 +604,7 @@ class CsvTest extends TestCase
                 'views' => [],
             ])->assertOk();
             $saved = $client->get('/api.php?action=load')->assertOk()->getJson();
-            $row = array_fill(0, 20, '');
+            $row = array_fill(0, count(self::CSV_COLUMNS), '');
             $row[0] = (string)$device['id'];
             $row[1] = '安全化の拒否境界';
             $row[2] = 'switch';
@@ -649,7 +649,7 @@ class CsvTest extends TestCase
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
-            $valid = array_fill(0, 20, '');
+            $valid = array_fill(0, count(self::CSV_COLUMNS), '');
             $valid[1] = '反映してはいけない新規機器';
             $valid[2] = 'switch';
             $valid[4] = '[{"ip":"198.51.100.110","label":"反映禁止"}]';
@@ -722,7 +722,7 @@ class CsvTest extends TestCase
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
-            $row = array_fill(0, 20, '');
+            $row = array_fill(0, count(self::CSV_COLUMNS), '');
             $row[1] = '競合後に作成してはいけない機器';
             $row[2] = 'switch';
             $row[4] = '[{"ip":"198.51.100.111","label":"競合時反映禁止"}]';
@@ -747,7 +747,7 @@ class CsvTest extends TestCase
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
             $data = $client->get('/api.php?action=load')->assertOk()->getJson();
-            $row = array_fill(0, 20, '');
+            $row = array_fill(0, count(self::CSV_COLUMNS), '');
             $row[1] = '一度だけ作成する機器';
             $row[2] = 'switch';
             $row[4] = '[{"ip":"198.51.100.112","label":"一度だけ"}]';
@@ -765,6 +765,270 @@ class CsvTest extends TestCase
         });
     }
 
+    public function testCsvCurrentHierarchyNamesResolveWithoutGeneratingHierarchy(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $db->exec("INSERT INTO buildings(id,name) VALUES
+                (71,'CSV building'),(72,'重複建物'),(73,'　重複建物　')");
+            $db->exec("INSERT INTO floors(id,building_id,name) VALUES
+                (81,71,'1F'),(82,71,'2F'),(83,71,'重複階'),(84,71,'　重複階　'),(85,72,'1F')");
+            $db->exec("UPDATE devices SET floor_id=81, facility=' 旧施設 ', floor=' 旧階 '");
+            $hierarchy = [
+                $db->query('SELECT * FROM buildings ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
+                $db->query('SELECT * FROM floors ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
+            ];
+            // 空欄・片側・未一致・曖昧でも新規と更新の両方を確定できる。
+            $cases = [
+                ["\u{3000}CSV building\u{00A0}", "\u{2003}2F\u{3000}", 82, null],
+                ['CSV building', '1F', 81, null],
+                ['CSV building', '重複階', null, 'floor_ambiguous'],
+                ['重複建物', '1F', null, 'floor_ambiguous'],
+                ['存在しない建物', '未知階', null, 'floor_unmatched'],
+                ['CSV building', '', null, 'floor_incomplete'],
+                ['', '1F', null, 'floor_incomplete'],
+                ['', '', null, 'floor_empty'],
+            ];
+            foreach ($cases as $index => [$facility, $floor, $resolved, $warning]) {
+                $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $device = $data['devices'][0];
+                $id = (int)$device['id'];
+                $before = $db->query("SELECT * FROM devices WHERE id={$id}")->fetch(\PDO::FETCH_ASSOC);
+                $device['facility'] = $facility;
+                $device['floor'] = $floor;
+                $device['memo'] = 'CSV所属照合 ' . $index;
+                $new = ['name' => 'CSV所属新規 ' . $index, 'type' => 'pc',
+                    'facility' => $facility, 'floor' => $floor];
+                $this->writeCsvRows($client, $path, [$this->csvDeviceRow($device), $this->csvDeviceRow($new)]);
+                $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+                $this->assertTrue($preview['can_commit']);
+                $this->assertSame(0, $preview['summary']['error']);
+                $expected = $resolved ?? (int)$before['floor_id'];
+                $this->assertSame($expected !== (int)$before['floor_id'],
+                    in_array('floor_id', $preview['rows'][0]['changed_fields'], true));
+                $this->assertFalse(in_array('facility', $preview['rows'][0]['changed_fields'], true));
+                $this->assertFalse(in_array('floor', $preview['rows'][0]['changed_fields'], true));
+                if ($warning !== null) {
+                    foreach ($preview['rows'] as $row) {
+                        $warnings = array_column($row['warnings'], null, 'code');
+                        $this->assertArrayHasKey($warning, $warnings);
+                        $this->assertStringContains('所属更新なし', $warnings[$warning]['message']);
+                        $this->assertStringContains('既存所属を保持', $warnings[$warning]['message']);
+                        if ($warning === 'floor_empty') {
+                            $this->assertStringContains('空欄は所属解除を意味しません', $warnings[$warning]['message']);
+                        }
+                    }
+                }
+                $client->postJson('/api.php?action=commit_devices_csv_import', [
+                    'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+                ])->assertOk();
+                $after = $db->query("SELECT * FROM devices WHERE id={$id}")->fetch(\PDO::FETCH_ASSOC);
+                $this->assertSame($expected, (int)$after['floor_id']);
+                $this->assertSame($before['facility'], $after['facility']);
+                $this->assertSame($before['floor'], $after['floor']);
+                $query = $db->prepare('SELECT * FROM devices WHERE name=?');
+                $query->execute([$new['name']]);
+                $inserted = $query->fetch(\PDO::FETCH_ASSOC);
+                $query->closeCursor();
+                $this->assertSame($resolved, $inserted['floor_id']);
+                $this->assertSame($facility, $inserted['facility']);
+                $this->assertSame($floor, $inserted['floor']);
+            }
+            $this->assertSame($hierarchy, [
+                $db->query('SELECT * FROM buildings ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
+                $db->query('SELECT * FROM floors ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC),
+            ]);
+        });
+    }
+
+    public function testCsvExportsCurrentNamesAndRoundTripDoesNotRewriteLegacyOrHistory(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $db->exec("INSERT INTO buildings(id,name) VALUES(71,'現在建物')");
+            $db->exec("INSERT INTO floors(id,building_id,name) VALUES(81,71,'現在階')");
+            $db->exec("UPDATE devices SET floor_id=81, facility='　改名前施設 ', floor=' 旧階　'");
+            $id = (int)$db->query('SELECT MIN(id) FROM devices')->fetchColumn();
+            $db->exec("UPDATE devices SET floor_id=NULL WHERE id={$id}");
+            foreach ([
+                ['現在建物', '現在階'], ['=建物', '=階'], ['+建物', '+階'],
+                ['-建物', '-階'], ['@建物', '@階'],
+                ['=' . str_repeat('建', 99), '=' . str_repeat('階', 99)],
+            ] as [$name, $floorName]) {
+                $db->prepare('UPDATE buildings SET name=? WHERE id=71')->execute([$name]);
+                $db->prepare('UPDATE floors SET name=? WHERE id=81')->execute([$floorName]);
+                $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $before = $this->csvDatabaseState($db);
+                $history = $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+                $export = $client->get('/api.php?action=export_devices_csv')->assertStatus(200)->getBody();
+                $rows = $this->parseCsv($export);
+                $this->assertSame(self::CSV_COLUMNS, array_shift($rows));
+                foreach ($rows as $row) {
+                    $this->assertSame(20, count($row));
+                    $this->assertSame((int)$row[0] === $id ? '' : ($name === '現在建物' ? $name : "'" . $name), $row[5]);
+                    $this->assertSame((int)$row[0] === $id ? '' : ($name === '現在建物' ? $floorName : "'" . $floorName), $row[6]);
+                }
+                file_put_contents($path, $export);
+                $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+                $this->assertSame(count($rows), $preview['summary']['unchanged']);
+                $this->assertSame(0, $preview['summary']['update']);
+                $this->assertSame(0, $preview['summary']['error']);
+                $unclassifiedRow = array_column($preview['rows'], null, 'id')[$id];
+                $this->assertFalse(in_array('floor_empty', array_column($unclassifiedRow['warnings'], 'code'), true));
+                $this->assertFalse($preview['can_commit']);
+                $client->postJson('/api.php?action=commit_devices_csv_import', [
+                    'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+                ])->assertStatus(400);
+                $this->assertSame($before, $this->csvDatabaseState($db));
+                $this->assertSame($history, $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+            }
+            // 改名前の名称や旧ビューの別名では照合しない。
+            $db->exec("UPDATE views SET facility='改名前施設', floor='旧階', floor_id=81");
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $device = array_column($data['devices'], null, 'id')[$id];
+            $device['facility'] = '改名前施設';
+            $device['floor'] = '旧階';
+            $device['memo'] = '旧名は所属更新なし';
+            $this->writeCsvRows($client, $path, [$this->csvDeviceRow($device)]);
+            $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+            $this->assertTrue($preview['can_commit']);
+            $this->assertTrue(in_array('floor_unmatched', array_column($preview['rows'][0]['warnings'], 'code'), true));
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+            ])->assertOk();
+            $this->assertNull($db->query("SELECT floor_id FROM devices WHERE id={$id}")->fetchColumn());
+        });
+    }
+
+    public function testEmptyCsvFloorWarningDependsOnMembershipAndFinalChanges(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $db->exec("INSERT INTO buildings(id,name) VALUES(71,'CSV building')");
+            $db->exec("INSERT INTO floors(id,building_id,name) VALUES(81,71,'1F')");
+            $id = (int)$db->query('SELECT MIN(id) FROM devices')->fetchColumn();
+            $db->exec("UPDATE devices SET floor_id=81 WHERE id={$id}");
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $before = $this->csvDatabaseState($db);
+            $rows = $this->parseCsv($client->get('/api.php?action=export_devices_csv')->assertStatus(200)->getBody());
+            array_shift($rows);
+            foreach ($rows as &$row) { $row[5] = ''; $row[6] = ''; }
+            unset($row);
+            $this->writeCsvRows($client, $path, $rows);
+            $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+            $this->assertSame(count($rows), $preview['summary']['unchanged']);
+            $this->assertFalse($preview['can_commit']);
+            foreach ($preview['rows'] as $row) {
+                $warnings = array_column($row['warnings'], null, 'code');
+                $this->assertSame($row['id'] === $id, isset($warnings['floor_empty']));
+                if ($row['id'] === $id) {
+                    $this->assertStringContains('既存所属を保持', $warnings['floor_empty']['message']);
+                }
+            }
+            $this->assertSame($before, $this->csvDatabaseState($db));
+            $changed = null;
+            foreach ($rows as &$row) {
+                if ((int)$row[0] !== $id) {
+                    $row[13] = '他属性を変更する場合は空欄の意味を案内';
+                    $changed = (int)$row[0];
+                    break;
+                }
+            }
+            unset($row);
+            $this->writeCsvRows($client, $path, $rows);
+            $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+            $changedRow = array_column($preview['rows'], null, 'id')[$changed];
+            $this->assertSame('update', $changedRow['operation']);
+            $this->assertTrue(in_array('floor_empty', array_column($changedRow['warnings'], 'code'), true));
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+            ])->assertOk();
+            $this->assertSame(81, (int)$db->query("SELECT floor_id FROM devices WHERE id={$id}")->fetchColumn());
+            $this->assertNull($db->query("SELECT floor_id FROM devices WHERE id={$changed}")->fetchColumn());
+        });
+    }
+
+    public function testNewCsvDeviceCanUseLongCurrentFloorNamesWithoutExpandingLegacyContract(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $db->exec("INSERT INTO buildings(id,name) VALUES(71,'CSV building')");
+            $db->exec("INSERT INTO floors(id,building_id,name) VALUES(81,71,'1F')");
+            foreach ([str_repeat('階', 50), str_repeat('階', 51), str_repeat('階', 100),
+                '=' . str_repeat('階', 99)] as $index => $floorName) {
+                $db->prepare('UPDATE floors SET name=? WHERE id=81')->execute([$floorName]);
+                $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $csvFloor = str_starts_with($floorName, '=') ? "'" . $floorName : $floorName;
+                $this->writeCsvRows($client, $path, [$this->csvDeviceRow([
+                    'name' => '長い所属名の機器 ' . $index, 'type' => 'pc',
+                    'facility' => 'CSV building', 'floor' => $csvFloor,
+                ])]);
+                $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+                $this->assertSame(0, $preview['summary']['error']);
+                $this->assertTrue($preview['can_commit']);
+                $client->postJson('/api.php?action=commit_devices_csv_import', [
+                    'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+                ])->assertOk();
+                $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+                $device = array_values(array_filter($data['devices'],
+                    static fn(array $row): bool => $row['name'] === '長い所属名の機器 ' . $index))[0];
+                $this->assertSame(81, $device['floor_id']);
+                $this->assertSame('CSV building', $device['facility']);
+                $this->assertSame($index === 0 ? $floorName : '', $device['floor']);
+                $device['memo'] = 'CSV登録後の通常編集も可能';
+                $client->postJson('/api.php?action=save_resources', ['views' => [], 'devices' => [[
+                    'operation' => 'update', 'id' => $device['id'],
+                    'expected_revision' => $device['resource_revision'], 'device' => $device,
+                ]]])->assertOk();
+                $this->assertSame($device['memo'], $db->query('SELECT memo FROM devices WHERE id=' . $device['id'])->fetchColumn());
+            }
+            $sanitizedBuilding = '=' . str_repeat('棟', 99);
+            $sanitizedFloor = '=' . str_repeat('階', 49);
+            $db->prepare('UPDATE buildings SET name=? WHERE id=71')->execute([$sanitizedBuilding]);
+            $db->prepare('UPDATE floors SET name=? WHERE id=81')->execute([$sanitizedFloor]);
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $this->writeCsvRows($client, $path, [$this->csvDeviceRow([
+                'name' => '安全化境界の建物名機器', 'type' => 'pc',
+                'facility' => "'" . $sanitizedBuilding, 'floor' => "'" . $sanitizedFloor,
+            ])]);
+            $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+            $this->assertSame(0, $preview['summary']['error']);
+            $this->assertTrue($preview['can_commit']);
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+            ])->assertOk();
+            $created = $db->query("SELECT floor_id, facility, floor FROM devices WHERE name='安全化境界の建物名機器'")->fetch(\PDO::FETCH_ASSOC);
+            $this->assertSame(81, (int)$created['floor_id']);
+            $this->assertSame($sanitizedBuilding, $created['facility']);
+            $this->assertSame($sanitizedFloor, $created['floor']);
+            $expected = $db->query('SELECT id,floor_id,facility,floor,memo FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC);
+            file_put_contents($path, $client->postJson('/api.php?action=export_backup_zip', [])->assertStatus(200)->getBody());
+            $preview = $client->postMultipart('/api.php?action=preview_backup_restore', [],
+                ['backup_zip' => ['path' => $path, 'filename' => 'long-floor.zip', 'type' => 'application/zip']])
+                ->assertStatus(200)->getJson();
+            $client->postJson('/api.php?action=commit_backup_restore', [
+                'restore_token' => $preview['restore_token'], 'confirmation' => 'バックアップから復元',
+            ])->assertOk();
+            $this->assertSame($expected, $db->query('SELECT id,floor_id,facility,floor,memo FROM devices ORDER BY id')->fetchAll(\PDO::FETCH_ASSOC));
+        });
+    }
+
+    public function testNewCsvLegacySourceCannotBreakSaveOrBackupValidation(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $before = $this->csvDatabaseState($db);
+            foreach ([['Main', str_repeat('階', 51)], ["\0Main", '1F'], ['Main', "1F\0"]] as [$facility, $floor]) {
+                $row = $this->csvDeviceRow(['name' => '原文検証対象', 'type' => 'pc',
+                    'facility' => $facility, 'floor' => $floor]);
+                $this->writeCsvRows($client, $path, [$row]);
+                $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+                $this->assertSame(1, $preview['summary']['error']);
+                $this->assertFalse($preview['can_commit']);
+                $client->postJson('/api.php?action=commit_devices_csv_import', [
+                    'import_token' => $preview['import_token'], 'revision' => $data['revision'],
+                ])->assertStatus(400);
+                $this->assertSame($before, $this->csvDatabaseState($db));
+            }
+        });
+    }
+
     public function testRejectLegacy19ColumnsAndMismatchedHeaders(): void
     {
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
@@ -776,7 +1040,7 @@ class CsvTest extends TestCase
             $reordered = self::CSV_COLUMNS;
             [$reordered[3], $reordered[4]] = [$reordered[4], $reordered[3]];
             $before = $this->csvDatabaseState($db);
-            foreach ([$legacy, $renamed, $reordered] as $columns) {
+            foreach ([$legacy, [...self::CSV_COLUMNS, 'floor_id'], $renamed, $reordered] as $columns) {
                 $stream = fopen($path, 'wb');
                 fputcsv($stream, $columns, ',', '"', '');
                 fputcsv($stream, array_fill(0, count($columns), ''), ',', '"', '');
@@ -787,6 +1051,34 @@ class CsvTest extends TestCase
                 )->assertStatus(400)->getJson();
                 $this->assertFalse($response['ok']);
                 $this->assertStringContains('テンプレート', $response['error']);
+                $this->assertSame($before, $this->csvDatabaseState($db));
+            }
+        });
+    }
+
+    public function testCsvRowWidthMustMatchHeader(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $before = $this->csvDatabaseState($db);
+            foreach ([19, 21] as $rowWidth) {
+                $stream = fopen($path, 'wb');
+                try {
+                    fputcsv($stream, self::CSV_COLUMNS, ',', '"', '');
+                    $row = array_fill(0, $rowWidth, '');
+                    $row[1] = '列数不一致で作成してはいけない機器';
+                    $row[2] = 'pc';
+                    fputcsv($stream, $row, ',', '"', '');
+                } finally {
+                    fclose($stream);
+                }
+                $preview = $this->previewCsv($client, $path, (int)$data['revision']);
+                $this->assertSame(1, $preview['summary']['error']);
+                $this->assertFalse($preview['can_commit']);
+                $this->assertStringContains('列数が20列ではありません', $preview['rows'][0]['errors'][0]);
+                $client->postJson('/api.php?action=commit_devices_csv_import', [
+                    'import_token' => $preview['import_token'], 'revision' => (int)$data['revision'],
+                ])->assertStatus(400);
                 $this->assertSame($before, $this->csvDatabaseState($db));
             }
         });
@@ -846,8 +1138,10 @@ class CsvTest extends TestCase
         $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
             $initial = $client->get('/api.php?action=load')->assertOk()->getJson();
             $id = (int)$initial['devices'][0]['id'];
-            $db->exec("INSERT INTO device_ip_addresses(device_id,ip,label,sort_order) VALUES
-                ({$id},'198.51.100.71','元の用途',0),({$id},'198.51.100.72','削除対象',1)");
+            $legacyLabel = "\x00元の用途\x0B";
+            $db->prepare("INSERT INTO device_ip_addresses(device_id,ip,label,sort_order) VALUES
+                (?, '198.51.100.71', ?, 0), (?, '198.51.100.72', '削除対象', 1)")
+                ->execute([$id, $legacyLabel, $id]);
             $db->exec("INSERT INTO device_monitor_status(device_id,status,last_checked_at,last_response_ms,last_error)
                 VALUES ({$id},'red','2026-01-02 03:04:05',12.5,'保持するエラー')
                 ON CONFLICT(device_id) DO UPDATE SET status='red',last_checked_at='2026-01-02 03:04:05',
@@ -868,7 +1162,7 @@ class CsvTest extends TestCase
             $monitor = $db->query('SELECT * FROM device_monitor_status ORDER BY device_id')->fetchAll(\PDO::FETCH_ASSOC);
             $replacement = [
                 ['ip' => '198.51.100.73', 'label' => '新規先頭', 'id' => (int)$children[0]['id'], 'sort_order' => 99],
-                ['ip' => '198.51.100.71', 'label' => '用途変更', 'id' => (int)$children[1]['id'], 'sort_order' => 0],
+                ['ip' => '198.51.100.71', 'label' => $legacyLabel, 'id' => (int)$children[1]['id'], 'sort_order' => 0],
             ];
             foreach ([$replacement, []] as $values) {
                 $data = $client->get('/api.php?action=load')->assertOk()->getJson();
@@ -909,6 +1203,7 @@ class CsvTest extends TestCase
                 '[{"ip":"::1","label":""}]', '[{"ip":"192.0.2.999","label":""}]',
                 '[{"ip":"","label":""}]',
                 '[{"ip":"198.51.100.5","label":"A"},{"ip":"198.51.100.5","label":"B"}]',
+                '[{"ip":"198.51.100.5","label":"\\u0000用途\\u000b"}]',
                 json_encode([['ip' => $data['devices'][0]['ip'], 'label' => '管理IPと重複']]),
             ] as $invalid) {
                 $valid = $this->csvDeviceRow(['name' => 'エラーと一緒に保存しない', 'type' => 'pc'], '[]');
@@ -976,5 +1271,94 @@ class CsvTest extends TestCase
         $surrogate38 = str_repeat('𠀀', 38);
         $this->assertSame(38, $service->getUtf8TextLength($surrogate38));
         $this->assertTrue($service->isValidUtf8Text($surrogate38));
+    }
+
+    public function testUnclassifiedIpWarningsExcludeUnchangedAndUnmodifiedIps(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $data = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $device = $data['devices'][0];
+            $id = (int)$device['id'];
+            $db->prepare('UPDATE devices SET ip = ?, ip_segment_id = NULL WHERE id = ?')->execute(['198.51.100.20', $id]);
+            $db->prepare('INSERT INTO device_ip_addresses(device_id, ip, label, sort_order, segment_id) VALUES (?, ?, ?, 0, NULL)')
+                ->execute([$id, '198.51.100.21', '既存追加']);
+
+            $fresh = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $target = null;
+            foreach ($fresh['devices'] as $row) {
+                if ((int)$row['id'] === $id) {
+                    $target = $row;
+                    break;
+                }
+            }
+            $this->assertNotNull($target);
+            $additionalJson = json_encode([['ip' => '198.51.100.21', 'label' => '既存追加']], JSON_UNESCAPED_UNICODE);
+
+            // 1. unchanged 行では既存未分類 IP に unclassified_ip 警告を付けない。
+            $this->writeCsvRows($client, $path, [$this->csvDeviceRow($target, $additionalJson)]);
+            $unchangedPreview = $this->previewCsv($client, $path, (int)$fresh['revision']);
+            $this->assertSame('unchanged', $unchangedPreview['rows'][0]['operation']);
+            $this->assertFalse(in_array('unclassified_ip', array_column($unchangedPreview['rows'][0]['warnings'], 'code'), true));
+
+            // 2. memo のみ更新し管理IP・追加IPが不変の update 行でも unclassified_ip 警告を付けない。
+            $memoUpdated = $target;
+            $memoUpdated['memo'] = 'メモのみ更新';
+            $this->writeCsvRows($client, $path, [$this->csvDeviceRow($memoUpdated, $additionalJson)]);
+            $updateUnchangedIpPreview = $this->previewCsv($client, $path, (int)$fresh['revision']);
+            $this->assertSame('update', $updateUnchangedIpPreview['rows'][0]['operation']);
+            $this->assertFalse(in_array('unclassified_ip', array_column($updateUnchangedIpPreview['rows'][0]['warnings'], 'code'), true));
+
+            // 3. IP・用途の変更および insert 行の未分類 IP には unclassified_ip 警告を付ける。
+            $ipChanged = $target;
+            $ipChanged['ip'] = '198.51.100.22';
+            $additionalChangedJson = json_encode([['ip' => '198.51.100.21', 'label' => '用途変更']], JSON_UNESCAPED_UNICODE);
+            $newDevice = ['name' => '新規未分類機器', 'type' => 'switch', 'ip' => '198.51.100.23'];
+            $this->writeCsvRows($client, $path, [
+                $this->csvDeviceRow($ipChanged, $additionalChangedJson),
+                $this->csvDeviceRow($newDevice, '[]'),
+            ]);
+            $changedPreview = $this->previewCsv($client, $path, (int)$fresh['revision']);
+            $this->assertSame('update', $changedPreview['rows'][0]['operation']);
+            $this->assertSame('insert', $changedPreview['rows'][1]['operation']);
+            $updateWarnings = array_values(array_filter(
+                $changedPreview['rows'][0]['warnings'],
+                static fn(array $w): bool => ($w['code'] ?? '') === 'unclassified_ip'
+            ));
+            $insertWarnings = array_values(array_filter(
+                $changedPreview['rows'][1]['warnings'],
+                static fn(array $w): bool => ($w['code'] ?? '') === 'unclassified_ip'
+            ));
+            $this->assertSame(2, count($updateWarnings));
+            $this->assertSame(1, count($insertWarnings));
+        });
+    }
+
+    public function testLegacyManagementIpWhitespaceWarningsMatchCommittedChange(): void
+    {
+        $this->withCsvFixture(function (TestHttpClient $client, \PDO $db, string $path): void {
+            $fresh = $client->get('/api.php?action=load')->assertOk()->getJson();
+            $device = $fresh['devices'][0];
+            $id = (int)$device['id'];
+            $db->prepare('UPDATE devices SET ip = ?, ip_segment_id = NULL WHERE id = ?')
+                ->execute([' 198.51.100.20', $id]);
+            $db->prepare("INSERT INTO device_monitor_status(device_id, status) VALUES (?, 'green')
+                ON CONFLICT(device_id) DO UPDATE SET status = 'green'")->execute([$id]);
+            $device['ip'] = '198.51.100.20';
+            $device['memo'] = '既存機器のメモを変更';
+            $this->writeCsvRows($client, $path, [$this->csvDeviceRow($device)]);
+            $preview = $this->previewCsv($client, $path, (int)$fresh['revision']);
+            $this->assertSame('update', $preview['rows'][0]['operation']);
+            $warnings = array_column($preview['rows'][0]['warnings'], 'code');
+            $this->assertTrue(in_array('unclassified_ip', $warnings, true));
+            $this->assertTrue(in_array('monitor_reset', $warnings, true));
+
+            $client->postJson('/api.php?action=commit_devices_csv_import', [
+                'import_token' => $preview['import_token'],
+                'revision' => $fresh['revision'],
+            ])->assertOk();
+            $stored = $db->query("SELECT d.ip, d.ip_segment_id, m.status FROM devices d
+                JOIN device_monitor_status m ON m.device_id = d.id WHERE d.id = {$id}")->fetch(\PDO::FETCH_ASSOC);
+            $this->assertSame(['ip' => '198.51.100.20', 'ip_segment_id' => null, 'status' => 'unknown'], $stored);
+        });
     }
 }

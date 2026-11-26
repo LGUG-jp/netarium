@@ -32,7 +32,7 @@ test('ラックの機器切替は未適用入力の確認後に編集対象と�
         return new Response(JSON.stringify({
             ok: true, revision: 2, id_maps: {},
             devices: payload.devices.map(operation => ({ ...operation.device, resource_revision: 20 })),
-            views: [], placements: [], links: [], canvas_notes: [],
+            views: [], placements: [], view_link_routes: [], canvas_notes: [],
             affected_view_ids: [], deleted_device_ids: [], deleted_view_ids: []
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     };

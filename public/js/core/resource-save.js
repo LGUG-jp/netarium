@@ -1,13 +1,16 @@
 // 境界の型契約のみ検査する。ファイル全体の @ts-check を見送った理由は docs/development.md の #393 を参照。
 import {
-    appState, normalizeDevice, normalizeLink, normalizePlacement, normalizeView,
-    toSaveDevice, toSaveLink, toSavePlacement, toSaveView, recalculateNextIds
+    appState, normalizeDevice, normalizeFloorPlan, normalizePlacement, normalizeView,
+    toSaveDevice, toSavePlacement, toSaveView, recalculateNextIds, removeDevicesFromState, resetLinkCreationState,
+    setReservedIdProvider
 } from './state.js';
 import { normalizeCanvasNote, toSaveCanvasNote } from './canvas-note-data.js';
-import { resetLinkCreationState } from './link-mode.js';
 import { toSaveRackSettings, toSaveRackMount, toSaveRackShelf as copyShelf, toSaveRackShelfDevice as copyShelfDevice } from './rack-layout.js';
 import { floorRackPlacements, toSaveFloorRackPlacement } from './floor-rack-data.js';
 import { eventBus } from './event-bus.js';
+import { compareViewRoutes, normalizeViewLinkRoute, pairKey, viewRouteKey } from './connection-data.js';
+import { resetConnectionBaseline, discardSavedDeviceConnections, reloadDeviceConnections, savedConnectionPairs } from './connection-save.js';
+import { normalizeText, trimPhpText } from './utils.js';
 
 /**
  * 保存変換の戻り値を再利用し、未注釈の種別フィールドだけ明示する。
@@ -15,7 +18,7 @@ import { eventBus } from './event-bus.js';
  * @typedef {Omit<ReturnType<typeof toSaveDevice>, 'type'> & {type: string}} DeviceDto
  * @typedef {Omit<ReturnType<typeof toSaveView>, 'view_type'> & {view_type: 'topology' | 'floor' | 'rack'}} ViewDto
  * @typedef {ReturnType<typeof toSavePlacement>} PlacementDto
- * @typedef {ReturnType<typeof toSaveLink>} LinkDto
+ * @typedef {ReturnType<typeof normalizeViewLinkRoute>} ViewLinkRouteDto
  * @typedef {ReturnType<typeof toSaveCanvasNote>} CanvasNoteDto
  * @typedef {ReturnType<typeof toSaveRackSettings>} RackSettingsDto
  * @typedef {Omit<ReturnType<typeof toSaveRackMount>, 'face' | 'width_slot' | 'depth'> & {face: string, width_slot: string, depth: string}} RackMountDto
@@ -32,7 +35,8 @@ import { eventBus } from './event-bus.js';
  * @property {DeviceRow[]} [devices]
  * @property {ViewRow[]} [views]
  * @property {PlacementDto[]} [placements]
- * @property {LinkDto[]} [links]
+ * @property {ViewLinkRouteDto[]} [viewLinkRoutes]
+ * @property {ViewLinkRouteDto[]} [view_link_routes]
  * @property {CanvasNoteDto[]} [canvasNotes]
  * @property {CanvasNoteDto[]} [canvas_notes]
  * @property {RackSettingsDto[]} [rackSettings]
@@ -53,7 +57,7 @@ import { eventBus } from './event-bus.js';
  * @typedef {object} ViewResourceDto
  * @property {ViewDto} view
  * @property {PlacementDto[]} placements
- * @property {LinkDto[]} links
+ * @property {ViewLinkRouteDto[]} view_link_routes
  * @property {CanvasNoteDto[]} canvas_notes
  * @property {FloorRackPlacementDto[]} floor_rack_placements
  * @property {RackSettingsDto | null} [rack_settings]
@@ -104,7 +108,7 @@ const resourceFields = row => ({
     ...(row.view.view_type === 'rack' ? { rack_settings: row.rack_settings, rack_mounts: row.rack_mounts || [],
         rack_shelves: row.rack_shelves || [], rack_shelf_devices: row.rack_shelf_devices || [] } : {}),
     floor_rack_placements: row.floor_rack_placements || [],
-    placements: row.placements, links: row.links, canvas_notes: row.canvas_notes || []
+    placements: row.placements, view_link_routes: row.view_link_routes, canvas_notes: row.canvas_notes || []
 });
 
 /** @template {{id: number | string}} T @param {T[]} rows @returns {T[]} */
@@ -117,7 +121,11 @@ const equal = (a, b) => persistentJson(a) === persistentJson(b);
 /** @template {{id: number | string}} T @param {T[]} rows @returns {Map<number, T>} */
 const byId = rows => new Map(rows.map(row => [Number(row.id), row]));
 const stateKey = kind => ({ canvas_notes: 'canvasNotes', rack_shelves: 'rackShelves' })[kind] || kind;
-const viewChildKinds = ['placements', 'links', 'canvas_notes'];
+const viewChildKinds = ['placements', 'canvas_notes'];
+/** @param {ResourceData} data */
+const viewRoutes = data => data.viewLinkRoutes || data.view_link_routes || [];
+const routeRefers = (row, ids) => ids.has(Number(row.device_a_id)) || ids.has(Number(row.device_b_id));
+const orderTopology = (kind, rows) => kind === 'placements' ? sorted(rows) : rows.sort(compareViewRoutes);
 
 /**
  * @param {ResourceData} data
@@ -135,10 +143,8 @@ export function viewResource(data, view, deletedDevices = new Set()) {
         placements: sorted((data.placements || [])
             .filter(row => Number(row.view_id) === id && !deletedDevices.has(Number(row.device_id)))
             .map(toSavePlacement)),
-        links: sorted((data.links || [])
-            .filter(row => Number(row.view_id) === id &&
-                !deletedDevices.has(Number(row.from_id)) && !deletedDevices.has(Number(row.to_id)))
-            .map(toSaveLink)),
+        view_link_routes: viewRoutes(data).filter(row => Number(row.view_id) === id && !routeRefers(row, deletedDevices))
+            .map(normalizeViewLinkRoute).sort(compareViewRoutes),
         canvas_notes: sorted((data.canvasNotes || data.canvas_notes || [])
             .filter(row => Number(row.view_id) === id).map(toSaveCanvasNote))
     };
@@ -157,9 +163,18 @@ export function createResourceBaseline(data) {
 }
 
 let savedBaseline = createResourceBaseline({});
+setReservedIdProvider(kind => {
+    if (kind === 'devices') return [...savedBaseline.devices.keys()];
+    if (kind === 'views') return [...savedBaseline.views.keys()];
+    if (kind === 'placements') return [...savedBaseline.views.values()].flatMap(v => (v.placements || []).map(row => Number(row.id)));
+    if (kind === 'canvasNotes') return [...savedBaseline.views.values()].flatMap(v => (v.canvas_notes || []).map(row => Number(row.id)));
+    if (kind === 'rackShelves') return [...savedBaseline.views.values()].flatMap(v => (v.rack_shelves || []).map(row => Number(row.id)));
+    return [];
+});
 /** @param {ResourceData} data */
 export function resetResourceBaseline(data) {
     savedBaseline = createResourceBaseline(data);
+    resetConnectionBaseline(data);
 }
 
 /** @param {{id: number, revision: number}} row @returns {number} */
@@ -176,6 +191,11 @@ function expectedRevision(row) {
  * @returns {ResourceSaveDto}
  */
 export function buildResourceSave(data = appState, baseline = savedBaseline) {
+    return buildResourceDiff(data, baseline);
+}
+
+/** @param {ResourceSaveState} data @param {ResourceBaseline} baseline @param {Set<string>} [availablePairs] @returns {ResourceSaveDto} */
+function buildResourceDiff(data, baseline, availablePairs) {
     /** @type {DeviceOperation[]} */
     const devices = [];
     /** @type {ViewOperation[]} */
@@ -205,6 +225,11 @@ export function buildResourceSave(data = appState, baseline = savedBaseline) {
         const id = Number(row.id);
         const before = baseline.views.get(id);
         const resource = viewResource(data, row);
+        if (availablePairs) {
+            const existingKeys = new Set((before?.view_link_routes || []).map(viewRouteKey));
+            resource.view_link_routes = resource.view_link_routes.filter(route =>
+                existingKeys.has(viewRouteKey(route)) || availablePairs.has(pairKey(route.device_a_id, route.device_b_id)));
+        }
         // 機器削除のcascadeだけなら、ビュー自体を保存対象にしない。
         const previous = before && {
             view: before.view,
@@ -216,7 +241,7 @@ export function buildResourceSave(data = appState, baseline = savedBaseline) {
             } : {}),
             floor_rack_placements: before.floor_rack_placements || [],
             placements: before.placements.filter(p => !deletedDevices.has(p.device_id)),
-            links: before.links.filter(link => !deletedDevices.has(link.from_id) && !deletedDevices.has(link.to_id)),
+            view_link_routes: before.view_link_routes.filter(route => !routeRefers(route, deletedDevices)),
             canvas_notes: before.canvas_notes
         };
         if (!before) views.push({ operation: 'create', id, ...resource });
@@ -227,6 +252,20 @@ export function buildResourceSave(data = appState, baseline = savedBaseline) {
     return { devices, views };
 }
 
+// ビューの配置更新は、送信する配置と保存済みの配置が参照するリソースの競合でも保留される。
+export function hasViewPlacementConflict(viewId) {
+    const id = Number(viewId);
+    const { devices, views } = appState.resourceConflicts;
+    if (views?.has(id)) return true;
+    const saved = savedBaseline.views.get(id);
+    return Boolean(
+        (devices?.size && (appState.placements.some(row => Number(row.view_id) === id && devices.has(Number(row.device_id))) ||
+            saved?.placements.some(row => devices.has(Number(row.device_id))))) ||
+        (views?.size && (floorRackPlacements(appState).some(row => Number(row.floor_view_id) === id && views.has(Number(row.rack_view_id))) ||
+            saved?.floor_rack_placements?.some(row => views.has(Number(row.rack_view_id)))))
+    );
+}
+
 // 競合対象と、それを参照/削除する変更は保留する。独立した変更は保存できる。
 /**
  * @param {ResourceSaveState} data
@@ -234,12 +273,12 @@ export function buildResourceSave(data = appState, baseline = savedBaseline) {
  * @returns {ResourceSaveDto}
  */
 export function buildSaveableResourceSave(data = appState, baseline = savedBaseline) {
-    const payload = buildResourceSave(data, baseline);
+    const payload = buildResourceDiff(data, baseline, data === appState ? savedConnectionPairs() : undefined);
     const blockedDevices = new Set(data.resourceConflicts?.devices?.keys() || []);
     const blockedViews = new Set(data.resourceConflicts?.views?.keys() || []);
     const references = resource => [
         ...(resource?.placements || []).map(row => Number(row.device_id)),
-        ...(resource?.links || []).flatMap(row => [Number(row.from_id), Number(row.to_id)]),
+        ...(resource?.view_link_routes || []).flatMap(row => [Number(row.device_a_id), Number(row.device_b_id)]),
         ...rackDevices(resource).map(row => Number(row.device_id))
     ];
     let changed;
@@ -334,8 +373,6 @@ export function resourceSaveValidationData(payload, baseline = savedBaseline) {
         views: [...views.values()].map(row => row.view),
         placements: [...views.values()].flatMap(row => row.placements)
             .filter(row => !deleted.has(Number(row.device_id))),
-        links: [...views.values()].flatMap(row => row.links)
-            .filter(row => !deleted.has(Number(row.from_id)) && !deleted.has(Number(row.to_id))),
         canvasNotes: [...views.values()].flatMap(row => row.canvas_notes),
         rackSettings: [...views.values()].flatMap(row => row.rack_settings ? [row.rack_settings] : []),
         rackMounts: [...views.values()].flatMap(row => row.rack_mounts || []).filter(row => !deleted.has(Number(row.device_id))),
@@ -351,7 +388,7 @@ export function createPendingResourceSave(payload, baseline = savedBaseline, dat
     const affectedViewIds = new Set(payload.views.map(row => row.id));
     for (const [id, row] of baseline.views) {
         if (row.placements.some(p => deleted.has(p.device_id)) ||
-            row.links.some(link => deleted.has(link.from_id) || deleted.has(link.to_id)) ||
+            row.view_link_routes.some(route => routeRefers(route, deleted)) ||
             rackDevices(row).some(mount => deleted.has(mount.device_id))) affectedViewIds.add(id);
     }
     const deletedViews = new Set(payload.views.filter(row => row.operation === 'delete').map(row => row.id));
@@ -362,7 +399,6 @@ export function createPendingResourceSave(payload, baseline = savedBaseline, dat
         devices: payload.devices.filter(row => row.operation === 'create').map(row => row.id),
         views: payload.views.filter(row => row.operation === 'create').map(row => row.id),
         placements: [],
-        links: [],
         canvas_notes: [],
         rack_shelves: []
     };
@@ -382,7 +418,7 @@ export function createPendingResourceSave(payload, baseline = savedBaseline, dat
         devices: (data.devices || []).map(toSaveDevice),
         views: (data.views || []).map(toSaveView),
         placements: (data.placements || []).map(toSavePlacement),
-        links: (data.links || []).map(toSaveLink),
+        viewLinkRoutes: viewRoutes(data).map(normalizeViewLinkRoute),
         canvasNotes: (data.canvasNotes || data.canvas_notes || []).map(toSaveCanvasNote),
         rackSettings: rackSettings(data).map(toSaveRackSettings),
         rackMounts: rackMounts(data).map(toSaveRackMount),
@@ -390,12 +426,17 @@ export function createPendingResourceSave(payload, baseline = savedBaseline, dat
         floorRackPlacements: floorRackPlacements(data).map(toSaveFloorRackPlacement),
         rackShelfDevices: shelfDevices(data).map(copyShelfDevice)
     };
+    const deferredRouteViews = payload.views.filter(operation => {
+        if (operation.operation === 'delete') return false;
+        const sentKeys = new Set(operation.view_link_routes.map(viewRouteKey));
+        return snapshot.viewLinkRoutes.some(row => row.view_id === operation.id && !sentKeys.has(viewRouteKey(row)));
+    }).map(operation => operation.id);
     return {
         addressIdentities: (data.devices || []).map(device => ({
             device_id: Number(device.id),
             keys: (device.additional_ips || []).map(row => row._client_key || null)
         })),
-        payload, affectedViewIds: [...affectedViewIds], snapshot, newIds,
+        payload, affectedViewIds: [...affectedViewIds], snapshot, newIds, deferredRouteViews,
         hasNewViewChildIds: [...viewChildKinds, 'rack_shelves'].some(kind => newIds[kind].length > 0)
     };
 }
@@ -404,19 +445,76 @@ export function hasResourceChangesSince(pending, data = appState) {
     if (!pending?.snapshot) return false;
     for (const [kind, toSave] of [
         ['devices', toSaveDevice], ['views', toSaveView],
-        ['placements', toSavePlacement], ['links', toSaveLink], ['canvasNotes', toSaveCanvasNote]
+        ['placements', toSavePlacement], ['canvasNotes', toSaveCanvasNote]
     ]) {
         const sent = byId(pending.snapshot[kind] || []);
         const rows = data[kind] || [];
         if (sent.size !== rows.length ||
             rows.some(row => !equal(toSave(row), sent.get(Number(row.id))))) return true;
     }
+    if (!equal(viewRoutes(data), pending.snapshot.viewLinkRoutes)) return true;
     if (!equal(floorRackPlacements(data).map(toSaveFloorRackPlacement), pending.snapshot.floorRackPlacements || [])) return true;
     if (!equal(rackSettings(data).map(toSaveRackSettings), pending.snapshot.rackSettings || []) ||
         !equal(rackMounts(data).map(toSaveRackMount), pending.snapshot.rackMounts || []) ||
         !equal(rackShelves(data).map(copyShelf), pending.snapshot.rackShelves || []) ||
         !equal(shelfDevices(data).map(copyShelfDevice), pending.snapshot.rackShelfDevices || [])) return true;
     return false;
+}
+
+const COMMITTED_DEVICE_TEXT_FIELDS = [
+    'name', 'ip', 'location', 'manufacturer', 'model',
+    'asset_number', 'serial_number', 'mac_address', 'memo', 'management_scheme',
+    'department', 'maintenance_vendor', 'install_date', 'maintenance_expiry'
+];
+
+function matchesCommittedDevice(desired, row) {
+    const { additional_ips: desiredIps = [], ...normalized } = desired;
+    const { additional_ips: actualIps = [] } = row;
+    const { additional_ips, ...actual } = toSaveDevice({ ...row, additional_ips: [] });
+    for (const field of COMMITTED_DEVICE_TEXT_FIELDS) {
+        normalized[field] = trimPhpText(normalized[field]);
+    }
+    if (!equal(normalized, actual)) return false;
+    if (desiredIps.length !== actualIps.length) return false;
+    for (let i = 0; i < desiredIps.length; i++) {
+        const d = desiredIps[i];
+        const a = actualIps[i];
+        if (!d || !a) return false;
+        if (d.id != null) {
+            if (Number(a.id) !== Number(d.id)) return false;
+        } else {
+            const actualId = Number(a.id);
+            if (!Number.isSafeInteger(actualId) || actualId <= 0) return false;
+        }
+        if (trimPhpText(d.ip) !== normalizeText(a.ip)) return false;
+        if (trimPhpText(d.label) !== normalizeText(a.label)) return false;
+        if (Number(d.sort_order ?? i) !== Number(a.sort_order ?? i)) return false;
+        const dSeg = d.segment_id == null ? null : Number(d.segment_id);
+        const aSeg = a.segment_id == null ? null : Number(a.segment_id);
+        if (dSeg !== aSeg) return false;
+    }
+    return true;
+}
+
+function matchesCommittedView(desired, data, row) {
+    const actual = viewResource(data, row);
+    // DTO 生成時にトリムされる項目も、照合では実際に保存された値を使う。
+    actual.view.name = normalizeText(row.name);
+    actual.view.memo = normalizeText(row.memo);
+    if (actual.rack_settings) {
+        const id = Number(row.id);
+        actual.rack_settings.location = normalizeText(rackSettings(data).find(setting => Number(setting.view_id) === id)?.location);
+        const names = new Map(rackShelves(data).filter(shelf => Number(shelf.view_id) === id)
+            .map(shelf => [Number(shelf.id), normalizeText(shelf.name)]));
+        for (const shelf of actual.rack_shelves) shelf.name = names.get(shelf.id);
+    }
+    return equal({
+        ...desired,
+        view: { ...desired.view, name: trimPhpText(desired.view.name), memo: trimPhpText(desired.view.memo) },
+        ...(desired.rack_shelves ? {
+            rack_shelves: desired.rack_shelves.map(shelf => ({ ...shelf, name: trimPhpText(shelf.name) }))
+        } : {})
+    }, actual);
 }
 
 export function inspectPendingResourceSave(pending, data) {
@@ -433,11 +531,11 @@ export function inspectPendingResourceSave(pending, data) {
             unchanged &&= !!row && Number(row.resource_revision) === operation.expected_revision;
             if (operation.operation === 'delete') committed &&= !row;
             else {
-                const desired = isView
-                    ? resourceFields(operation)
-                    : operation.device;
-                const actual = row && (isView ? viewResource(data, row) : toSaveDevice(row));
-                committed &&= !!row && Number(row.resource_revision) > operation.expected_revision && equal(desired, actual);
+                const desired = isView ? resourceFields(operation) : operation.device;
+                const matched = row && (isView
+                    ? matchesCommittedView(desired, data, row)
+                    : matchesCommittedDevice(desired, row));
+                committed &&= !!row && Number(row.resource_revision) > operation.expected_revision && matched;
             }
         }
     }
@@ -457,7 +555,7 @@ export function confirmedResourceResult(pending, data) {
         devices: (data.devices || []).filter(row => devices.has(Number(row.id))),
         views: (data.views || []).filter(row => views.has(Number(row.id))),
         placements: (data.placements || []).filter(row => views.has(Number(row.view_id))),
-        links: (data.links || []).filter(row => views.has(Number(row.view_id))),
+        view_link_routes: viewRoutes(data).filter(row => views.has(Number(row.view_id))),
         canvas_notes: (data.canvas_notes || data.canvasNotes || []).filter(row => views.has(Number(row.view_id))),
         rack_settings: rackSettings(data).filter(row => views.has(Number(row.view_id))),
         rack_mounts: rackMounts(data).filter(row => views.has(Number(row.view_id))),
@@ -507,12 +605,21 @@ export function remapResourceState(data, maps) {
         row.device_id = id('devices', row.device_id);
         row.view_id = id('views', row.view_id);
     });
-    data.links.forEach(row => {
+    (data.links || []).forEach(row => {
         row.id = id('links', row.id);
-        row.view_id = id('views', row.view_id);
+        row.from_port_id = id('device_ports', row.from_port_id);
+        row.to_port_id = id('device_ports', row.to_port_id);
         row.from_id = id('devices', row.from_id);
         row.to_id = id('devices', row.to_id);
     });
+    (data.devicePorts || []).forEach(row => {
+        row.id = id('device_ports', row.id);
+        row.device_id = id('devices', row.device_id);
+    });
+    for (const row of viewRoutes(data)) {
+        Object.assign(row, normalizeViewLinkRoute({ ...row, view_id: id('views', row.view_id),
+            device_a_id: id('devices', row.device_a_id), device_b_id: id('devices', row.device_b_id) }));
+    }
     (data.canvasNotes || data.canvas_notes || []).forEach(row => {
         row.id = id('canvas_notes', row.id);
         row.view_id = id('views', row.view_id);
@@ -535,18 +642,25 @@ export function remapResourceState(data, maps) {
     if ('currentViewId' in data) data.currentViewId = id('views', data.currentViewId);
 }
 
-function remapResourceUiState(maps) {
+export function remapResourceUiState(maps) {
     appState.floorPlans.forEach(row => { row.view_id = mappedResourceId(maps.views, row.view_id); });
     appState.deviceImages.forEach(row => { row.device_id = mappedResourceId(maps.devices, row.device_id); });
-    for (const key of ['editingDeviceId', 'ledgerSearchHighlightDeviceId', 'linkSourceId']) {
+    for (const key of ['editingDeviceId', 'ledgerSearchHighlightDeviceId', 'linkSourceId', 'linkTargetId']) {
         appState[key] = mappedResourceId(maps.devices, appState[key]);
     }
     appState.editingLinkId = mappedResourceId(maps.links, appState.editingLinkId);
+    if (appState.editingLinkGroupKey != null) {
+        const [viewId, first, second] = appState.editingLinkGroupKey.split(':').map(Number);
+        // 負の表示端点はラックビュー ID。機器 ID の再採番とは別に扱う。
+        const remapEndpoint = value => value < 0 ? -mappedResourceId(maps.views, -value) : mappedResourceId(maps.devices, value);
+        appState.editingLinkGroupKey =
+            `${mappedResourceId(maps.views, viewId)}:${pairKey(remapEndpoint(first), remapEndpoint(second))}`;
+    }
     appState.selectedCanvasNoteId = mappedResourceId(maps.canvas_notes, appState.selectedCanvasNoteId);
     remapResourceSet(appState.selectedPlacementIds, maps.placements);
     remapResourceSet(appState.floorPlanAutoFittedViews, maps.views);
     appState.viewStates = new Map([...appState.viewStates].map(([id, value]) => [mappedResourceId(maps.views, id), value]));
-    for (const kind of ['devices', 'views']) {
+    for (const kind of ['devices', 'views', 'links', 'device_ports']) {
         const conflicts = appState.resourceConflicts?.[kind];
         if (!conflicts) continue;
         const entries = [...conflicts];
@@ -561,11 +675,13 @@ function remapResourceUiState(maps) {
 export function applyResourceSaveResult(result, pending) {
     if (!Number.isInteger(Number(result?.revision)) ||
         !result?.id_maps || typeof result.id_maps !== 'object' ||
-        !['devices', 'views', 'placements', 'links', 'canvas_notes', 'deleted_device_ids', 'deleted_view_ids', 'affected_view_ids']
+        !['devices', 'views', 'placements', 'view_link_routes', 'canvas_notes', 'deleted_device_ids', 'deleted_view_ids', 'affected_view_ids']
             .every(kind => Array.isArray(result[kind])) ||
         ![...result.devices, ...result.views].every(row => Number.isInteger(Number(row.resource_revision)) && Number(row.resource_revision) > 0)) {
         throw new Error('保存応答が不完全です。保存状態を確認してください');
     }
+    if (Array.isArray(result.buildings)) appState.buildings = result.buildings;
+    if (Array.isArray(result.floors)) appState.floors = result.floors;
     const affectsRack = [...result.views, ...appState.views.filter(row =>
         result.affected_view_ids.map(Number).includes(Number(row.id)))].some(row => row.view_type === 'rack');
     if (affectsRack && (!Array.isArray(result.rack_settings) || !Array.isArray(result.rack_mounts) ||
@@ -603,6 +719,7 @@ export function applyResourceSaveResult(result, pending) {
         }
     }
     remapResourceState(appState, maps);
+    const deferredRouteViews = new Set((pending?.deferredRouteViews || []).map(id => mappedResourceId(maps.views, id)));
     if (snapshot) remapResourceState(snapshot, maps);
     // 応答待ちの並べ替え・追加編集もサーバー採番した同じ子レコードを引き継ぐ。
     const addressIds = [];
@@ -664,7 +781,7 @@ export function applyResourceSaveResult(result, pending) {
         for (const row of appState.views) {
             const sent = sentViews.get(Number(row.id));
             const baseline = savedBaseline.views.get(Number(row.id));
-            if (!sent || !equal(viewResource(appState, row), viewResource(snapshot, sent)) ||
+            if (deferredRouteViews.has(Number(row.id)) || !sent || !equal(viewResource(appState, row), viewResource(snapshot, sent)) ||
                 (!sentViewIds.has(Number(row.id)) && baseline && !equal(viewResource(appState, row),
                     viewResource(baseline, baseline.view, sentDeletedDeviceIds)))) changedViews.add(Number(row.id));
         }
@@ -717,12 +834,15 @@ export function applyResourceSaveResult(result, pending) {
         ...(result.placements || []).filter(row => replaceTopology.has(Number(row.view_id)) &&
             currentViewIds.has(Number(row.view_id)) && currentDeviceIds.has(Number(row.device_id))).map(normalizePlacement)
     ];
-    appState.links = [
-        ...appState.links.filter(row => !replaceTopology.has(Number(row.view_id)) &&
-            !deletedDevices.has(Number(row.from_id)) && !deletedDevices.has(Number(row.to_id))),
-        ...(result.links || []).filter(row => replaceTopology.has(Number(row.view_id)) &&
-            currentViewIds.has(Number(row.view_id)) && currentDeviceIds.has(Number(row.from_id)) &&
-            currentDeviceIds.has(Number(row.to_id))).map(normalizeLink)
+    if (deletedDevices.size) {
+        removeDevicesFromState([...deletedDevices]);
+        discardSavedDeviceConnections(deletedDevices, result);
+    }
+    appState.viewLinkRoutes = [
+        ...appState.viewLinkRoutes.filter(row => !replaceTopology.has(Number(row.view_id)) && !routeRefers(row, deletedDevices)),
+        ...viewRoutes(result).filter(row => replaceTopology.has(Number(row.view_id)) &&
+            currentViewIds.has(Number(row.view_id)) && currentDeviceIds.has(Number(row.device_a_id)) &&
+            currentDeviceIds.has(Number(row.device_b_id))).map(normalizeViewLinkRoute)
     ];
     appState.canvasNotes = [
         ...appState.canvasNotes.filter(row => !replaceTopology.has(Number(row.view_id))),
@@ -780,6 +900,14 @@ export function applyResourceSaveResult(result, pending) {
     for (const [id, row] of saved.devices) savedBaseline.devices.set(id, row);
     for (const [id, row] of saved.views) savedBaseline.views.set(id, row);
     recalculateNextIds();
+    if (deletedDevices.size || deletedViews.size) {
+        const retained = appState.legacyLinkConflicts.filter(row => !deletedViews.has(Number(row.view_id)) &&
+            !routeRefers(row, deletedDevices));
+        if (retained.length !== appState.legacyLinkConflicts.length) {
+            appState.legacyLinkConflicts = retained;
+            eventBus.emit('legacy-links:changed');
+        }
+    }
     return maps;
 }
 
@@ -790,6 +918,55 @@ export function syncResourceRevision(kind, id, revision) {
     if (row) row.resource_revision = value;
     const baseline = savedBaseline[kind].get(Number(id));
     if (baseline) baseline.revision = value;
+}
+
+export function isSavedConnectionDevice(id) {
+    return savedBaseline.devices.has(Number(id));
+}
+
+export function confirmedConnectionRouteCleanup(data, removedPairs) {
+    const views = [];
+    const removed_view_link_routes = [];
+    if (!removedPairs.size) return { views, removed_view_link_routes };
+
+    const remoteViews = byId(data.views);
+    const remoteRoutes = new Set(data.view_link_routes.map(viewRouteKey));
+    const planVersion = plan => plan && [Number(plan.revision), plan.created_at, plan.updated_at];
+    for (const [id, before] of savedBaseline.views) {
+        const removed = before.view_link_routes.filter(route =>
+            removedPairs.has(pairKey(route.device_a_id, route.device_b_id)) && !remoteRoutes.has(viewRouteKey(route)));
+        if (!removed.length) continue;
+        removed_view_link_routes.push(...removed);
+
+        const remote = remoteViews.get(id);
+        const revision = Number(remote?.resource_revision);
+        if (!Number.isSafeInteger(revision) || revision <= before.revision) continue;
+        const removedKeys = new Set(removed.map(viewRouteKey));
+        const expected = { ...resourceFields(before),
+            view_link_routes: before.view_link_routes.filter(route => !removedKeys.has(viewRouteKey(route))) };
+        // 図面もビュー世代を進める。未保存の座標ではなく図面の版を照合する。
+        const localPlan = appState.floorPlans.find(row => Number(row.view_id) === id);
+        const remotePlan = data.floor_plans.find(row => Number(row.view_id) === id);
+        if (equal(planVersion(localPlan), planVersion(remotePlan)) && equal(expected, viewResource(data, remote))) {
+            views.push({ id, previous_resource_revision: before.revision, resource_revision: revision });
+        }
+    }
+    return { views, removed_view_link_routes };
+}
+
+export function applyRemovedConnectionRoutes(routes, viewRevisions, keepPairs = new Set()) {
+    const keys = new Set(routes.map(viewRouteKey));
+    appState.viewLinkRoutes = appState.viewLinkRoutes.filter(row =>
+        !keys.has(viewRouteKey(row)) || keepPairs.has(pairKey(row.device_a_id, row.device_b_id)));
+    for (const id of new Set(routes.map(row => Number(row.view_id)))) {
+        const baseline = savedBaseline.views.get(id);
+        if (!baseline) continue;
+        baseline.view_link_routes = baseline.view_link_routes.filter(route => !keys.has(viewRouteKey(route)));
+        const row = viewRevisions.find(row => Number(row.id) === id);
+        if (row && baseline.revision === Number(row.previous_resource_revision) && !appState.resourceConflicts.views.has(id)) {
+            syncResourceRevision('views', id, row.resource_revision);
+        }
+    }
 }
 
 function reconcileRackReload(id, remote) {
@@ -840,7 +1017,7 @@ function reconcileRackReload(id, remote) {
     }
 }
 
-function reconcileFloorRackReload(id, remote) {
+function reconcileFloorRackReload(id, remote, incomingFloorPlans) {
     const refs = resource => resource?.floor_rack_placements || [];
     const localView = appState.views.find(row => Number(row.id) === id);
     const involved = new Set([id, ...[savedBaseline.views.get(id), localView && viewResource(appState, localView), remote.views.get(id)]
@@ -856,7 +1033,13 @@ function reconcileFloorRackReload(id, remote) {
         if (![before, incoming, local].some(resource => refs(resource).some(matches))) continue;
         const withoutRelated = resource => ({ ...resourceFields(resource),
             floor_rack_placements: refs(resource).filter(row => !matches(row)) });
-        const safe = before && incoming && equal(withoutRelated(before), withoutRelated(incoming));
+        const localPlan = appState.floorPlans.find(plan => Number(plan.view_id) === viewId);
+        const incomingPlan = incomingFloorPlans.find(plan => Number(plan.view_id) === viewId);
+        // 関連ビューの図面はこの再読込では差し替えないため、表示中の図面に別の版を与えない。
+        const samePlan = localPlan && incomingPlan
+            ? equal(normalizeFloorPlan(localPlan), normalizeFloorPlan(incomingPlan))
+            : !localPlan && !incomingPlan;
+        const safe = before && incoming && samePlan && equal(withoutRelated(before), withoutRelated(incoming));
         const localChanges = !local || !before || !equal(local, resourceFields(before));
         appState.floorRackPlacements = floorRackPlacements(appState)
             .filter(row => Number(row.floor_view_id) !== viewId || !matches(row));
@@ -874,17 +1057,18 @@ function reconcileFloorRackReload(id, remote) {
 
 export function reloadResourceFromData(kind, id, data) {
     id = Number(id);
+    if (Array.isArray(data.buildings)) appState.buildings = data.buildings;
+    if (Array.isArray(data.floors)) appState.floors = data.floors;
     const remote = createResourceBaseline(data);
     const row = (data[kind] || []).find(row => Number(row.id) === id);
-    if (kind === 'views') reconcileFloorRackReload(id, remote);
+    if (kind === 'views') reconcileFloorRackReload(id, remote, data.floor_plans || []);
     const normalize = kind === 'devices' ? normalizeDevice : normalizeView;
     const existed = appState[kind].some(row => Number(row.id) === id);
-    const refers = item => Number(item.device_id) === id || Number(item.from_id) === id || Number(item.to_id) === id;
-    const incoming = kind === 'views'
-        ? ['placements', 'links'].flatMap(topologyKind => (data[topologyKind] || []).filter(item => Number(item.view_id) === id))
-        : ['placements', 'links'].flatMap(topologyKind => (data[topologyKind] || []).filter(refers));
-    const referenced = new Set(incoming.flatMap(item => item.device_id == null
-        ? [Number(item.from_id), Number(item.to_id)] : [Number(item.device_id)]));
+    const refers = item => [item.device_id, item.device_a_id, item.device_b_id].some(value => Number(value) === id);
+    const incoming = (data.placements || []).filter(item => kind === 'views' ? Number(item.view_id) === id : refers(item));
+    const incomingRoutes = viewRoutes(data).filter(item => Number(item.view_id) === id);
+    const referenced = new Set([...incoming.map(item => Number(item.device_id)),
+        ...incomingRoutes.flatMap(item => [Number(item.device_a_id), Number(item.device_b_id)])]);
     for (const mount of rackMounts(data)) {
         if (kind === 'views' && Number(mount.view_id) === id) referenced.add(Number(mount.device_id));
     }
@@ -896,8 +1080,7 @@ export function reloadResourceFromData(kind, id, data) {
             collisionKind === 'devices' ? [] :
                 collisionKind === 'canvas_notes'
                     ? (kind === 'views' ? (data.canvas_notes || []).filter(item => Number(item.view_id) === id) : []).map(item => Number(item.id))
-                    : incoming.filter(item => collisionKind === 'placements' ? item.device_id != null : item.device_id == null)
-                        .map(item => Number(item.id)));
+                    : incoming.map(item => Number(item.id)));
         const persisted = new Set(collisionKind === 'devices' ? savedBaseline.devices.keys() :
             [...savedBaseline.views.values()].flatMap(resource => resource[collisionKind].map(item => Number(item.id))));
         let nextId = 0;
@@ -920,13 +1103,12 @@ export function reloadResourceFromData(kind, id, data) {
     if (remote[kind].has(id)) savedBaseline[kind].set(id, remote[kind].get(id));
     if (kind === 'views') {
         appState.placements = appState.placements.filter(row => Number(row.view_id) !== id);
-        appState.links = appState.links.filter(row => Number(row.view_id) !== id);
+        appState.viewLinkRoutes = appState.viewLinkRoutes.filter(row => Number(row.view_id) !== id);
         appState.canvasNotes = appState.canvasNotes.filter(note => Number(note.view_id) !== id);
         const placements = (data.placements || []).filter(row => Number(row.view_id) === id);
-        const links = (data.links || []).filter(row => Number(row.view_id) === id);
         const referenced = new Set([
             ...placements.map(row => Number(row.device_id)),
-            ...links.flatMap(row => [Number(row.from_id), Number(row.to_id)]),
+            ...incomingRoutes.flatMap(row => [Number(row.device_a_id), Number(row.device_b_id)]),
             ...rackMounts(data).filter(row => Number(row.view_id) === id).map(row => Number(row.device_id)),
             ...shelfMembers(data, id).map(row => Number(row.device_id))
         ]);
@@ -939,7 +1121,7 @@ export function reloadResourceFromData(kind, id, data) {
             }
         }
         appState.placements.push(...placements.map(normalizePlacement));
-        appState.links.push(...links.map(normalizeLink));
+        appState.viewLinkRoutes.push(...incomingRoutes.map(normalizeViewLinkRoute));
         appState.canvasNotes.push(...(data.canvas_notes || []).filter(note => Number(note.view_id) === id).map(normalizeCanvasNote));
         appState.floorRackPlacements = floorRackPlacements(appState).filter(ref => Number(ref.floor_view_id) !== id &&
             (row || Number(ref.rack_view_id) !== id));
@@ -975,12 +1157,13 @@ export function reloadResourceFromData(kind, id, data) {
         }
     } else {
         if (!row || !existed) {
+            Object.assign(maps, reloadDeviceConnections(id, data));
             // 機器の削除/復元による依存行だけ反映し、同じビューのその他の編集を残す。
             const unrelatedChanges = new Set();
             for (const [viewId, baseline] of savedBaseline.views) {
                 const remoteView = remote.views.get(viewId);
                 const related = [baseline, remoteView].some(resource =>
-                    resource && (resource.placements.some(refers) || resource.links.some(refers)));
+                    resource && (resource.placements.some(refers) || resource.view_link_routes.some(refers)));
                 const rackRelated = [baseline, remoteView].some(resource => rackDevices(resource).some(refers));
                 if (!related && !rackRelated) continue;
                 if (!remoteView || !equal(baseline.view, remoteView.view) ||
@@ -990,7 +1173,7 @@ export function reloadResourceFromData(kind, id, data) {
                     !equal(baseline.rack_shelves, remoteView.rack_shelves) ||
                     !equal((baseline.rack_shelf_devices || []).filter(item => !refers(item)), (remoteView.rack_shelf_devices || []).filter(item => !refers(item))) ||
                     !equal((baseline.rack_mounts || []).filter(item => !refers(item)), (remoteView.rack_mounts || []).filter(item => !refers(item))) ||
-                    ['placements', 'links'].some(topologyKind =>
+                    ['placements', 'view_link_routes'].some(topologyKind =>
                         !equal(baseline[topologyKind].filter(item => !refers(item)),
                             remoteView[topologyKind].filter(item => !refers(item))))) {
                     unrelatedChanges.add(viewId);
@@ -1001,23 +1184,25 @@ export function reloadResourceFromData(kind, id, data) {
                 }
             }
             const currentDeviceIds = new Set(appState.devices.map(device => Number(device.id)));
-            for (const topologyKind of ['placements', 'links']) {
-                const normalizeTopology = topologyKind === 'placements' ? normalizePlacement : normalizeLink;
+            for (const [topologyKind, stateProp, rows, normalizeTopology] of [
+                ['placements', 'placements', data.placements || [], normalizePlacement],
+                ['view_link_routes', 'viewLinkRoutes', viewRoutes(data), normalizeViewLinkRoute]
+            ]) {
                 const affected = new Set();
-                for (const item of appState[topologyKind]) if (refers(item)) affected.add(Number(item.view_id));
-                appState[topologyKind] = appState[topologyKind].filter(item => !refers(item));
-                for (const item of data[topologyKind] || []) {
+                for (const item of appState[stateProp]) if (refers(item)) affected.add(Number(item.view_id));
+                appState[stateProp] = appState[stateProp].filter(item => !refers(item));
+                for (const item of rows) {
                     if (refers(item) && appState.views.some(view => Number(view.id) === Number(item.view_id)) &&
-                        (topologyKind !== 'links' || (currentDeviceIds.has(Number(item.from_id)) &&
-                            currentDeviceIds.has(Number(item.to_id))))) {
+                        (topologyKind === 'placements' || (currentDeviceIds.has(Number(item.device_a_id)) &&
+                            currentDeviceIds.has(Number(item.device_b_id))))) {
                         affected.add(Number(item.view_id));
-                        appState[topologyKind].push(normalizeTopology(item));
+                        appState[stateProp].push(normalizeTopology(item));
                     }
                 }
                 for (const [viewId, baseline] of savedBaseline.views) {
                     if (baseline[topologyKind].some(refers)) affected.add(viewId);
                     const remoteView = remote.views.get(viewId);
-                    baseline[topologyKind] = sorted([
+                    baseline[topologyKind] = orderTopology(topologyKind, [
                         ...baseline[topologyKind].filter(item => !refers(item)),
                         ...(remoteView?.[topologyKind] || []).filter(refers)
                     ]);

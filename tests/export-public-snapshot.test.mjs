@@ -93,6 +93,20 @@ test('公開成果物は両リポジトリ名の内部リンク・生URL・自�
         '# Third-party notices\n\nSynthetic attribution fixture.\n');
 });
 
+test('公開タグの照合用 SHA はテストガイドだけに残し、未知の SHA は除く', t => {
+    const publicTagShas = ['6802576c3e54ffc82aae6f2b88a0c81ba72e120e', 'c7638baa9abf384d628579790ffdca1c969db361'];
+    const pins = publicTagShas.map(sha => `Sha = '${sha}'`).join('\n');
+    const { output, result } = snapshotFixture(t, `# Fixture\n\n${pins}\n`, {
+        'tests/README.md': `# 公開タグ smoke\n\n\`\`\`powershell\n${pins}\nSha = '${privateSha}'\n\`\`\`\n`
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const guide = fs.readFileSync(path.join(output, 'tests/README.md'), 'utf8');
+    const readme = fs.readFileSync(path.join(output, 'README.md'), 'utf8');
+    assert.ok(guide.includes(pins));
+    assert.ok(!guide.includes(privateSha));
+    for (const sha of publicTagShas) assert.ok(!readme.includes(sha));
+});
+
 for (const repository of repositories) {
     for (const route of routes) {
         for (const port of ports) {

@@ -3,15 +3,18 @@
  */
 
 import {
+    DATA_QUALITY_CATEGORY_LABELS,
     DASHBOARD_QUALITY_CODES,
     DASHBOARD_UNSET_LABEL,
     DEVICE_TYPES
 } from '../core/constants.js';
+import { isMaintenanceRejection } from '../core/api-client.js';
 import { appState, normalizeStatus } from '../core/state.js';
 import {
     buildDashboardModel,
     validateDashboardModel
 } from '../core/dashboard-model.js';
+import { MAINTENANCE_EXPIRY_LABELS } from '../core/maintenance-expiry.js';
 import {
     isCurrentUserAdmin
 } from '../ui/access-control.js';
@@ -28,25 +31,57 @@ import {
 import { openDashboardLedger } from './ledger-modal.js';
 import { openIpManagement } from './ip-management-modal.js';
 import {
-    fetchDataQuality,
-    focusDataQualityDialog,
+    isDataQualityPending,
     normalizeDataQualityCodeFilter,
     normalizeDataQualityIds,
-    refreshDataQuality,
-    renderDataQuality
+    reloadDataQualityResult,
+    showDataQualityOverlay
 } from './data-quality-modal.js';
 let dashboardModel = null;
+let dashboardRevision = null;
 let isDashboardLoading = false;
 let dashboardPreviousFocus = null;
 let ipSummary = null;
 let ipSummaryState = 'unloaded';
 const dashboardBreakdownExpanded = {
     facility: false,
-    floor: false,
+    buildings: new Set(),
     type: false
 };
 
-const DASHBOARD_TABS = ['operations', 'assets'];
+const DASHBOARD_TABS = ['operations', 'assets', 'network', 'quality'];
+const MAINTENANCE_STORAGE_KEY = 'netarium.dashboardMaintenance';
+let maintenanceMode = 'fiscal';
+let fiscalYearStartMonth = 4;
+
+function normalizeFiscalStartMonth(value) {
+    const month = Number(value);
+    return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 4;
+}
+
+function loadDashboardMaintenanceSettings() {
+    try {
+        const settings = JSON.parse(window.localStorage.getItem(MAINTENANCE_STORAGE_KEY));
+        maintenanceMode = settings?.mode === 'remaining' ? 'remaining' : 'fiscal';
+        fiscalYearStartMonth = normalizeFiscalStartMonth(settings?.month);
+    } catch {
+        // 保存領域を使えない場合は、同じページ内の選択を保持する。
+    }
+}
+
+export function updateDashboardMaintenanceSettings() {
+    maintenanceMode = document.getElementById('dashboard-maintenance-mode')?.value === 'remaining'
+        ? 'remaining' : 'fiscal';
+    fiscalYearStartMonth = normalizeFiscalStartMonth(document.getElementById('dashboard-fiscal-start')?.value);
+    try {
+        window.localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify({
+            mode: maintenanceMode, month: fiscalYearStartMonth
+        }));
+    } catch {
+        // 表示の切替は保存領域がなくても続行する。
+    }
+    renderDashboard();
+}
 
 export function selectDashboardTab(tab, { focus = false } = {}) {
     if (!DASHBOARD_TABS.includes(tab)) {
@@ -60,8 +95,9 @@ export function selectDashboardTab(tab, { focus = false } = {}) {
         if (button) {
             button.setAttribute('aria-selected', String(selected));
             button.tabIndex = selected ? 0 : -1;
-            if (selected && focus) {
-                button.focus();
+            if (selected) {
+                if (focus) button.focus();
+                button.scrollIntoView?.({ block: 'nearest', inline: 'nearest', container: 'nearest' });
             }
         }
         if (panel) {
@@ -97,18 +133,24 @@ export function handleDashboardTabKeydown(event) {
     event.preventDefault();
     selectDashboardTab(DASHBOARD_TABS[next], { focus: true });
 }
-function createCurrentDashboardModel(qualityResult = appState.dataQualityResult) {
+function createCurrentDashboardModel() {
     return buildDashboardModel({
         devices: appState.devices,
         placements: appState.placements,
         views: appState.views,
+        buildings: appState.buildings,
+        floors: appState.floors,
         rackSettings: appState.rackSettings,
         rackMounts: appState.rackMounts,
         rackShelves: appState.rackShelves,
         rackShelfDevices: appState.rackShelfDevices,
-        qualityResult,
+        devicePorts: appState.devicePorts,
+        links: appState.links,
+        qualityResult: appState.dataQualityResult,
+        qualityLoading: isDashboardLoading || isDataQualityPending(),
         dataRevision: appState.dataRevision,
-        dirty: appState.appStatus?.dirty
+        dirty: appState.appStatus?.dirty,
+        fiscalYearStartMonth
     });
 }
 /**
@@ -177,6 +219,7 @@ export function getDashboardFocusableElements() {
             'input:not([disabled]), ' +
             'select:not([disabled]), ' +
             'textarea:not([disabled]), ' +
+            'summary, ' +
             '[tabindex]:not([tabindex="-1"])'
         )
     ).filter(element => {
@@ -186,11 +229,13 @@ export function getDashboardFocusableElements() {
         ) {
             return false;
         }
+        const details = element.closest('details');
 
         return (
             !element.hidden &&
             !element.closest('[hidden]') &&
-            element.tabIndex !== -1 &&
+            (element.tagName === 'SUMMARY' || element.tabIndex !== -1) &&
+            (!details || details.open || element.tagName === 'SUMMARY') &&
             element.offsetParent !== null &&
             element.getAttribute(
                 'aria-hidden'
@@ -312,11 +357,11 @@ export function openDashboard() {
     closeToolbarMenu();
 
     dashboardBreakdownExpanded.facility = false;
-    dashboardBreakdownExpanded.floor = false;
+    dashboardBreakdownExpanded.buildings.clear();
     dashboardBreakdownExpanded.type = false;
-    selectDashboardTab('operations');
     setDashboardDetailsExpanded('dashboard-breakdown-toggle', false);
     setDashboardDetailsExpanded('dashboard-racks-toggle', false);
+    loadDashboardMaintenanceSettings();
 
     appState.isDashboardNavigating = false;
     if (!isDashboardLoading) {
@@ -329,16 +374,12 @@ export function openDashboard() {
     document.body.classList.add(
         'dashboard-open'
     );
+    selectDashboardTab('operations');
 
-    /*
-     * 品質結果を取得する前でも、
-     * 基本集計を先に表示できる。
-     */
-
-    renderDashboard();
+    if (isDashboardLoading) renderDashboard();
+    else void refreshDashboard();
     registerModalOpen('dashboard', overlay, '#dashboard-refresh-btn', { onClose: closeDashboard });
     focusDashboard();
-    refreshDashboard();
 }
 
 
@@ -485,6 +526,7 @@ export function openDashboardDataQuality(
     appState.isDashboardNavigating = true;
 
     try {
+        const previousFocus = dashboardPreviousFocus;
         hideDashboardForNavigation();
 
         appState.dataQualitySeverityFilter =
@@ -501,33 +543,10 @@ export function openDashboardDataQuality(
             normalizeDataQualityCodeFilter(
                 options.codes
             );
+        appState.dataQualityFieldFilter = options.field ?? '';
+        appState.dataQualitySuppressedView = options.showSuppressed === true ? 'only' : 'hidden';
 
-        renderDataQuality();
-
-        overlay.hidden = false;
-
-        appState.dataQualityPreviousFocus = null;
-
-        focusDataQualityDialog();
-
-        const resultRevision =
-            Number(
-                appState.dataQualityResult
-                    ?.revision ||
-                0
-            );
-
-        if (
-            !appState.dataQualityResult ||
-            (
-                resultRevision > 0 &&
-                Number(appState.dataRevision) > 0 &&
-                resultRevision !==
-                    Number(appState.dataRevision)
-            )
-        ) {
-            refreshDataQuality();
-        }
+        showDataQualityOverlay(overlay, previousFocus, { keepResults: true, afterCurrent: true });
 
         window.requestAnimationFrame(
             () => {
@@ -555,11 +574,20 @@ function setDashboardDetailsExpanded(toggleId, expanded) {
  * ダッシュボードカードの操作を実行する。
  */
 
+function openDashboardLedgerWithFocus(options) {
+    const previousFocus = dashboardPreviousFocus;
+    hideDashboardForNavigation();
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+        previousFocus.focus();
+    }
+    openDashboardLedger(options);
+}
+
 /**
  * ダッシュボードカードの操作を実行する。
  */
 export function handleDashboardAction(
-    action
+    action, data = {}
 ) {
     if (appState.isDashboardNavigating) {
         return;
@@ -568,6 +596,33 @@ export function handleDashboardAction(
         String(action || '');
 
     switch (normalizedAction) {
+        case 'ledger-building':
+            openDashboardLedgerWithFocus({ buildingId: data.buildingId });
+            return;
+        case 'ledger-floor':
+            openDashboardLedgerWithFocus({ floorId: data.floorId });
+            return;
+        case 'ledger-type':
+            openDashboardLedgerWithFocus({ type: data.deviceType });
+            return;
+        case 'ledger-maintenance-year': {
+            const range = dashboardModel?.maintenance.fiscalYears[Number(data.index)];
+            if (range) openDashboardLedgerWithFocus({ maintenanceRange: range });
+            return;
+        }
+        case 'quality-code':
+            if (!data.code || isDashboardLoading) return;
+            openDashboardDataQuality({ codes: [data.code], field: data.field, showSuppressed: data.showSuppressed === 'true' });
+            return;
+        case 'quality-category':
+            openDashboardDataQuality({ category: data.category, severity: data.severity });
+            return;
+        case 'quality-suppressed':
+            openDashboardDataQuality({ showSuppressed: true });
+            return;
+        case 'quality-diagnosis':
+            openDashboardDataQuality();
+            return;
         case 'ip-management':
         case 'ip-unclassified': {
             if (!isCurrentUserAdmin() || isDashboardLoading) return;
@@ -586,37 +641,33 @@ export function handleDashboardAction(
         }
 
         case 'ledger-all':
-            openDashboardLedger();
+            openDashboardLedgerWithFocus();
             return;
 
         case 'ledger-green':
-            openDashboardLedger({
+            openDashboardLedgerWithFocus({
                 status: 'green'
             });
             return;
 
         case 'ledger-red':
-            openDashboardLedger({
+            openDashboardLedgerWithFocus({
                 status: 'red'
             });
             return;
 
         case 'ledger-unknown':
-            openDashboardLedger({
+            openDashboardLedgerWithFocus({
                 status: 'unknown'
             });
             return;
 
         case 'ledger-maintenance-expired':
-            openDashboardLedger({ maintenanceExpiry: 'expired' });
+            openDashboardLedgerWithFocus({ maintenanceExpiry: 'expired' });
             return;
 
-        case 'ledger-maintenance-within1Year':
-            openDashboardLedger({ maintenanceExpiry: 'within1Year' });
-            return;
-
-        case 'ledger-maintenance-within2Years':
-            openDashboardLedger({ maintenanceExpiry: 'within2Years' });
+        case 'ledger-maintenance':
+            openDashboardLedgerWithFocus({ maintenanceExpiry: data.maintenanceCategory });
             return;
 
         case 'quality-error':
@@ -637,7 +688,7 @@ export function handleDashboardAction(
             return;
 
         case 'quality-unplaced':
-            openDashboardLedger({ placement: 'unplaced' });
+            openDashboardLedgerWithFocus({ placement: 'unplaced' });
             return;
 
         case 'quality-incomplete':
@@ -662,7 +713,7 @@ export function handleDashboardAction(
             return;
 
         case 'quality-all':
-            openDashboardDataQuality();
+            openDashboardDataQuality({ severity: 'problems' });
             return;
 
         default:
@@ -695,78 +746,37 @@ export function focusDashboard() {
 
 
 export async function refreshDashboard() {
-    if (isDashboardLoading) {
-        return;
-    }
+    if (!isCurrentUserAdmin() || isDashboardLoading) return;
+    const refreshButton = document.getElementById('dashboard-refresh-btn');
+    const dialog = getDashboardDialog();
+    const restoreRefreshFocus = refreshButton && document.activeElement === refreshButton;
+    if (restoreRefreshFocus) dialog?.focus();
 
     isDashboardLoading = true;
-    const ipSummaryRequest = refreshDashboardIpSummary();
-
-    setDashboardLoadingState(
-        true
-    );
-
-    /*
-     * 品質APIを待っている間も、
-     * 現在の画面データによる基本集計を表示する。
-     */
-
+    setDashboardLoadingState(true);
     renderDashboard();
 
-    try {
-        const [qualityResult] = await Promise.allSettled([fetchDataQuality(), ipSummaryRequest]);
-        if (qualityResult.status === 'rejected') throw qualityResult.reason;
-        appState.dataQualityResult = qualityResult.value;
-
-        renderDashboard();
-
-        const validationErrors =
-            validateDashboardModel(
-                dashboardModel
-            );
-
-        if (
-            validationErrors.length > 0
-        ) {
-            console.warn(
-                'ダッシュボード集計の整合性警告',
-                validationErrors
-            );
-
-            renderDashboardError(
-                '集計結果の一部に整合しない値があります。'
-            );
-
-            return;
-        }
-
-        setDashboardStatusHidden();
-    } catch (error) {
-        console.error(error);
-
-        /*
-         * 基本集計は残し、品質指標だけ
-         * 取得できない状態として表示する。
-         */
-        appState.dataQualityResult = null;
-
-
-        renderDashboard();
-
-        renderDashboardError(
-            error.message ||
-            'データ品質情報を取得できませんでした'
-        );
-
-    } finally {
-        isDashboardLoading = false;
-
-        setDashboardLoadingState(
-            false
-        );
-        renderDashboardCounts();
-        renderDashboardIpSummary();
+    const [qualityRequest] = await Promise.allSettled([
+        reloadDataQualityResult(), refreshDashboardIpSummary()
+    ]);
+    isDashboardLoading = false;
+    setDashboardLoadingState(false);
+    renderDashboard();
+    if (restoreRefreshFocus && document.activeElement === dialog && getDashboardOverlay()?.hidden === false) {
+        refreshButton.focus();
     }
+
+    if (qualityRequest.status === 'rejected') {
+        renderDashboardError(qualityRequest.reason?.message || 'データ品質情報を取得できませんでした');
+        return;
+    }
+    const validationErrors = validateDashboardModel(dashboardModel);
+    if (validationErrors.length) {
+        console.warn('ダッシュボード集計の整合性警告', validationErrors);
+        renderDashboardError('集計結果の一部に整合しない値があります。');
+        return;
+    }
+    setDashboardStatusHidden();
 }
 
 
@@ -826,60 +836,6 @@ export function setDashboardLoadingState(
         }
     }
 
-    /*
-     * 品質情報の更新中は、カードと内訳の
-     * 遷移操作を一時的に無効化する。
-     */
-    document
-        .querySelectorAll(
-            '#dashboard-content ' +
-            '[data-dashboard-action]'
-        )
-        .forEach(element => {
-            if (
-                !(element instanceof
-                    HTMLButtonElement)
-            ) {
-                return;
-            }
-
-            if (loading) {
-                if (
-                    !Object.prototype
-                        .hasOwnProperty.call(
-                            element.dataset,
-                            'disabledBeforeDashboardLoading'
-                        )
-                ) {
-                    element.dataset
-                        .disabledBeforeDashboardLoading =
-                        element.disabled
-                            ? 'true'
-                            : 'false';
-                }
-
-                element.disabled = true;
-                return;
-            }
-
-            if (
-                !Object.prototype
-                    .hasOwnProperty.call(
-                        element.dataset,
-                        'disabledBeforeDashboardLoading'
-                    )
-            ) {
-                return;
-            }
-
-            element.disabled =
-                element.dataset
-                    .disabledBeforeDashboardLoading ===
-                    'true';
-
-            delete element.dataset
-                .disabledBeforeDashboardLoading;
-        });
 }
 
 function renderDashboardIpSummary() {
@@ -893,27 +849,46 @@ function renderDashboardIpSummary() {
         unclassified.disabled = isDashboardLoading || !ready;
         unclassified.classList.toggle('is-warning', ready && ipSummary.summary.unclassified_ips > 0);
     }
+    const openIpBtn = document.getElementById('dashboard-overlay')
+        ?.querySelector('[data-dashboard-action="ip-management"]');
+    if (openIpBtn) {
+        openIpBtn.disabled = isDashboardLoading || !isCurrentUserAdmin();
+    }
     const status = document.getElementById('dashboard-ip-status');
     if (!status) return;
     const stale = ready && (ipSummary.revision !== appState.dataRevision || appState.appStatus?.dirty);
     status.hidden = ready && !stale;
     status.classList.toggle('is-warning', ipSummaryState === 'error');
     if (ipSummaryState === 'loading') status.textContent = '保存済みDBから取得中...';
-    else if (ipSummaryState === 'error') status.textContent = '取得できませんでした。「更新」で再取得してください。';
+    else if (ipSummaryState === 'error') status.textContent = ipSummaryError || '取得できませんでした。「更新」で再取得してください。';
     else if (!ready) status.textContent = '未取得';
     else status.textContent = '画面データと差異がある可能性があります。';
 }
 
+let ipSummaryError = '';
+
 async function refreshDashboardIpSummary() {
     ipSummaryState = 'loading';
+    ipSummaryError = '';
     renderDashboardIpSummary();
     try {
-        const response = await fetch('api.php?action=load_ip_management_summary', {
+        const url = 'api.php?action=load_ip_management_summary';
+        const response = await fetch(url, {
             method: 'GET', credentials: 'same-origin', cache: 'no-store',
             headers: { Accept: 'application/json' }
         });
+        if (response.status === 401 && typeof window.handleAuthExpired === 'function') {
+            window.handleAuthExpired();
+            ipSummary = null;
+            ipSummaryState = 'error';
+            renderDashboardIpSummary();
+            return;
+        }
         const data = await response.json();
-        if (response.status === 401 && typeof window.handleAuthExpired === 'function') window.handleAuthExpired();
+        if (isMaintenanceRejection(response, data, url)) {
+            ipSummaryError = '保守作業中のためIP管理集計を取得できません。';
+            throw new Error(ipSummaryError);
+        }
         if (!response.ok || data?.ok !== true ||
             !Number.isInteger(data.revision) ||
             !['address_spaces', 'ip_segments', 'registered_ips', 'unclassified_ips']
@@ -942,19 +917,8 @@ export function setDashboardCount(
         return;
     }
 
-    const number =
-        Number(value);
-
-    const normalizedValue =
-        Number.isFinite(number)
-            ? Math.max(
-                0,
-                number
-            )
-            : 0;
-
-    element.textContent =
-        String(normalizedValue);
+    const normalizedValue = value == null ? null : Math.max(0, Number(value) || 0);
+    element.textContent = normalizedValue == null ? '—' : String(normalizedValue);
 
     const card =
         element.closest(
@@ -969,17 +933,13 @@ export function setDashboardCount(
      * 総機器数と保守期限カードは0件でも台帳を開ける。
      * それ以外は0件時に無効化する。
      */
-    const alwaysEnabled =
-        card.dataset.dashboardAction === 'ledger-all' ||
-        card.dataset.dashboardAction?.startsWith('ledger-maintenance-');
+    const alwaysEnabled = ['ledger-all', 'ledger-maintenance-expired'].includes(card.dataset.dashboardAction);
 
     if (
         card instanceof
             HTMLButtonElement
     ) {
-        card.disabled =
-            !alwaysEnabled &&
-            normalizedValue === 0;
+        card.disabled = normalizedValue == null || (!alwaysEnabled && normalizedValue === 0);
     }
 }
 
@@ -1039,53 +999,13 @@ export function createDashboardBreakdownItem(
     let canNavigate = true;
 
     if (normalizedGroupType === 'facility') {
-        const facility =
-            String(
-                group?.label || ''
-            );
-
-        if (
-            facility ===
-            DASHBOARD_UNSET_LABEL
-        ) {
-            canNavigate = false;
-        } else {
-            item.dataset.dashboardAction =
-                'ledger-facility';
-
-            item.dataset.facility =
-                facility;
-        }
+        item.dataset.dashboardAction = 'ledger-building';
+        item.dataset.buildingId = group.buildingId == null ? 'unset' : String(group.buildingId);
     }
 
     if (normalizedGroupType === 'floor') {
-        const facility =
-            String(
-                group?.facility || ''
-            );
-
-        const floor =
-            String(
-                group?.floor || ''
-            );
-
-        if (
-            facility ===
-                DASHBOARD_UNSET_LABEL ||
-            floor ===
-                DASHBOARD_UNSET_LABEL
-        ) {
-            canNavigate = false;
-        } else {
-            item.dataset.dashboardAction =
-                'ledger-floor';
-
-            item.dataset.facility =
-                facility;
-
-            item.dataset.floor =
-                floor;
-        }
+        item.dataset.dashboardAction = 'ledger-floor';
+        item.dataset.floorId = group.floorId == null ? 'unset' : String(group.floorId);
     }
 
     if (normalizedGroupType === 'type') {
@@ -1194,10 +1114,7 @@ export function createDashboardBreakdownItem(
     bar.className =
         'dashboard-breakdown-bar';
 
-    /*
-     * 横棒も表示値と同じく、
-     * 総機器数に対する割合で描画する。
-     */
+    // 横棒は表示値と同じ分母を使う（建物の内訳は建物内の機器数）。
     const barWidth =
         Math.max(
             0,
@@ -1244,6 +1161,41 @@ export function createDashboardBreakdownEmpty(
         );
 
     return empty;
+}
+
+function createDashboardBuildingItem(group) {
+    const ledgerButton = createDashboardBreakdownItem(group, 'facility');
+    const row = document.createElement('div');
+    row.className = 'dashboard-building-row';
+    if (!group.floors.length) {
+        row.appendChild(ledgerButton);
+        return row;
+    }
+
+    const wrapper = document.createElement('div');
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'dashboard-building-toggle';
+    toggle.setAttribute('aria-label', `${group.label}のフロア内訳`);
+    const floors = document.createElement('div');
+    floors.id = `dashboard-building-floors-${group.buildingId}`;
+    floors.className = 'dashboard-breakdown-list dashboard-building-floors';
+    toggle.setAttribute('aria-controls', floors.id);
+    for (const floor of group.floors) {
+        floors.appendChild(createDashboardBreakdownItem(floor, 'floor'));
+    }
+    function setExpanded(expanded) {
+        if (expanded) dashboardBreakdownExpanded.buildings.add(group.buildingId);
+        else dashboardBreakdownExpanded.buildings.delete(group.buildingId);
+        floors.hidden = !expanded;
+        toggle.setAttribute('aria-expanded', String(expanded));
+        toggle.textContent = expanded ? '▾' : '▸';
+    }
+    setExpanded(dashboardBreakdownExpanded.buildings.has(group.buildingId));
+    toggle.addEventListener('click', () => setExpanded(floors.hidden));
+    row.append(toggle, ledgerButton);
+    wrapper.append(row, floors);
+    return wrapper;
 }
 
 /**
@@ -1296,14 +1248,11 @@ export function renderDashboardBreakdownList(
     const itemsToDisplay =
         isExpanded ? groups : groups.slice(0, 5);
 
-    itemsToDisplay.forEach(group => {
-        container.appendChild(
-            createDashboardBreakdownItem(
-                group,
-                groupType
-            )
-        );
-    });
+    for (const group of itemsToDisplay) {
+        container.appendChild(groupType === 'facility'
+            ? createDashboardBuildingItem(group)
+            : createDashboardBreakdownItem(group, groupType));
+    }
 
     if (groups.length > 5) {
         const toggleBtn =
@@ -1316,7 +1265,7 @@ export function renderDashboardBreakdownList(
             String(isExpanded)
         );
         toggleBtn.textContent = isExpanded
-            ? '上位5件のみ表示 ▲'
+            ? `${groupType === 'facility' ? '先頭' : '上位'}5件のみ表示 ▲`
             : `すべて表示（全${groups.length}件） ▼`;
 
         toggleBtn.addEventListener('click', () => {
@@ -1364,24 +1313,7 @@ export function renderDashboardBreakdowns() {
             groups.facilities,
 
         emptyMessage:
-            '施設別の集計対象がありません。'
-    });
-
-    renderDashboardBreakdownList({
-        containerId:
-            'dashboard-floor-list',
-
-        countId:
-            'dashboard-floor-group-count',
-
-        groupType:
-            'floor',
-
-        groups:
-            groups.floors,
-
-        emptyMessage:
-            'フロア別の集計対象がありません。'
+            '設置建物・フロアの集計対象がありません。'
     });
 
     renderDashboardBreakdownList({
@@ -1530,21 +1462,6 @@ export function renderDashboardCounts() {
     );
 
     setDashboardCount(
-        'dashboard-green-count',
-        totals.green
-    );
-
-    setDashboardCount(
-        'dashboard-red-count',
-        totals.red
-    );
-
-    setDashboardCount(
-        'dashboard-unknown-count',
-        totals.unknown
-    );
-
-    setDashboardCount(
         'dashboard-unplaced-count',
         totals.unplacedDevices
     );
@@ -1569,51 +1486,12 @@ export function renderDashboardCounts() {
         totals.floorViewsWithoutPlan
     );
 
-    const qualityProblems =
-        Number(
-            totals.qualityProblems ??
-            (Number(totals.qualityErrors || 0) + Number(totals.qualityWarnings || 0))
-        );
-
-    setDashboardCount(
-        'dashboard-quality-total-count',
-        qualityProblems
-    );
-
+    const expired = dashboardModel?.maintenance.expired ?? 0;
+    setDashboardCount('dashboard-operations-expired-count', expired);
+    document.getElementById('dashboard-operations-expired-count')?.closest('button')
+        ?.classList.toggle('is-warning', expired > 0);
+    setDashboardCount('dashboard-quality-panel-total', totals.qualityProblems);
     renderDashboardMonitoring();
-
-    const panelTotal =
-        document.getElementById('dashboard-quality-panel-total');
-    if (panelTotal) {
-        panelTotal.textContent =
-            String(qualityProblems);
-        const panelTotalBtn =
-            panelTotal.closest('button');
-        if (panelTotalBtn instanceof HTMLButtonElement) {
-            panelTotalBtn.disabled =
-                qualityProblems === 0;
-        }
-    }
-
-    const errorRow =
-        document.querySelector('.dashboard-quality-row.is-error');
-    const warningRow =
-        document.querySelector('.dashboard-quality-row.is-warning');
-    const floorPlanRow =
-        document.querySelector('.dashboard-quality-row.is-floor-plan');
-
-    if (errorRow instanceof HTMLButtonElement) {
-        errorRow.disabled =
-            Number(totals.qualityErrors || 0) === 0;
-    }
-    if (warningRow instanceof HTMLButtonElement) {
-        warningRow.disabled =
-            Number(totals.qualityWarnings || 0) === 0;
-    }
-    if (floorPlanRow instanceof HTMLButtonElement) {
-        floorPlanRow.disabled =
-            Number(totals.floorViewsWithoutPlan || 0) === 0;
-    }
 }
 
 
@@ -1647,12 +1525,10 @@ export function renderDashboardNotices() {
         });
     }
 
-    if (
-        dashboardModel &&
-        !dashboardModel
-            .qualityAvailable &&
-        !isDashboardLoading
-    ) {
+    if (dashboardModel?.qualitySync === 'loading' && !isDashboardLoading) {
+        notices.push({ type: 'warning', text: 'データ品質情報を更新しています。' });
+    }
+    if (dashboardModel && !dashboardModel.qualityAvailable && dashboardModel.qualitySync !== 'loading') {
         notices.push({
             type: 'warning',
             text:
@@ -1661,11 +1537,8 @@ export function renderDashboardNotices() {
         });
     }
 
-    if (
-        dashboardModel
-            ?.qualityRevisionMatches ===
-        false
-    ) {
+    if (dashboardModel?.qualitySync === 'revision_mismatch' ||
+        (dashboardModel?.qualitySync === 'unsaved' && dashboardModel.qualityRevisionMatches === false)) {
         notices.push({
             type: 'error',
             text:
@@ -1774,7 +1647,7 @@ function renderDashboardRacks() {
             faces.appendChild(column);
         }
         info.appendChild(faces);
-        const location = [rack.facility, rack.floor, rack.location].filter(Boolean).join(' / ');
+        const location = [rack.hierarchyPath, rack.location].filter(Boolean).join(' / ');
         if (location) {
             const detail = document.createElement('small');
             detail.textContent = location;
@@ -1786,30 +1659,270 @@ function renderDashboardRacks() {
     }
 }
 
+function createDashboardButton(action, data = {}) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.dashboardAction = action;
+    Object.assign(button.dataset, data);
+    return button;
+}
+
+function dashboardBar(segments) {
+    const track = document.createElement('span');
+    track.className = 'dashboard-breakdown-track dashboard-analysis-bar';
+    track.setAttribute('aria-hidden', 'true');
+    for (const [percentage, style] of segments) {
+        const bar = document.createElement('span');
+        bar.className = `dashboard-breakdown-bar ${style}`;
+        bar.style.width = `${percentage}%`;
+        track.appendChild(bar);
+    }
+    return track;
+}
+
+function renderDashboardMaintenance() {
+    const maintenance = dashboardModel.maintenance;
+    const mode = document.getElementById('dashboard-maintenance-mode');
+    const start = document.getElementById('dashboard-fiscal-start');
+    const fiscal = maintenanceMode === 'fiscal';
+    if (mode) mode.value = maintenanceMode;
+    if (start) {
+        start.value = String(fiscalYearStartMonth);
+        start.hidden = !fiscal;
+    }
+    const startLabel = document.getElementById('dashboard-fiscal-start-label');
+    if (startLabel) startLabel.hidden = !fiscal;
+    for (const category of ['expired', 'unset', 'suppressed', 'invalid']) {
+        setDashboardCount(`dashboard-maintenance-${category}-count`, maintenance[category]);
+    }
+    const expiredCard = document.getElementById('dashboard-maintenance-expired-count')?.closest('button');
+    expiredCard?.classList.toggle('is-warning', maintenance.expired > 0);
+    const invalidCard = document.getElementById('dashboard-maintenance-invalid');
+    if (invalidCard) {
+        invalidCard.hidden = maintenance.invalid === 0;
+        invalidCard.disabled = dashboardModel.qualitySync === 'loading';
+    }
+
+    const list = document.getElementById('dashboard-maintenance-list');
+    if (!list) return;
+    const periods = fiscal ? maintenance.fiscalYears.map(({ label, count }, index) => ({
+        label: label.split('（')[0], count, action: 'ledger-maintenance-year', index, title: label
+    })) : ['within1Year', 'within2Years', 'beyond2Years'].map(category => ({
+        label: MAINTENANCE_EXPIRY_LABELS[category], count: maintenance[category],
+        action: 'ledger-maintenance', maintenanceCategory: category
+    }));
+    const maximum = Math.max(1, ...periods.map(period => period.count));
+    list.replaceChildren(...periods.map(({ label, count, title, ...data }) => {
+        const { action, ...params } = data;
+        const button = createDashboardButton(action, params);
+        button.className = 'dashboard-inline-metric dashboard-maintenance-period';
+        const name = document.createElement('span');
+        name.className = 'dashboard-maintenance-period-label';
+        name.textContent = label;
+        const value = document.createElement('strong');
+        value.textContent = `${count}台`;
+        if (count === 0) value.className = 'dashboard-count-muted';
+        if (title) button.title = title;
+        button.append(name, value, dashboardBar([[count / maximum * 100, '']]));
+        return button;
+    }));
+}
+
+function renderDashboardNetworkRows(id, total, rows) {
+    const container = document.getElementById(id);
+    if (!container) return;
+    container.replaceChildren(...rows.map(([label, count, unit, target]) => {
+        const clickable = target && count > 0;
+        const row = clickable ? createDashboardButton(target.action, target.data) : document.createElement('div');
+        row.className = 'dashboard-network-row';
+        const percentage = total ? count / total * 100 : 0;
+        const name = document.createElement('span');
+        name.textContent = label;
+        const values = document.createElement('span');
+        values.className = 'dashboard-network-values';
+        const amount = document.createElement('strong');
+        amount.textContent = `${count}${unit}`;
+        const ratio = document.createElement('small');
+        ratio.textContent = `${percentage.toFixed(1)}%`;
+        values.append(amount, ratio);
+        row.append(name, values);
+        if (clickable) {
+            const arrow = document.createElement('span');
+            arrow.className = 'dashboard-network-arrow';
+            arrow.setAttribute('aria-hidden', 'true');
+            arrow.textContent = '→';
+            row.appendChild(arrow);
+        }
+        row.appendChild(dashboardBar([[percentage, '']]));
+        return row;
+    }));
+}
+
+function renderDashboardNetwork() {
+    const network = dashboardModel.network;
+    setDashboardCount('dashboard-network-port-count', network.portCount);
+    setDashboardCount('dashboard-network-link-count', network.linkCount);
+    setDashboardCount('dashboard-network-device-count', network.devicesWithPorts);
+    renderDashboardNetworkRows('dashboard-network-ports', network.portCount, [
+        ['接続で参照中', network.connectedPorts, '件'],
+        ['未接続', network.unconnectedPorts, '件']
+    ]);
+    if (network.endpoints) {
+        renderDashboardNetworkRows('dashboard-network-endpoints', network.linkCount * 2, [
+            ['指定済み', network.endpoints.specified, '端点'],
+            ['未指定', network.endpoints.missing, '端点',
+                { action: 'quality-code', data: { code: DASHBOARD_QUALITY_CODES.linkPortsMissing } }],
+            ['設定不要', network.endpoints.suppressed, '端点',
+                { action: 'quality-code', data: { code: DASHBOARD_QUALITY_CODES.linkPortsMissing, showSuppressed: 'true' } }]
+        ]);
+    } else {
+        document.getElementById('dashboard-network-endpoints')
+            ?.replaceChildren(createDashboardBreakdownEmpty('—'));
+    }
+    renderDashboardNetworkRows('dashboard-network-topology', network.linkCount, [
+        ['同一フロア内', network.topology.sameFloor, '件'],
+        ['フロア間（同一建物）', network.topology.betweenFloors, '件'],
+        ['建物間', network.topology.betweenBuildings, '件'],
+        ['設置フロア・所属不明', network.topology.unknown, '件']
+    ]);
+}
+
+function createDashboardQualityCount(label, count, { action, data, context, unit }) {
+    const value = count == null ? '—' : `${count}${unit}`;
+    const element = action && count > 0 ? createDashboardButton(action, data) : document.createElement('span');
+    if (element.tagName === 'BUTTON') {
+        element.className = 'dashboard-count-action';
+        element.setAttribute('aria-label', `${context}：${label} ${value}`);
+    } else if (count == null || count === 0) {
+        element.className = 'dashboard-count-muted';
+    }
+    element.textContent = value;
+    return element;
+}
+
+function createDashboardRegistrationRow(field) {
+    const row = document.createElement('tr');
+    row.setAttribute('role', 'row');
+    const heading = document.createElement('th');
+    heading.setAttribute('scope', 'row');
+    heading.setAttribute('role', 'rowheader');
+    heading.textContent = field.label;
+    const total = field.registered + field.missing + field.suppressed;
+    const bar = document.createElement('td');
+    bar.setAttribute('role', 'cell');
+    bar.appendChild(dashboardBar([
+        [total ? field.registered / total * 100 : 0, 'is-registered'],
+        [total ? field.missing / total * 100 : 0, 'is-missing'],
+        [total ? field.suppressed / total * 100 : 0, 'is-suppressed']
+    ]));
+    const rate = document.createElement('td');
+    rate.setAttribute('role', 'cell');
+    rate.className = 'dashboard-registration-rate';
+    rate.textContent = field.percentage == null ? '対象なし' : `${field.percentage.toFixed(1)}%`;
+    row.append(heading, bar, rate);
+    const filter = { code: field.code };
+    if (field.code === DASHBOARD_QUALITY_CODES.missingRecommendedFields) filter.field = field.key;
+    for (const [label, count, data] of [
+        ['登録済み', field.registered, null],
+        ['未登録', field.missing, filter],
+        ['設定不要', field.suppressed, { ...filter, showSuppressed: 'true' }]
+    ]) {
+        const cell = document.createElement('td');
+        cell.setAttribute('role', 'cell');
+        const narrowLabel = document.createElement('span');
+        narrowLabel.className = 'dashboard-registration-cell-label';
+        narrowLabel.setAttribute('aria-hidden', 'true');
+        narrowLabel.textContent = label;
+        cell.append(narrowLabel, createDashboardQualityCount(label, count, {
+            action: data ? 'quality-code' : null, data, context: field.label, unit: '台'
+        }));
+        row.appendChild(cell);
+    }
+    return row;
+}
+
+function renderDashboardQuality() {
+    const quality = dashboardModel.quality;
+    for (const key of ['problems', 'error', 'warning', 'info', 'suppressed']) {
+        setDashboardCount(`dashboard-diagnosis-${key}-count`, quality?.[key]);
+    }
+    const migration = document.getElementById('dashboard-diagnosis-migration');
+    if (migration) {
+        const entries = [
+            ['移行保留', quality?.legacyConflicts, DASHBOARD_QUALITY_CODES.legacyLinkConflict],
+            ['未移行VLAN', quality?.legacyVlans, DASHBOARD_QUALITY_CODES.legacyLinkVlan]
+        ].filter(([, count]) => count > 0);
+        migration.replaceChildren(...entries.map(([label, count, code]) => {
+            const button = createDashboardButton('quality-code', { code });
+            button.className = 'dashboard-inline-metric is-warning';
+            button.textContent = `${label} ${count}件 →`;
+            return button;
+        }));
+        migration.hidden = entries.length === 0;
+    }
+
+    const categories = document.getElementById('dashboard-diagnosis-categories');
+    if (categories) {
+        const counts = new Map(quality?.categories.map(category => [category.key, category]));
+        const keys = new Set([...Object.keys(DATA_QUALITY_CATEGORY_LABELS), ...counts.keys()]);
+        categories.replaceChildren(...Array.from(keys, key => {
+            const row = document.createElement('div');
+            row.className = 'dashboard-category-row';
+            const label = DATA_QUALITY_CATEGORY_LABELS[key] ?? key;
+            const name = document.createElement('strong');
+            name.textContent = label;
+            row.appendChild(name);
+            for (const [kind, severity, count] of [
+                ['問題', 'problems', counts.get(key)?.problems],
+                ['情報', 'info', counts.get(key)?.info]
+            ]) {
+                const cell = document.createElement('span');
+                cell.append(document.createTextNode(`${kind} `),
+                    createDashboardQualityCount(kind, quality ? count ?? 0 : null, {
+                        action: 'quality-category', data: { category: key, severity }, context: label, unit: '件'
+                    }));
+                row.appendChild(cell);
+            }
+            return row;
+        }));
+    }
+    const table = document.getElementById('dashboard-registration-table');
+    const status = document.getElementById('dashboard-registration-status');
+    if (status) status.hidden = Boolean(quality);
+    if (table) table.hidden = !quality;
+    document.getElementById('dashboard-registration-rows')
+        ?.replaceChildren(...(quality?.registration ?? []).map(createDashboardRegistrationRow));
+}
+
+export function renderDashboardAfterQualityChange() {
+    if (isDashboardLoading || getDashboardOverlay()?.hidden !== false) return;
+    renderDashboard();
+    if (dashboardModel.qualitySync === 'synced') setDashboardStatusHidden();
+}
+
+export function renderDashboardAfterSaveStateChange() {
+    if (getDashboardOverlay()?.hidden !== false) return;
+    if (dashboardRevision !== appState.dataRevision ||
+        dashboardModel?.hasUnsavedChanges !== Boolean(appState.appStatus?.dirty)) {
+        renderDashboard();
+    }
+}
+
 export function renderDashboard() {
     dashboardModel = createCurrentDashboardModel();
+    dashboardRevision = appState.dataRevision;
     const content =
         document.getElementById(
             'dashboard-content'
         );
 
-    const status =
-        document.getElementById(
-            'dashboard-status'
-        );
-
     renderDashboardCounts();
     setDashboardCount('dashboard-assets-devices-count', dashboardModel.totals.devices);
     setDashboardCount('dashboard-assets-facilities-count',
-        dashboardModel.groups.facilities.filter(group => group.label !== DASHBOARD_UNSET_LABEL).length);
-    ['expired', 'within1Year', 'within2Years', 'beyond2Years', 'unset'].forEach(category => {
-        setDashboardCount(
-            `dashboard-maintenance-${category}-count`,
-            dashboardModel?.maintenance?.[category] || 0
-        );
-    });
-    const expiredCard = document.getElementById('dashboard-maintenance-expired-count')?.closest('button');
-    expiredCard?.classList.toggle('dashboard-kpi-unplaced', Number(dashboardModel?.maintenance?.expired || 0) > 0);
+        dashboardModel.groups.facilities.filter(group => group.buildingId != null).length);
+    renderDashboardMaintenance();
+    renderDashboardNetwork();
+    renderDashboardQuality();
     renderDashboardNotices();
     renderDashboardRacks();
     renderDashboardBreakdowns();
@@ -1817,13 +1930,6 @@ export function renderDashboard() {
 
     if (content) {
         content.hidden = false;
-    }
-
-    if (
-        status &&
-        !isDashboardLoading
-    ) {
-        status.hidden = true;
     }
 }
 

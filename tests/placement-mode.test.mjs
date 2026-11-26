@@ -196,9 +196,11 @@ import {
     DEVICE_TYPES
 } from '../public/js/core/constants.js';
 
-import { appState, normalizeDevice, normalizeView, normalizePlacement } from '../public/js/core/state.js';
+import { appState, normalizeDevice, normalizeView, normalizePlacement, toSaveView } from '../public/js/core/state.js';
 import { clearPendingSave, flushSaveQueue } from '../public/js/core/save-queue.js';
 import { resetResourceBaseline } from '../public/js/core/resource-save.js';
+import { sharesPlacementFloor } from '../public/js/core/building-hierarchy.js';
+import { createPlacementManagerOption } from '../public/js/modals/placement-modal.js';
 
 import {
     addDevicesToPlacementQueue,
@@ -216,6 +218,7 @@ import {
     setNextPlacementQueueDevice,
     setPlacementNewDeviceType,
     setPlacementUnplacedScope,
+    enqueueSelectedUnplacedDevices,
     switchPlacementTab,
     syncPlacementModeUi,
     togglePlacementMode
@@ -238,17 +241,20 @@ beforeEach(() => {
     }
 
     appState.views = [
-        { id: 1, name: '本庁舎 2F', facility: '本庁舎', floor: '2F', view_type: 'normal' },
-        { id: 2, name: '別館 1F', facility: '別館', floor: '1F', view_type: 'normal' }
+        { id: 1, name: '本庁舎 2F', floor_id: 12, view_type: 'topology' },
+        { id: 2, name: '別館 1F', floor_id: 21, view_type: 'topology' }
     ];
+    appState.buildings = [{ id: 1, name: '本庁舎' }, { id: 2, name: '別館' }];
+    appState.floors = [{ id: 12, building_id: 1, name: '2F' }, { id: 13, building_id: 1, name: '3F' },
+        { id: 21, building_id: 2, name: '1F' }];
     appState.currentViewId = 1;
 
     appState.devices = [
-        { id: 1, name: 'コアSW', type: 'l3_switch', facility: '本庁舎', floor: '2F' },
-        { id: 2, name: 'フロアSW-01', type: 'switch', facility: '本庁舎', floor: '2F' },
-        { id: 3, name: 'フロアSW-02', type: 'switch', facility: '本庁舎', floor: '3F' },
-        { id: 4, name: '別館SW-01', type: 'switch', facility: '別館', floor: '1F' },
-        { id: 5, name: '未配置AP', type: 'ap', facility: '', floor: '' }
+        { id: 1, name: 'コアSW', type: 'l3_switch', floor_id: 12 },
+        { id: 2, name: 'フロアSW-01', type: 'switch', floor_id: 12 },
+        { id: 3, name: 'フロアSW-02', type: 'switch', floor_id: 13 },
+        { id: 4, name: '別館SW-01', type: 'switch', floor_id: 21 },
+        { id: 5, name: '未配置AP', type: 'ap', floor_id: null, facility: '本庁舎', floor: '2F' }
     ];
 
     // デバイス1はビュー1に配置済み、デバイス4はビュー2に配置済み
@@ -413,12 +419,57 @@ test('getUnplacedCandidates: このビューに未配置 / 全ビュー未配置
     assert.ok(allIds.includes(5));
 });
 
-test('getRecommendedUnplacedDevices: 現在ビューのfacility/floorに合致する推奨判定', () => {
-    // 現在ビュー1: facility='本庁舎', floor='2F'
-    // デバイス2: facility='本庁舎', floor='2F' -> 完全一致 (recommended)
-    // デバイス3: facility='本庁舎', floor='3F' -> facility一致 (recommended)
-    // デバイス4: facility='別館', floor='1F' -> 不一致 (others)
-    // デバイス5: facility='', floor='' -> 未設定 (others)
+test('物理ビューの未配置パレットはフロアで絞り込み、切替で別フロアを検索・配置できる', async () => {
+    appState.views[0].view_type = 'floor';
+    document.readyState = 'loading';
+    const { registerStaticListeners } = await import('../public/js/main.js');
+    registerStaticListeners();
+    const el = id => document.getElementById(id);
+    const visible = () => el('placement-unplaced-list').children
+        .filter(row => row.className === 'placement-unplaced-option').map(row => Number(row.children[0].value));
+    const toggle = el('placement-show-other-floors');
+    enterPlacementMode({ tab: 'unplaced' });
+    assert.equal(el('placement-floor-filter').hidden, false);
+    assert.equal(toggle.checked, false);
+    assert.deepEqual(visible(), [2, 5]);
+
+    toggle.checked = true;
+    await toggle._listeners.change();
+    assert.deepEqual(visible(), [2, 3, 4, 5]);
+    setPlacementUnplacedScope('all-views');
+    assert.deepEqual(visible(), [2, 3, 5]);
+    const search = el('placement-unplaced-search');
+    search.value = '3F';
+    await search._listeners.input();
+    assert.deepEqual(visible(), [3]);
+    const choice = el('placement-unplaced-list').children[0].children[0];
+    choice.checked = true;
+    choice._listeners.change();
+    toggle.checked = false;
+    await toggle._listeners.change();
+    assert.deepEqual(visible(), []);
+    assert.equal(el('placement-enqueue-btn').disabled, true, '非表示にした他フロアの機器を追加しない');
+
+    toggle.checked = true;
+    await toggle._listeners.change();
+    const matching = el('placement-unplaced-list').children[0].children[0];
+    matching.checked = true;
+    matching._listeners.change();
+    enqueueSelectedUnplacedDevices();
+    handleCanvasPlacementClick({ clientX: 500, clientY: 400 });
+    assert.ok(appState.placements.some(row => row.device_id === 3 && row.view_id === 1));
+    assert.equal(appState.devices.find(device => device.id === 3).floor_id, 13);
+
+    search.value = '';
+    for (const [type, floorId] of [['floor', null], ['topology', 12]]) {
+        Object.assign(appState.views[0], { view_type: type, floor_id: floorId });
+        setPlacementUnplacedScope('current-view');
+        assert.equal(el('placement-floor-filter').hidden, true);
+        assert.deepEqual(visible(), [2, 4, 5]);
+    }
+});
+
+test('getRecommendedUnplacedDevices: 同じフロアだけを推奨する', () => {
 
     const candidates = [
         appState.devices[1], // デバイス2
@@ -432,10 +483,8 @@ test('getRecommendedUnplacedDevices: 現在ビューのfacility/floorに合致�
     const recIds = recommended.map(d => d.id);
     const othIds = others.map(d => d.id);
 
-    assert.ok(recIds.includes(2), '本庁舎 / 2F は完全一致で推奨');
-    assert.ok(othIds.includes(3), '本庁舎 / 3F はフロア違いのためその他');
-    assert.ok(othIds.includes(4), '別館 / 1F は施設違いのためその他');
-    assert.ok(othIds.includes(5), '施設フロア未設定はその他');
+    assert.deepEqual(recIds, [2]);
+    assert.deepEqual(othIds, [3, 4, 5], '別フロア・未設定は通常候補');
 });
 
 test('addDevicesToPlacementQueue & キュー操作: 追加・並び替え・削除', () => {
@@ -504,6 +553,7 @@ test('handleCanvasPlacementClick: キューからの順次配置とキュー消�
     const placed2 = appState.placements.find(p => p.device_id === 3);
     assert.ok(placed2);
     assert.equal(placed2.view_id, 1);
+    assert.equal(appState.devices.find(device => device.id === 3).floor_id, 13, '別フロアのビューへの配置で設置場所を変えない');
 
     // キューが0件になっても配置モード自体は継続する
     assert.equal(isPlacementModeActive(), true);
@@ -535,6 +585,33 @@ test('施設が異なる機器は同じ階でも推奨しない', () => {
     ]);
     assert.deepEqual(recommended, []);
     assert.deepEqual(others.map(device => device.id), [9]);
+});
+
+test('階層IDで推薦し旧文字列は保存だけに保持する', () => {
+    const view = normalizeView({ ...appState.views[0], name: '階層管理後の配置図', view_type: 'floor',
+        facility: ' 旧施設 ', floor: '旧階' });
+    appState.views[0] = view;
+    const device = appState.devices[1];
+    assert.equal(sharesPlacementFloor(device, view), true);
+    assert.equal(sharesPlacementFloor(device, { ...view, view_type: 'topology' }), true);
+    assert.equal(sharesPlacementFloor(device, { ...view, floor_id: 13 }), false);
+    assert.equal(sharesPlacementFloor(device, { ...view, floor_id: 21 }), false);
+    assert.deepEqual(getRecommendedUnplacedDevices([appState.devices[2], device]).recommended.map(row => row.id), [2]);
+    assert.equal(toSaveView(view).facility, ' 旧施設 ');
+    assert.equal(toSaveView(view).floor, '旧階');
+    const option = createPlacementManagerOption(view, true);
+    assert.equal(option.children[1].children[0].textContent, '階層管理後の配置図');
+    assert.equal(option.children[1].children[1].textContent, '本庁舎 / 2F / 物理');
+});
+
+test('未分類機器は旧情報一致でも推測せず通常候補として選択できる', () => {
+    const device = appState.devices[4];
+    const view = appState.views[0];
+    assert.equal(sharesPlacementFloor(device, view), false);
+    assert.deepEqual(getRecommendedUnplacedDevices([device]), { recommended: [], others: [device] });
+    const option = createPlacementManagerOption(view, false);
+    assert.equal(option.children[0].disabled, undefined);
+    assert.equal(sharesPlacementFloor(appState.devices[1], { ...view, floor_id: null }), false);
 });
 
 test('キュー追加後に削除された機器は配置を作成しない', () => {
@@ -816,7 +893,7 @@ function mockPlacementSave(t) {
                 ...placement, id: placements[placement.id],
                 device_id: devices[placement.device_id] || placement.device_id
             }))),
-            links: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [],
+            view_link_routes: [], canvas_notes: [], deleted_device_ids: [], deleted_view_ids: [],
             affected_view_ids: payload.views.map(row => row.id)
         }));
     });
@@ -896,12 +973,14 @@ test('保存で仮ID再採番後も同じ種別のスタンプ配置を継続で
 });
 test('安全整数上限付近の既存IDがあっても仮IDは安全な整数範囲の未使用値を割り当てる', async () => {
     const { appState, recalculateNextIds, allocateLocalId, calculateNextAvailableId } = await import('../public/js/core/state.js');
+    const { resetResourceBaseline } = await import('../public/js/core/resource-save.js');
     appState.devices = [
         { id: 1, name: '機器1' },
         { id: 2, name: '機器2' },
         { id: Number.MAX_SAFE_INTEGER - 1, name: '復元上限機器' },
         { id: Number.MAX_SAFE_INTEGER, name: '最大機器' },
     ];
+    resetResourceBaseline({ devices: appState.devices });
     recalculateNextIds();
     assert.equal(Number.isSafeInteger(appState.nextDeviceId), true);
     assert.equal(appState.nextDeviceId, 3);
@@ -944,5 +1023,42 @@ test('rack views refuse stamp/queue placement even if a stale normal-view placem
     assert.equal(handleCanvasPlacementClick({ clientX: 300, clientY: 200 }), false);
     assert.deepEqual({ devices: appState.devices, placements: appState.placements }, before);
     assert.equal(placementState.queue.length, 1);
+});
+
+test('authExpired・unconfirmed・ビュー競合時は配置モード開始や配置を拒否しresources:reloadedでキューをクリアする', async () => {
+    const { eventBus } = await import('../public/js/core/event-bus.js');
+    appState.resourceConflicts = { devices: new Map(), views: new Map() };
+    appState.authExpired = false;
+    appState.appStatus = { dirty: false, state: 'saved', lastError: null, lastSavedAt: null };
+    const before = structuredClone({ devices: appState.devices, placements: appState.placements });
+
+    for (const mutate of [
+        () => { appState.authExpired = true; },
+        () => { appState.appStatus.state = 'unconfirmed'; },
+        () => { appState.resourceConflicts.views.set(1, {}); }
+    ]) {
+        appState.authExpired = false;
+        appState.appStatus.state = 'saved';
+        appState.resourceConflicts.views.clear();
+        mutate();
+        assert.equal(enterPlacementMode({ tab: 'new', deviceType: 'switch' }), false);
+        placementState.active = true;
+        placementState.tab = 'new';
+        placementState.newDeviceType = 'switch';
+        handleCanvasPlacementClick({ clientX: 250, clientY: 250 });
+        assert.deepEqual({ devices: appState.devices, placements: appState.placements }, before);
+        placementState.active = false;
+    }
+    assert.deepEqual({ devices: appState.devices, placements: appState.placements }, before);
+
+    appState.authExpired = false;
+    appState.appStatus.state = 'saved';
+    appState.resourceConflicts.views.clear();
+    assert.equal(enterPlacementMode({ tab: 'unplaced', initialDeviceIds: [3] }), true);
+    assert.equal(isPlacementModeActive(), true);
+    assert.equal(placementState.queue.length, 1);
+    eventBus.emit('resources:reloaded');
+    assert.equal(isPlacementModeActive(), false);
+    assert.equal(placementState.queue.length, 0);
 });
 

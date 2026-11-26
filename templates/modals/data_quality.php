@@ -145,13 +145,20 @@
                                 hidden
                             ></div>
 
-                            <button
-                                id="data-quality-clear-filter-btn"
-                                type="button"
-                                disabled
-                            >
-                                すべて解除
-                            </button>
+                            <div class="data-quality-list-header-actions">
+                                <label class="data-quality-suppressed-toggle" for="data-quality-show-suppressed">
+                                    <input type="checkbox" id="data-quality-show-suppressed" aria-controls="data-quality-issue-list">
+                                    <span><span id="data-quality-suppressed-label">設定不要も表示</span>（<span id="data-quality-suppressed-count">0</span>項目）</span>
+                                </label>
+
+                                <button
+                                    id="data-quality-clear-filter-btn"
+                                    type="button"
+                                    disabled
+                                >
+                                    すべて解除
+                                </button>
+                            </div>
                         </div>
 
                         <div

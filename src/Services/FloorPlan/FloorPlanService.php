@@ -80,6 +80,25 @@ class FloorPlanService
         }
     }
 
+    private function throwViewConflict(int $viewId, ?array $view, string $message): never
+    {
+        throw new ApiException($message, 409, [
+            'conflicts' => [['kind' => 'views', 'id' => $viewId, 'name' => (string)($view['name'] ?? '削除済み')]],
+        ]);
+    }
+
+    private function requireMatchingViewRevision(int $viewId, int $requestedRevision, ?array $view): void
+    {
+        try {
+            $this->appMetaRepo->requireMatchingResourceRevision('views', $viewId, $requestedRevision);
+        } catch (ApiException $e) {
+            if ($e->getHttpStatus() === 409) {
+                $this->throwViewConflict($viewId, $view, $e->getMessage());
+            }
+            throw $e;
+        }
+    }
+
     /**
      * フロア図面のアップロード登録
      */
@@ -89,9 +108,8 @@ class FloorPlanService
             throw new ApiException('ビューIDが不正です', 400);
         }
 
-        $this->appMetaRepo->requireMatchingResourceRevision('views', $viewId, $requestedRevision);
-
         $view = $this->getFloorPlanView($viewId);
+        $this->requireMatchingViewRevision($viewId, $requestedRevision, $view);
 
         if (!$view) {
             throw new ApiException('対象のビューが見つかりません', 404);
@@ -205,8 +223,13 @@ class FloorPlanService
             if ($e instanceof PDOException && Database::isBusy($e)) {
                 throw new ApiException(
                     '現在、別の更新処理が実行されています。少し待ってから再度実行してください',
-                    409
+                    409,
+                    ['reason' => 'operation_busy']
                 );
+            }
+
+            if ($e instanceof ApiException && $e->getHttpStatus() === 409) {
+                $this->throwViewConflict($viewId, $view, $e->getMessage());
             }
 
             throw $e;
@@ -262,9 +285,8 @@ class FloorPlanService
             throw new ApiException('ビューIDが不正です', 400);
         }
 
-        $this->appMetaRepo->requireMatchingResourceRevision('views', $viewId, $requestedRevision);
-
         $view = $this->getFloorPlanView($viewId);
+        $this->requireMatchingViewRevision($viewId, $requestedRevision, $view);
 
         if (!$view) {
             throw new ApiException('対象のビューが見つかりません', 404);
@@ -300,8 +322,13 @@ class FloorPlanService
             if ($e instanceof PDOException && Database::isBusy($e)) {
                 throw new ApiException(
                     '現在、別の更新処理が実行されています。少し待ってから再度実行してください',
-                    409
+                    409,
+                    ['reason' => 'operation_busy']
                 );
+            }
+
+            if ($e instanceof ApiException && $e->getHttpStatus() === 409) {
+                $this->throwViewConflict($viewId, $view, $e->getMessage());
             }
 
             throw $e;
@@ -329,16 +356,7 @@ class FloorPlanService
         }
 
         $view = $this->getFloorPlanView($viewId);
-        try {
-            $this->appMetaRepo->requireMatchingResourceRevision('views', $viewId, $requestedRevision);
-        } catch (ApiException $e) {
-            if ($e->getHttpStatus() === 409) {
-                throw new ApiException($e->getMessage(), 409, [
-                    'conflicts' => [['kind' => 'views', 'id' => $viewId, 'name' => $view['name'] ?? '削除済み']],
-                ]);
-            }
-            throw $e;
-        }
+        $this->requireMatchingViewRevision($viewId, $requestedRevision, $view);
 
         if (!$view) {
             throw new ApiException('対象のビューが見つかりません', 404);
@@ -445,14 +463,13 @@ class FloorPlanService
             if ($e instanceof PDOException && Database::isBusy($e)) {
                 throw new ApiException(
                     '現在、別の更新処理が実行されています。少し待ってから再度保存してください',
-                    409
+                    409,
+                    ['reason' => 'operation_busy']
                 );
             }
 
             if ($e instanceof ApiException && $e->getHttpStatus() === 409) {
-                throw new ApiException($e->getMessage(), 409, [
-                    'conflicts' => [['kind' => 'views', 'id' => $viewId, 'name' => $view['name']]],
-                ]);
+                $this->throwViewConflict($viewId, $view, $e->getMessage());
             }
 
             throw $e;

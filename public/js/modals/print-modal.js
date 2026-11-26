@@ -37,7 +37,9 @@ async function updatePrintPreview() {
     try {
         const model = buildPrintModel({
             view, devices: appState.devices, placements: appState.placements, links: appState.links,
+            viewLinkRoutes: appState.viewLinkRoutes,
             linkSystems: appState.linkSystems,
+            buildings: appState.buildings, floors: appState.floors,
             rackSettings: appState.rackSettings, rackMounts: appState.rackMounts,
             rackShelves: appState.rackShelves, rackShelfDevices: appState.rackShelfDevices,
             views: appState.views, floorRackPlacements: appState.floorRackPlacements,
@@ -78,7 +80,9 @@ export function executePrint() {
 }
 
 function syncSettings() {
-    const rack = getCurrentView()?.view_type === 'rack';
+    const viewType = getCurrentView()?.view_type;
+    const rack = viewType === 'rack';
+    const floor = viewType === 'floor';
     document.querySelectorAll('input[name="print-range"]').forEach(input => {
         input.checked = input.value === settings.range;
         input.disabled = rack;
@@ -89,11 +93,16 @@ function syncSettings() {
     for (const type of Object.keys(DEVICE_TYPES)) {
         document.getElementById(`print-type-${type}`).checked = settings.deviceTypes[type];
     }
+    const rackInput = document.getElementById('print-type-rack');
+    if (rackInput) {
+        rackInput.disabled = !floor;
+        rackInput.checked = floor && settings.rack !== false;
+    }
     for (const key of contentKeys) document.getElementById(`print-${key}`).checked = settings[key];
     const notesInput = document.getElementById('print-notes');
     const notesLabel = notesInput?.parentElement?.querySelector('strong');
     if (notesLabel) notesLabel.textContent = rack ? 'ラックメモ' : 'キャンバスメモ';
-    const planEnabled = getCurrentView()?.view_type === 'floor' && Boolean(getCurrentFloorPlan()?.image_url);
+    const planEnabled = floor && Boolean(getCurrentFloorPlan()?.image_url);
     const planInput = document.getElementById('print-floorPlan');
     planInput.disabled = !planEnabled;
     if (!planEnabled) planInput.checked = false;
@@ -105,8 +114,10 @@ function syncSettings() {
     const labelInput = document.getElementById('print-labels');
     labelInput.disabled = rack || !settings.links;
     if (!settings.links) labelInput.checked = false;
+    const selectedCount = Object.values(settings.deviceTypes).filter(Boolean).length + (floor && settings.rack !== false ? 1 : 0);
+    const totalCount = Object.keys(DEVICE_TYPES).length + (floor ? 1 : 0);
     document.getElementById('print-device-count').textContent =
-        `${Object.values(settings.deviceTypes).filter(Boolean).length} / ${Object.keys(DEVICE_TYPES).length}種類を印刷`;
+        `${selectedCount} / ${totalCount}種類を印刷`;
 }
 
 export async function openPrintModal() {
@@ -136,18 +147,23 @@ export function initializePrintModal() {
     const grid = document.getElementById('print-device-types');
     if (!grid) return;
     grid.replaceChildren();
-    for (const [type, definition] of Object.entries(DEVICE_TYPES)) {
+    const choices = [
+        ...Object.entries(DEVICE_TYPES).map(([type, definition]) => [type, definition.label,
+            checked => { settings.deviceTypes[type] = checked; }]),
+        ['rack', 'ラック', checked => { settings.rack = checked; }]
+    ];
+    for (const [type, textLabel, onToggle] of choices) {
         const label = document.createElement('label');
         label.className = 'print-choice';
         const input = document.createElement('input');
         input.id = `print-type-${type}`;
         input.type = 'checkbox';
         const text = document.createElement('span');
-        text.textContent = definition.label;
+        text.textContent = textLabel;
         label.append(input, text);
         grid.appendChild(label);
         input.addEventListener('change', () => {
-            settings.deviceTypes[type] = input.checked;
+            onToggle(input.checked);
             syncSettings();
             return updatePrintPreview();
         });
@@ -176,6 +192,7 @@ export function initializePrintModal() {
     for (const [id, checked] of [['print-select-all', true], ['print-clear-all', false]]) {
         document.getElementById(id).addEventListener('click', () => {
             for (const type of Object.keys(DEVICE_TYPES)) settings.deviceTypes[type] = checked;
+            if (getCurrentView()?.view_type === 'floor') settings.rack = checked;
             syncSettings();
             return updatePrintPreview();
         });

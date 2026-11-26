@@ -32,8 +32,10 @@ test('個票からの完全削除は対象・未適用入力・保存状態を�
         appState.currentViewId = 1;
         appState.placements = [[11, 1, 1], [12, 1, 2], [13, 1, 3], [21, 2, 1], [22, 2, 2]]
             .map(([id, view_id, device_id]) => normalizePlacement({ id, view_id, device_id, x: 10, y: 10 }));
-        appState.links = [[1, 1, 1, 2], [2, 2, 1, 2], [3, 1, 2, 3]]
-            .map(([id, view_id, from_id, to_id]) => normalizeLink({ id, view_id, from_id, to_id }));
+        appState.links = [[1, 1, 2], [3, 2, 3]]
+            .map(([id, from_id, to_id]) => normalizeLink({ id, from_id, to_id, resource_revision: 1 }));
+        appState.devicePorts = [];
+        appState.viewLinkRoutes = [];
         appState.rackMounts = []; appState.rackShelfDevices = []; appState.deviceImages = [];
         appState.canvasNotes = [];
         appState.selectedPlacementIds = new Set([11]);
@@ -48,7 +50,8 @@ test('個票からの完全削除は対象・未適用入力・保存状態を�
             return json({ ok: true, revision: appState.dataRevision + 1, id_maps: {},
                 devices: payload.devices.filter(row => row.operation !== 'delete').map(row => ({ ...row.device, resource_revision: row.expected_revision + 1 })),
                 views: payload.views.map(row => ({ ...row.view, resource_revision: row.expected_revision + 1 })),
-                placements: payload.views.flatMap(row => row.placements), links: payload.views.flatMap(row => row.links),
+                placements: payload.views.flatMap(row => row.placements), view_link_routes: payload.views.flatMap(row => row.view_link_routes),
+                deleted_link_ids: payload.devices.some(row => row.operation === 'delete' && row.id === 1) ? [1] : [],
                 canvas_notes: [], deleted_device_ids: payload.devices.filter(row => row.operation === 'delete').map(row => row.id),
                 deleted_view_ids: [], affected_view_ids: payload.views.map(row => row.id) });
         };
@@ -78,7 +81,7 @@ test('個票からの完全削除は対象・未適用入力・保存状態を�
         assert.equal(await ledger.deleteActiveLedgerDevice(), false);
         assert.equal(confirmations.length, 1);
         assert.match(confirmations[0], /機器「検証SW-1」/);
-        assert.match(confirmations[0], /すべてのビュー上の配置.*関連するすべての接続/);
+        assert.match(confirmations[0], /すべてのビュー上の配置.*関連する接続・ポート・手動経路/);
         assert.deepEqual({ devices: appState.devices, placements: appState.placements, links: appState.links }, before);
         assert.equal(dom.get('ledger-device-sheet-overlay').hidden, false);
         assert.deepEqual(requests, []);

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Netarium\Tests\Suites;
 
+use Netarium\Services\Topology\ChangeHistoryService;
 use Netarium\Tests\TestCase;
 use Netarium\Tests\TestHttpClient;
 use Netarium\Tests\TestServer;
@@ -199,6 +200,119 @@ class ChangeHistoryTest extends TestCase
         });
     }
 
+    public function testFloorHistoryKeepsSnapshotNamesAndLegacyStringValues(): void
+    {
+        $this->fixture(function (TestHttpClient $admin, TestHttpClient $viewer, PDO $db): void {
+            $db->exec('DELETE FROM change_history');
+            $db->exec("INSERT INTO buildings (id, name) VALUES (981001, '本庁舎'), (981002, '別館')");
+            $db->exec("INSERT INTO floors (id, building_id, name) VALUES (982001, 981001, '1F'), (982002, 981002, '2F')");
+            $service = new ChangeHistoryService($db);
+            $deviceId = 983001;
+            $viewId = 984001;
+            $snapshot = fn(): array => $service->captureSnapshot([$deviceId], [$viewId]);
+            $assertFloor = function (string $type, string $before, string $after, string $operation) use ($admin, $deviceId, $viewId): void {
+                $id = $type === 'device' ? $deviceId : $viewId;
+                $entry = $this->history($admin, "target_type={$type}&target_id={$id}")['items'][0];
+                $this->assertSame($operation, $entry['operation']);
+                $item = array_column($entry['items'], null, 'label')[$type === 'device' ? '設置フロアID' : '所属フロアID'];
+                $this->assertSame($before, $item['before']);
+                $this->assertSame($after, $item['after']);
+            };
+
+            $before = $snapshot();
+            $db->exec("INSERT INTO devices (id, name) VALUES ({$deviceId}, '履歴テスト機器')");
+            $db->exec("INSERT INTO views (id, name) VALUES ({$viewId}, '履歴テストビュー')");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '—', '未設定', 'create');
+            }
+
+            $before = $snapshot();
+            $db->exec("UPDATE devices SET floor_id=982001 WHERE id={$deviceId}");
+            $db->exec("UPDATE views SET floor_id=982001 WHERE id={$viewId}");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '未設定', '982001（本庁舎 / 1F）', 'update');
+            }
+
+            // 同じ保存内で旧階層を改名しても、変更前にはbeforeスナップショットの名称を使う。
+            $before = $snapshot();
+            $db->exec("UPDATE buildings SET name='改名した本庁舎' WHERE id=981001");
+            $db->exec("UPDATE floors SET name='改名した1F' WHERE id=982001");
+            $db->exec("UPDATE devices SET floor_id=982002 WHERE id={$deviceId}");
+            $db->exec("UPDATE views SET floor_id=982002 WHERE id={$viewId}");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId], 'csv_import');
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '982001（本庁舎 / 1F）', '982002（別館 / 2F）', 'update');
+            }
+
+            $before = $snapshot();
+            $db->exec("UPDATE devices SET floor_id=NULL WHERE id={$deviceId}");
+            $db->exec("UPDATE views SET floor_id=NULL WHERE id={$viewId}");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '982002（別館 / 2F）', '未設定', 'update');
+            }
+            $savedRows = $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+
+            // 所属IDが同じなら、階層名だけの変更ではfloor_idの履歴を追加しない。
+            $db->exec("UPDATE devices SET floor_id=982002 WHERE id={$deviceId}");
+            $db->exec("UPDATE views SET floor_id=982002 WHERE id={$viewId}");
+            $before = $snapshot();
+            $db->exec("UPDATE buildings SET name='改名した別館' WHERE id=981002");
+            $db->exec("UPDATE floors SET name='改名した2F' WHERE id=982002");
+            $this->assertSame(0, $service->recordFromSnapshot($before, [$deviceId], [$viewId]));
+
+            $before = $snapshot();
+            $db->exec("DELETE FROM devices WHERE id={$deviceId}");
+            $db->exec("DELETE FROM views WHERE id={$viewId}");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '982002（改名した別館 / 改名した2F）', '—（削除）', 'delete');
+            }
+            $db->exec('DELETE FROM floors WHERE id IN (982001, 982002)');
+            $db->exec('DELETE FROM buildings WHERE id IN (981001, 981002)');
+            $allRows = $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+            $this->assertSame($savedRows, array_slice($allRows, 0, count($savedRows)));
+            $deviceHistory = $this->history($admin, "target_type=device&target_id={$deviceId}")['items'];
+            $move = array_column($deviceHistory[2]['items'], null, 'label')['設置フロアID'];
+            $this->assertSame('982001（本庁舎 / 1F）', $move['before']);
+            $this->assertSame('982002（別館 / 2F）', $move['after']);
+
+            // 復元等で残った未解決参照はIDを失わず、新規・削除の共通builderでも表示できる。
+            $db->exec('PRAGMA foreign_keys = OFF');
+            $before = $snapshot();
+            $db->exec("INSERT INTO devices (id, name, floor_id) VALUES ({$deviceId}, '旧参照機器', 982099)");
+            $db->exec("INSERT INTO views (id, name, floor_id) VALUES ({$viewId}, '旧参照ビュー', 982099)");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '—', '982099', 'create');
+            }
+            $before = $snapshot();
+            $db->exec("DELETE FROM devices WHERE id={$deviceId}");
+            $db->exec("DELETE FROM views WHERE id={$viewId}");
+            $service->recordFromSnapshot($before, [$deviceId], [$viewId]);
+            foreach (['device', 'view'] as $type) {
+                $assertFloor($type, '982099', '—（削除）', 'delete');
+            }
+
+            // 旧形式のID-only JSONも読出し時に現在の階層へ再解釈せず、そのまま返す。
+            $db->exec("INSERT INTO buildings (id, name) VALUES (981001, '現在の建物')");
+            $db->exec("INSERT INTO floors (id, building_id, name) VALUES (982001, 981001, '現在のフロア'), (982002, 981001, '現在の別フロア')");
+            $legacyJson = '{"items":[{"label":"設置フロアID","before":"982001","after":"982002"}]}';
+            $insert = $db->prepare("INSERT INTO change_history (
+                event_id, request_id, occurred_at, actor_user_id, actor_name,
+                target_type, target_id, target_name, operation, summary, changes_json
+            ) VALUES (999999, '', ?, NULL, '', 'device', ?, '旧履歴', 'update', '旧所属変更', ?)");
+            $insert->execute([gmdate('Y-m-d\TH:i:s\Z'), $deviceId, $legacyJson]);
+            $assertFloor('device', '982001', '982002', 'update');
+            $rows = $db->query('SELECT * FROM change_history ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+            $validated = ChangeHistoryService::validateBackupRows($rows);
+            $this->assertSame(array_column($rows, 'changes_json'), array_column($validated, 'changes_json'));
+            $this->assertSame($legacyJson, $validated[count($validated) - 1]['changes_json']);
+        });
+    }
+
     public function testRackMountsShelvesTransfersFloorMovesAndDeviceDeletionCascade(): void
     {
         $this->fixture(function (TestHttpClient $admin, TestHttpClient $viewer, PDO $db): void {
@@ -214,7 +328,7 @@ class ChangeHistoryTest extends TestCase
                     [
                         'operation' => 'create', 'id' => 930001,
                         'view' => ['name' => 'Rack-A', 'view_type' => 'rack', 'facility' => '東館', 'floor' => '2F', 'sort_order' => 10, 'memo' => ''],
-                        'placements' => [], 'links' => [], 'canvas_notes' => [],
+                        'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                         'rack_settings' => ['total_u' => 42, 'location' => '列1'],
                         'rack_mounts' => [
                             ['device_id' => 920001, 'face' => 'front', 'start_u' => 10, 'height_u' => 2, 'width_slot' => 'full', 'depth' => 'half'],
@@ -229,7 +343,7 @@ class ChangeHistoryTest extends TestCase
                     [
                         'operation' => 'create', 'id' => 930002,
                         'view' => ['name' => 'Rack-B', 'view_type' => 'rack', 'facility' => '東館', 'floor' => '2F', 'sort_order' => 20, 'memo' => ''],
-                        'placements' => [], 'links' => [], 'canvas_notes' => [],
+                        'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                         'rack_settings' => ['total_u' => 42, 'location' => '列2'],
                         'rack_mounts' => [], 'rack_shelves' => [], 'rack_shelf_devices' => [],
                     ],
@@ -240,9 +354,6 @@ class ChangeHistoryTest extends TestCase
                             ['id' => 940001, 'device_id' => 920001, 'x' => 100, 'y' => 200],
                             ['id' => 940002, 'device_id' => 920002, 'x' => 300, 'y' => 200],
                         ],
-                        'links' => [
-                            ['id' => 950001, 'from_id' => 920001, 'to_id' => 920002, 'from_port' => 'Gi0/1', 'to_port' => 'Gi0/2', 'vlan' => '100', 'label' => '幹線', 'memo' => '', 'route_mode' => 'auto', 'manual_route' => []],
-                        ],
                         'canvas_notes' => [],
                         'floor_rack_placements' => [
                             ['rack_view_id' => 930001, 'x' => 50, 'y' => 60],
@@ -251,7 +362,7 @@ class ChangeHistoryTest extends TestCase
                     [
                         'operation' => 'create', 'id' => 930004,
                         'view' => ['name' => 'Floor-2F', 'view_type' => 'floor', 'facility' => '東館', 'floor' => '2F', 'sort_order' => 40, 'memo' => ''],
-                        'placements' => [], 'links' => [], 'canvas_notes' => [], 'floor_rack_placements' => [],
+                        'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [], 'floor_rack_placements' => [],
                     ],
                 ],
             ])->assertOk()->getJson();
@@ -265,13 +376,25 @@ class ChangeHistoryTest extends TestCase
             $shelfId = (int)$setup['id_maps']['rack_shelves']['-1'];
             $viewsById = array_column($setup['views'], null, 'id');
 
+            $linked = $admin->postJson('/api.php?action=save_connections', ['links' => [[
+                'operation' => 'create',
+                'link' => ['from_id' => $dev1, 'to_id' => $dev2, 'from_port_name' => 'Gi0/1', 'to_port_name' => 'Gi0/2',
+                    'label' => '幹線'],
+            ]]])->assertOk()->getJson()['links'][0];
+            $dev1LinkEntry = $this->history($admin, "target_type=device&target_id={$dev1}")['items'][0];
+            $dev2LinkEntry = $this->history($admin, "target_type=device&target_id={$dev2}")['items'][0];
+            $this->assertSame($dev1LinkEntry['event_id'], $dev2LinkEntry['event_id']);
+            $this->assertStringContains('ポート', $dev1LinkEntry['summary']);
+            $this->assertStringContains('共通接続', $dev2LinkEntry['summary']);
+            $this->assertSame('create', $this->history($admin, "target_type=view&target_id={$floor1}")['items'][0]['operation']);
+
             // ラック間移設（Rack-A -> Rack-B）を1回の保存で実施：同一 event_id で双方から追跡可能
             $transfer = $admin->postJson('/api.php?action=save_resources', [
                 'devices' => [],
                 'views' => [
                     [
                         'operation' => 'update', 'id' => $rackA, 'expected_revision' => $viewsById[$rackA]['resource_revision'],
-                        'view' => $viewsById[$rackA], 'placements' => [], 'links' => [], 'canvas_notes' => [],
+                        'view' => $viewsById[$rackA], 'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                         'rack_settings' => ['total_u' => 45, 'location' => '列1-改'],
                         'rack_mounts' => [],
                         'rack_shelves' => [
@@ -283,7 +406,7 @@ class ChangeHistoryTest extends TestCase
                     ],
                     [
                         'operation' => 'update', 'id' => $rackB, 'expected_revision' => $viewsById[$rackB]['resource_revision'],
-                        'view' => $viewsById[$rackB], 'placements' => [], 'links' => [], 'canvas_notes' => [],
+                        'view' => $viewsById[$rackB], 'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                         'rack_settings' => ['total_u' => 42, 'location' => '列2'],
                         'rack_mounts' => [
                             ['device_id' => $dev1, 'face' => 'rear', 'start_u' => 20, 'height_u' => 2, 'width_slot' => 'left', 'depth' => 'full'],
@@ -303,30 +426,28 @@ class ChangeHistoryTest extends TestCase
             $this->assertSame($rackB, $rackAHistory['related_targets'][0]['target_id']);
             $this->assertSame($rackA, $rackBHistory['related_targets'][0]['target_id']);
 
-            // フロア間のラック移動（Floor-1F -> Floor-2F）＋配置座標変更＋接続更新
+            // フロア間のラック移動（Floor-1F -> Floor-2F）＋配置座標・手動経路・接続表示の変更
             $placementRows = array_values(array_filter($setup['placements'], static fn($p) => (int)$p['view_id'] === $floor1));
             $placementRows[0]['x'] = 180;
             $placementRows[0]['y'] = 260;
-            $linkRow = array_values(array_filter($setup['links'], static fn($l) => (int)$l['view_id'] === $floor1))[0];
-            $linkRow['vlan'] = '200';
-            $linkRow['route_mode'] = 'manual';
-            $linkRow['manual_route'] = [['x' => 180, 'y' => 200]];
+            $floor1View = array_replace($viewsById[$floor1], ['show_connections' => 0]);
+            $route = ['device_a_id' => $dev1, 'device_b_id' => $dev2, 'manual_route' => [['x' => 180, 'y' => 200]]];
 
             $floorMove = $admin->postJson('/api.php?action=save_resources', [
                 'devices' => [],
                 'views' => [
                     [
                         'operation' => 'update', 'id' => $floor1, 'expected_revision' => $viewsById[$floor1]['resource_revision'],
-                        'view' => $viewsById[$floor1],
+                        'view' => $floor1View,
                         'placements' => $placementRows,
-                        'links' => [$linkRow],
+                        'view_link_routes' => [$route],
                         'canvas_notes' => [],
                         'floor_rack_placements' => [],
                     ],
                     [
                         'operation' => 'update', 'id' => $floor2, 'expected_revision' => $viewsById[$floor2]['resource_revision'],
                         'view' => $viewsById[$floor2],
-                        'placements' => [], 'links' => [], 'canvas_notes' => [],
+                        'placements' => [], 'view_link_routes' => [], 'canvas_notes' => [],
                         'floor_rack_placements' => [
                             ['rack_view_id' => $rackA, 'x' => 410, 'y' => 520],
                         ],
@@ -339,17 +460,20 @@ class ChangeHistoryTest extends TestCase
             $f2Entry = $this->history($admin, "target_type=view&target_id={$floor2}")['items'][0];
             $this->assertSame($f1Entry['event_id'], $f2Entry['event_id']);
             $this->assertStringContains('座標変更1件', $f1Entry['summary']);
-            $this->assertStringContains('接続変更1件', $f1Entry['summary']);
+            $this->assertStringContains('手動経路1件を変更', $f1Entry['summary']);
+            $this->assertSame('非表示', array_column($f1Entry['items'], 'after', 'label')['接続表示']);
             $this->assertStringContains('フロア間ラック移動（搬出1件）', $f1Entry['summary']);
             $this->assertStringContains('フロア間ラック移動（搬入1件）', $f2Entry['summary']);
 
             // 機器削除：削除済み対象も履歴検索・閲覧でき、関連ビュー・ラックの自動整理も同じイベントで追跡できる
             $dev1Current = $admin->get('/api.php?action=load')->assertOk()->getJson();
             $dev1Row = array_column($dev1Current['devices'], null, 'id')[$dev1];
-            $admin->postJson('/api.php?action=save_resources', [
+            $cascade = $admin->postJson('/api.php?action=save_resources', [
                 'devices' => [['operation' => 'delete', 'id' => $dev1, 'expected_revision' => $dev1Row['resource_revision']]],
                 'views' => [],
-            ])->assertOk();
+            ])->assertOk()->getJson();
+            $this->assertSame([$linked['id']], $cascade['deleted_link_ids']);
+            $this->assertSame([$linked['from_port_id']], $cascade['deleted_device_port_ids']);
 
             $deletedSearch = $this->history($admin, 'q=Rack-Server-1');
             $this->assertTrue($deletedSearch['total'] >= 2);
@@ -359,6 +483,15 @@ class ChangeHistoryTest extends TestCase
             $relatedViewIds = array_column($deleteEntry['related_targets'], 'target_id');
             $this->assertTrue(in_array($floor1, $relatedViewIds, true));
             $this->assertTrue(in_array($rackB, $relatedViewIds, true));
+            $this->assertTrue(in_array($dev2, $relatedViewIds, true));
+            $removedPort = array_values(array_filter($deleteEntry['items'], static fn(array $item): bool => str_starts_with($item['label'], 'ポート:')));
+            $this->assertSame('Gi0/1', $removedPort[0]['before']);
+            $peerEntry = $this->history($admin, "target_type=device&target_id={$dev2}")['items'][0];
+            $this->assertSame($deleteEntry['event_id'], $peerEntry['event_id']);
+            $this->assertStringContains('共通接続', $peerEntry['summary']);
+            $routeEntry = $this->history($admin, "target_type=view&target_id={$floor1}")['items'][0];
+            $this->assertSame($deleteEntry['event_id'], $routeEntry['event_id']);
+            $this->assertStringContains('手動経路1件を変更', $routeEntry['summary']);
         });
     }
 
@@ -536,7 +669,7 @@ class ChangeHistoryTest extends TestCase
                         array_values(array_filter($snap['placements'], static fn($p) => (int)$p['view_id'] === (int)$view['id'])),
                         $bulkPlacements
                     ),
-                    'links' => array_values(array_filter($snap['links'], static fn($l) => (int)$l['view_id'] === (int)$view['id'])),
+                    'view_link_routes' => array_values(array_filter($snap['view_link_routes'], static fn($r) => (int)$r['view_id'] === (int)$view['id'])),
                     'canvas_notes' => array_values(array_filter($snap['canvas_notes'], static fn($n) => (int)$n['view_id'] === (int)$view['id'])),
                 ]],
             ])->assertOk()->getJson();

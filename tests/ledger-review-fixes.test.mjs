@@ -18,7 +18,7 @@ test('レビュー対応: 個票画像説明のフォーカス維持と台帳非
         return new Response(JSON.stringify({
             ok: true, revision: 2, saved_at: '2026-10-09T00:00:00Z', id_maps: {},
             devices: (body.devices || []).map(op => ({ ...op.device, resource_revision: 2 })),
-            views: [], placements: [], links: [], canvas_notes: [], affected_view_ids: [],
+            views: [], placements: [], view_link_routes: [], canvas_notes: [], affected_view_ids: [],
             deleted_device_ids: [], deleted_view_ids: []
         }));
     };
@@ -243,6 +243,11 @@ test('レビュー対応: 個票画像説明のフォーカス維持と台帳非
     await manufacturer.dispatch('input');
 
     // プリセットを切り替えてメーカー列を非表示にする
+    assert.equal(manufacturer.getAttribute('aria-label'), 'SW1のメーカー');
+    assert.equal(tbody.querySelector('select[data-field="management_scheme"][data-device-id="1"]')?.getAttribute('aria-label'), 'SW1の接続方式');
+    assert.equal(tbody.querySelector('input[data-field="management_port"][data-device-id="1"]')?.getAttribute('aria-label'), 'SW1のポート');
+    assert.equal(tbody.querySelector('select[data-field="floor_id"][data-device-id="1"]')?.getAttribute('aria-label'), 'SW1の設置フロア');
+    assert.equal(tbody.querySelector('textarea[data-field="memo"][data-device-id="1"]')?.getAttribute('aria-label'), 'SW1の備考');
     preset = 'placement';
     ledger.setLedgerColumnPreset('placement');
     ledger.renderLedgerTableHeader();

@@ -20,18 +20,19 @@ powershell -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 一時的な隔離ディレクトリおよび一時 SQLite DB を自動生成し、バックエンド API（Phase 0 基準）の振る舞いを検証します。
 
-`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の公式公開版 `v1.2.0`（スキーマ 11）ソースを元版の実プログラムとして使用し、現行版 v1.5.2 への順方向復元と、現行スキーマ 23 の主要保存項目の往復、ポリシー拒否判定を検証します。
+`BackupTest::testVersionCompatibilityPolicyAndCrossVersionWebRestore` は、未変更の `v1.2.0`（スキーマ 11）が出力した Web ZIP の復元、現行 `v2.0.0`（スキーマ 29）での往復、および互換範囲外の拒否を検証します。
 環境変数 `NETARIUM_BACKUP_V120_ROOT` で展開ルートを指定するか、対応する `v1.2.0` タグを取得してください。
 Web 復元テストでは旧版（`v1.0.0`〜`v1.1.0`）のタグや環境変数は不要です。
 未指定時はローカルのタグから `git archive` で隔離コピーを作り、タグ不足では明示的に失敗します。ネットワーク取得や現行コードの版番号偽装はテスト内で行いません。
 停止型完全バックアップテスト（`full-backup.test.php`）では、既存 fixture 用の `NETARIUM_BACKUP_V100_ROOT`・`V101_ROOT`・`V103_ROOT`・`V110_ROOT` に加え、公式公開版 `v1.2.0`（スキーマ 11）資材を指定する `NETARIUM_BACKUP_V120_ROOT` を利用できます。未指定時は現行コードによるスキーマ 11 fixture として動作します。
+公開 `v1.5.2` の実資材試験は、下記の [公開タグ smoke](#公開タグ実プログラムのバックアップ互換性smoke) を実行します。
 Public `v1.2.0` タグは次のように取得できます。
 
 ```powershell
 git fetch https://github.com/LGUG-jp/netarium.git refs/tags/v1.2.0:refs/backup-compat/public-v1.2.0
 ```
 
-（取得 ref の peeled SHA は `対象変更` です）
+（取得 ref の peeled SHA は `6802576c3e54ffc82aae6f2b88a0c81ba72e120e` です）
 
 <a id="ログインの直接fastcgi並行回帰204"></a>
 
@@ -58,7 +59,7 @@ php tests/full-backup.test.php
 
 一時的な隔離ディレクトリで完全バックアップヘルパープロセスのRPC動作を直接検証します。WALスナップショット採取、users/パスワードハッシュ・権限の復元、未参照を含む画像実体の保持、ロック競合排他、およびZIP改ざん・欠損・余分パス・zip-slip・スキーマ/アプリ不一致・破損・展開上限・カウント不一致・整合性異常時の前段拒否と本番DB不変を検証します。
 
-現行スキーマ 23 の往復では、ラック前後面・物理左右・複数 U・`half` / `full`・PC・棚板と複数の子機器・フロア配置参照・追加 IP・IP マスタと所属・Ping 到達性・変更履歴・Config 全世代と採番状態・利用者の論理削除状態を検証します。旧スキーマ 11〜22 の元契約検証後の隔離 DB 移行、旧契約への未知データ混入拒否、移行失敗時のライブ DB 不変も対象です。
+現行スキーマ 29 の往復では、ラック配置・棚板・追加 IP・IP マスタと所属・Ping 到達性・変更履歴・Config 全世代と採番状態・利用者の論理削除状態に加え、階層、共通接続、旧接続の保留と未移行 VLAN、データ品質診断の設定不要を検証します。旧スキーマの元契約検証後の隔離 DB 移行、旧契約への未知データ混入拒否、移行失敗時のライブ DB 不変も対象です。
 旧完全 ZIP の移行については、32,768 件のメモを含む DB を PHP メモリ上限 24 MiB で復元できること、追加列を保持比較の対象から除外すること、移行中の旧列の値・型の変更や行削除を検出し、ライブ DB を変更せず拒否することも検証します。
 
 <a id="docker停止型完全バックアップ復元ランナーテスト259"></a>
@@ -158,11 +159,13 @@ IIS モックの試験は開発端末でも実行できます。`full-backup.tes
 | `PasswordPolicyTest.php` | 初回パスワード変更強制（admin/viewer）、管理者再設定、DB スキーマ 9→10 移行、中途失敗時のロールバック |
 | `LoadSaveTest.php` | 構成データ（機器・ビュー・配置・リンク）の初期ロード、保存、リビジョン不一致（409 Conflict）競合制御 |
 | `ResourceSaveTest.php` | リソース単位（機器／ビュー／系統／メモ／ラック／棚板／フロア配置参照）の保存、スキーマ 11〜16 移行、面×U×横幅衝突、両側 revision による移設、全体保存時の搭載・棚板保持、バッチ rollback、隔離 PHP での Unicode 保存・ロード・ZIP 復元 |
-| `BackupTest.php` | `netarium-config` 形式 1 のスキーマ 11〜22 元契約検証・23 への構成変換、IPAM・到達性・90 日履歴・Config 直近 1 世代と採番・ラック・棚板・配置参照・図面回転の往復、同一 MAJOR 内正規 SemVer（source <= target）とスキーマ 11〜23 復元判定、消失プレビュー・事前退避、逆方向や未知形式の拒否、画像同一性・実体非破壊、利用者・セッション・bootstrap 保全 |
+| `ConnectionSaveTest.php` | スキーマ 26 からの分類・経路方向、接続・ポートの原子的保存と履歴、VLAN設定コピーの競合、未移行VLANの再設定と削除、接続削除による連鎖削除と配置解除時の残存 |
+| `PortVlanMigrationTest.php` | スキーマ 27 → 28 の未移行VLANの退避、ポートへの非転記、リンク・機器の削除による連鎖削除、接続とポートの版更新 |
+| `BackupTest.php` | `netarium-config` 形式 1 のスキーマ 11〜29 復元判定、設定不要・ポートの VLAN設定・未移行VLAN・共通接続・経路・保留行・採番の往復と旧構成の変換、IPAM・Config・変更履歴・ラック・図面の往復、事前退避、逆方向や未知形式の拒否、画像同一性・利用者・セッションの保全 |
 | `OperationGateTest.php` | バックアップ復元や更新などの高負荷・破壊的操作時の排他ロック（多重実行防止） |
 | `CsvTest.php` | 機器台帳 CSV エクスポート、インポートプレビュー/コミット、引用符・改行・日本語・空欄維持、異常系 CSV 拒否 |
 | `PingTest.php` | 機器 Ping 疎通確認、ループバック対象、プライベート/パブリック IP 制限、タイムアウト分類、排他ロック |
-| `DataQualityTest.php` | データ品質診断（未配置機器、孤立接続、重複 IP/名前等の検知）、保守期限警告 |
+| `DataQualityTest.php` | 未配置機器、共通接続・ポートの参照不整合、旧接続の保留、重複 IP・名前、保守期限警告、ポート・保守期限の未登録、設定不要の部分適用・管理 API・スキーマ 29 の自動整合 |
 | `IpManagementTest.php` | IP マスタ・所属、同一空間の新規重複拒否・異空間許容・未分類確認、CIDR 端点・ページング・競合、診断上限超過時の原子的拒否 |
 | `ChangeHistoryTest.php` | 機器・ビュー主要変更の成功時記録、期間・対象・操作者検索、90 日保持、閲覧者拒否、復元・競合との整合 |
 | `DeviceConfigTest.php` | 管理者限定の本文保存・世代・差分・削除、UTF-8 バイト数・保持数・全体容量、採番と競合、秘密値の他応答・ログへの非複製、Web／完全 ZIP の保存契約 |
@@ -181,24 +184,29 @@ HTTPS分岐のHTTP試験は専用prependでサーバー変数を合成します�
 
 ### 公開タグ実プログラムのバックアップ互換性smoke
 
-Web 互換性回帰は、指定した元版の展開ルート、またはローカルの正式タグから作る隔離コピーを使います。
-Public の実タグと Private のローカルタグを区別して受入を行う場合は、環境変数 `NETARIUM_BACKUP_V120_ROOT` で Public 実プログラムのコピー元を指定します。
-既存の `tmp/`、配備先、本番 storage は使いません。
-下記は候補リポジトリのルートから実行する PowerShell の例です。
+公開版 `v1.5.2`（スキーマ 23）と旧境界の `v1.2.0`（スキーマ 11）から、候補の `version.php` を変更せずに検証します。
+元版の展開ルートを `NETARIUM_BACKUP_V152_ROOT`／`NETARIUM_BACKUP_V120_ROOT` に指定します。
+候補リポジトリのルートから実行してください。既存の `tmp/`、配備先、本番 storage は使いません。
 公開先への書込み・タグ作成・IIS 設定変更は行いません。
-下記の PowerShell 完全 CLI 試験は管理者 PowerShell で実行します。非昇格の場合も PHP の Web／完全 ZIP 回帰は独立して実行できますが、完全 CLI の成功として扱いません。
-
-Web 復元テストは単一の正式な `v1.2.0` 代表試験に整理されており、旧版の複数タグ指定（`V100`〜`V110`）は Web テストでは不要です。
-完全 ZIP テストでも未変更の公式公開版 `v1.2.0`（スキーマ 11）実プログラムを指定して検証できます。
+PowerShell 完全 CLI 試験には管理者権限が必要です。PHP の Web／完全 ZIP 試験は非昇格でも実行できます。
 
 ```powershell
 $smokeRoot = Join-Path $env:TEMP ('netarium-backup-smoke-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
-git fetch --no-tags https://github.com/LGUG-jp/netarium.git refs/tags/v1.2.0:refs/backup-compat/public-v1.2.0
-git archive --format=zip --output="$smokeRoot/v120.zip" refs/backup-compat/public-v1.2.0
-Expand-Archive -LiteralPath "$smokeRoot/v120.zip" -DestinationPath "$smokeRoot/v120"
-$env:NETARIUM_BACKUP_V120_ROOT = "$smokeRoot/v120"
 try {
+    foreach ($item in @(
+        @{ Version = '1.2.0'; Dir = 'v120'; Sha = '6802576c3e54ffc82aae6f2b88a0c81ba72e120e' }
+        @{ Version = '1.5.2'; Dir = 'v152'; Sha = 'c7638baa9abf384d628579790ffdca1c969db361' }
+    )) {
+        $ref = "refs/backup-compat/public-v$($item.Version)"
+        git fetch --no-tags https://github.com/LGUG-jp/netarium.git "refs/tags/v$($item.Version):$ref"
+        if ($LASTEXITCODE -ne 0 -or (git rev-parse "$ref^{}") -ne $item.Sha) { throw "Unexpected public tag: $ref" }
+        git archive --format=zip --output="$smokeRoot/$($item.Dir).zip" $ref
+        if ($LASTEXITCODE -ne 0) { throw "Cannot archive: $ref" }
+        Expand-Archive -LiteralPath "$smokeRoot/$($item.Dir).zip" -DestinationPath "$smokeRoot/$($item.Dir)" -ErrorAction Stop
+    }
+    $env:NETARIUM_BACKUP_V120_ROOT = "$smokeRoot/v120"
+    $env:NETARIUM_BACKUP_V152_ROOT = "$smokeRoot/v152"
     @'
 <?php
 require "tests/TestCase.php";
@@ -208,6 +216,8 @@ require "tests/suites/BackupTest.php";
 $suite = new \Netarium\Tests\Suites\BackupTest(new \Netarium\Tests\TestHttpClient("http://127.0.0.1"));
 $suite->testVersionCompatibilityPolicyAndCrossVersionWebRestore();
 echo "PASS actual-tag Web ZIP smoke\n";
+$suite->runPublicV152DirectUpdateAndWebRestore();
+echo "PASS actual-tag v1.5.2 direct update and Web ZIP smoke\n";
 '@ | php
     if ($LASTEXITCODE -ne 0) { throw 'Actual-tag Web ZIP smoke failed' }
     php tests/full-backup.test.php
@@ -215,28 +225,26 @@ echo "PASS actual-tag Web ZIP smoke\n";
     powershell -NoProfile -ExecutionPolicy Bypass -File tests/full-backup.test.ps1
     if ($LASTEXITCODE -ne 0) { throw 'Isolated PowerShell full CLI regression failed' }
 } finally {
-    Remove-Item Env:NETARIUM_BACKUP_V120_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:NETARIUM_BACKUP_V120_ROOT,Env:NETARIUM_BACKUP_V152_ROOT -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $smokeRoot -Recurse -Force
 }
 ```
 
-取得 ref の peeled SHA は `対象変更` と照合します。
-Web smoke は実タグの HTTP 出力で `1.2.0`（スキーマ 11）ZIP を生成し、現行 v1.5.2（スキーマ 23）の preview／commit を実行します。
-元アプリ版の保持、画像参照、画像実体・users・ログインセッションの非破壊を確認し、現行スキーマ 23 同士の主要保存項目の往復も検証します。
-完全 ZIP smoke は実タグ `v1.2.0` の helper で生成した ZIP を現行版 `version.php` に従う隔離 v1.5.2／スキーマ 23 で展開し、DB と画像の SHA-256、元アプリ版、逆方向拒否、および隔離 DB 移行を確認します。
-PowerShell テストは現行の `backup-full.ps1`／`restore-full.ps1` による DB・画像・利用者復元、セッション失効、配置失敗時の切戻し、旧版との互換拒否を検証します（IIS 操作は既存モック）。この試験は公開 `v1.2.0` 実 ZIP 受入とは区別します。
-候補同一版の Web／完全 ZIP 復元も同じテストで扱います。
-これは実 IIS／FastCGI や実ブラウザでの受入結果ではありません。
-実行時は PHP の SQLite・ZIP・GD・Argon2id と PowerShell の既存テスト前提を満たした状態で結果を記録してください。
+`v1.5.2` の実プログラムで初期化した DB と、実 HTTP 出力で生成した Web ZIP を別々の保存領域で確認します。
+通常更新は中間版を導入せずスキーマ 29 に移行し、別プロセスの起動後もデータと採番を保持します。
+Web 復元はプレビューと確定を通し、復元先の利用者・認証・セッション・画像実体を変更せず、一致した画像だけ参照を復元します。
+構成変換では旧施設・フロア原文、共通接続・保留・未移行 VLAN、ラック・棚板・経路・画像参照、IP 管理、履歴、Config の保存範囲を確認します。
+完全 ZIP は公開 `v1.5.2`／`v1.2.0` の実プログラムで生成します。候補で隔離検証・移行を行い、`v1.5.2` は Docker 復元ランナーでの配置とセッション失効まで確認します（実コンテナは起動しません）。
+PowerShell の CLI 試験は、現行版での DB・画像・利用者の復元、セッション失効、配置失敗時の切戻しを確認します（IIS 操作はモック）。
+各結果は分けて記録します。環境変数が未指定の合成 fixture や、候補同士の往復を公開版実資材の合格とは扱いません。
+PHP の SQLite・ZIP・GD・Argon2id が必要です。実 IIS／FastCGI、実ブラウザの受入は別途行います。
 
-### v1.5.2 のリリース検証
+### 2.0.0 候補のリリース検証
 
-版番号更新に対応する Web／完全 ZIP の関連回帰と既存 CI を PR で確認します。
-最終 PHP・JavaScript 全件回帰、Docker CI `full`、Private release dry-run は、版番号と文書の PR を人間がマージした後の固定 `main` SHA で実行します。
-実行順序、v1.5.1 → v1.5.2（スキーマ 23 維持）の互換・実 ZIP 復元、IIS／Docker、権限とランタイムの判定条件は [変更履歴](../CHANGELOG.md)を参照してください。
-上記の v1.2.0 代表自動回帰は、未変更の v1.5.1 実プログラムを使った復元・互換確認の代わりにはなりません。
-合成環境での実ブラウザ操作と実環境の受入は、人が対象 SHA・結果・未確認範囲を記録します。
-未実施項目、SKIP、旧コードを使わない fixture の成功を、正式版実資材の受入成功へ読み替えません。
+準備 PR では、公開資材の版表記とリンク、起動時の版表示、直接関連する Web／完全 ZIP 回帰、既存 CI を確認します。
+最終候補の全件回帰、実資材互換性、Docker CI `full`、Private release dry-run、実環境受入は、マージ後の固定 `main` SHA に対して判定します（詳細は [変更履歴](../CHANGELOG.md) を参照してください）。
+合成環境での実ブラウザ操作と実環境（IIS／Docker）の受入は、人が対象 SHA・結果・未確認範囲を記録します。
+未実施項目、SKIP、旧コードを使わない合成 fixture や候補同士の往復の成功を、正式版実資材の受入成功へ読み替えません。
 
 ---
 

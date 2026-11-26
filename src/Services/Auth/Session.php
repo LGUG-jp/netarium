@@ -72,6 +72,7 @@ function startAppSession(): void
     ]);
 
     ini_set('session.use_cookies', '1');
+    ini_set('session.gc_maxlifetime', (string)APP_SESSION_ABSOLUTE_SECONDS);
 
     if (!@session_start()) {
         throw new RuntimeException('セッションを開始できません');

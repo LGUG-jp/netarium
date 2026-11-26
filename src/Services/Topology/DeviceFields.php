@@ -12,6 +12,14 @@ class DeviceFields
     public const MAX_DEPARTMENT_LENGTH = 100;
     public const MAX_MAINTENANCE_VENDOR_LENGTH = 100;
 
+    public static function legacyLocation(mixed $value, int $maxLength): string
+    {
+        if (!is_string($value) || Request::normalizeLedgerText($value, $maxLength) !== trim($value)) {
+            throw new ApiException('旧設置情報の形式が不正です', 400);
+        }
+        return $value;
+    }
+
     /**
      * 日付文字列が YYYY-MM または YYYY-MM-DD の実在日付であるか検証
      */

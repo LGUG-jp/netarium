@@ -31,7 +31,7 @@ test('ラックのDelete取り外しは未適用入力の確認と保存を先�
         devices: payload.devices.map(row => ({ ...row.device, resource_revision: revision + 20 })),
         views: payload.views.map(row => ({ ...row.view, resource_revision: revision + 30 })),
         placements: payload.views.flatMap(row => row.placements || []),
-        links: payload.views.flatMap(row => row.links || []),
+        view_link_routes: payload.views.flatMap(row => row.view_link_routes || []),
         canvas_notes: payload.views.flatMap(row => row.canvas_notes || []),
         rack_settings: payload.views.flatMap(row => row.rack_settings ? [row.rack_settings] : []),
         rack_mounts: payload.views.flatMap(row => row.rack_mounts || []),

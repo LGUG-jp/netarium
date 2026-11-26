@@ -16,11 +16,11 @@ function cleanupLoginFailures(PDO $db, int $now): void
         WHERE (locked_until > 0 AND locked_until <= :now)
            OR (locked_until = 0 AND updated_at <= :cutoff)');
     $stmt->execute([':now' => $now, ':cutoff' => date('Y-m-d H:i:s', $now - APP_LOGIN_LOCK_SECONDS)]);
-    // Active users' unexpired locks must survive an unknown-name flood.
-    // If protected locks alone exceed the cap, only those rows may exceed it.
+    // Active users' unexpired locks and active window failure counts must survive an unknown-name flood.
+    // If protected rows alone exceed the cap, only those rows may exceed it.
     $stmt = $db->prepare('DELETE FROM login_rate_limits WHERE username IN (
         SELECT limits.username FROM login_rate_limits AS limits
-        WHERE NOT (limits.locked_until > :now AND EXISTS (
+        WHERE NOT ((limits.locked_until > :now OR limits.locked_until = 0) AND EXISTS (
             SELECT 1 FROM users WHERE users.username = limits.username COLLATE NOCASE AND users.is_active = 1
         ))
         ORDER BY limits.updated_at ASC, limits.username ASC

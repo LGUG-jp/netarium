@@ -8,6 +8,7 @@ import {
 } from '../core/constants.js';
 
 import { appState } from '../core/state.js';
+import { viewHierarchyPath } from '../core/building-hierarchy.js';
 import { eventBus } from '../core/event-bus.js';
 import { getDeviceDestinations, getRackDeviceMounts } from '../core/device-placement.js';
 import {
@@ -144,8 +145,7 @@ export function getDeviceSearchText(device) {
         getDeviceTypeSearchText(device),
         device.ip,
         ...(device.additional_ips || []).flatMap(row => [row.ip, row.label]),
-        device.facility,
-        device.floor,
+        viewHierarchyPath(device, appState),
         device.location,
         device.manufacturer,
         device.model,
@@ -313,8 +313,9 @@ export function renderDeviceSearchResults() {
     clearButton.hidden =
         query === '';
 
-    resultList.replaceChildren();
+    input.removeAttribute('aria-activedescendant');
     deviceSearchActiveIndex = -1;
+    resultList.replaceChildren();
 
     if (query === '') {
         deviceSearchResults = [];
@@ -435,8 +436,7 @@ export function createDeviceSearchResult(
         ).label;
 
     const location = [
-        device.facility,
-        device.floor,
+        viewHierarchyPath(device, appState),
         device.location
     ]
         .map(value =>
@@ -590,6 +590,11 @@ export function onDeviceSearchKeyDown(event) {
             );
         }
 
+        return;
+    }
+
+    if (event.key === 'Tab') {
+        closeDeviceSearchPopup();
         return;
     }
 

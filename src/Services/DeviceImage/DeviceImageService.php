@@ -38,7 +38,8 @@ class DeviceImageService
         array $uploadedFile,
         string $caption,
         ?int $replaceImageId,
-        array $config
+        array $config,
+        ?int $expectedDeviceRevision = null
     ): array {
         if ($deviceId <= 0) {
             throw new ApiException('機器IDが不正です', 400);
@@ -56,6 +57,10 @@ class DeviceImageService
         $deviceStmt->execute([':id' => $deviceId]);
         if ($deviceStmt->fetchColumn() === false) {
             throw new ApiException('対象の機器が見つかりません', 404);
+        }
+
+        if ($expectedDeviceRevision !== null) {
+            $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
         }
 
         $uploadError = (int)($uploadedFile['error'] ?? UPLOAD_ERR_NO_FILE);
@@ -256,6 +261,10 @@ class DeviceImageService
         $this->db->beginTransaction();
         try {
             $newRevision = $this->appMetaRepo->claimDataRevision($requestedRevision);
+            $previousDeviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
+            if ($expectedDeviceRevision !== null) {
+                $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
+            }
 
             $sha = hash_file('sha256', $finalPath);
             if ($sha === false) {
@@ -306,6 +315,7 @@ class DeviceImageService
             $digestStmt = $this->db->prepare('UPDATE device_images SET sha256 = :sha WHERE stored_name = :name');
             $digestStmt->execute([':sha' => $sha, ':name' => $storedName]);
 
+            $deviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
             $this->db->commit();
         } catch (Throwable $e) {
             if ($this->db->inTransaction()) {
@@ -326,6 +336,8 @@ class DeviceImageService
         return [
             'ok' => true,
             'revision' => $newRevision,
+            'previous_device_revision' => $previousDeviceRevision,
+            'device_revision' => $deviceRevision,
             'images' => $this->formatImagesResponse($deviceId),
         ];
     }
@@ -337,7 +349,8 @@ class DeviceImageService
         int $deviceId,
         int $imageId,
         int $requestedRevision,
-        array $config
+        array $config,
+        ?int $expectedDeviceRevision = null
     ): array {
         if ($deviceId <= 0 || $imageId <= 0) {
             throw new ApiException('パラメータが不正です', 400);
@@ -350,6 +363,10 @@ class DeviceImageService
             throw new ApiException('削除対象の画像が見つかりません', 404);
         }
 
+        if ($expectedDeviceRevision !== null) {
+            $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
+        }
+
         $now = date(DATE_ATOM);
         $storedName = (string)$image['stored_name'];
         $storageDir = (string)$config['device_image_directory'];
@@ -357,6 +374,10 @@ class DeviceImageService
         $this->db->beginTransaction();
         try {
             $newRevision = $this->appMetaRepo->claimDataRevision($requestedRevision);
+            $previousDeviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
+            if ($expectedDeviceRevision !== null) {
+                $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
+            }
             $this->deviceImageRepo->enqueueGc($storedName, $now);
             $this->deviceImageRepo->delete($imageId);
 
@@ -372,6 +393,7 @@ class DeviceImageService
                 );
             }
 
+            $deviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
             $this->db->commit();
         } catch (Throwable $e) {
             if ($this->db->inTransaction()) {
@@ -386,6 +408,8 @@ class DeviceImageService
         return [
             'ok' => true,
             'revision' => $newRevision,
+            'previous_device_revision' => $previousDeviceRevision,
+            'device_revision' => $deviceRevision,
             'images' => $this->formatImagesResponse($deviceId),
         ];
     }
@@ -397,13 +421,18 @@ class DeviceImageService
         int $deviceId,
         int $requestedRevision,
         array $imagesInput,
-        array $config
+        array $config,
+        ?int $expectedDeviceRevision = null
     ): array {
         if ($deviceId <= 0) {
             throw new ApiException('機器IDが不正です', 400);
         }
 
         $this->appMetaRepo->requireMatchingDataRevision($requestedRevision);
+
+        if ($expectedDeviceRevision !== null) {
+            $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
+        }
 
         $existing = $this->deviceImageRepo->getByDeviceId($deviceId);
         $existingById = [];
@@ -436,6 +465,10 @@ class DeviceImageService
         $this->db->beginTransaction();
         try {
             $newRevision = $this->appMetaRepo->claimDataRevision($requestedRevision);
+            $previousDeviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
+            if ($expectedDeviceRevision !== null) {
+                $this->appMetaRepo->requireMatchingResourceRevision('devices', $deviceId, $expectedDeviceRevision);
+            }
 
             $order = 1;
             foreach ($imagesInput as $item) {
@@ -444,6 +477,7 @@ class DeviceImageService
                 $this->deviceImageRepo->updateOrderAndCaption($id, $order++, $caption, $now);
             }
 
+            $deviceRevision = $this->appMetaRepo->getResourceRevision('devices', $deviceId);
             $this->db->commit();
         } catch (Throwable $e) {
             if ($this->db->inTransaction()) {
@@ -455,6 +489,8 @@ class DeviceImageService
         return [
             'ok' => true,
             'revision' => $newRevision,
+            'previous_device_revision' => $previousDeviceRevision,
+            'device_revision' => $deviceRevision,
             'images' => $this->formatImagesResponse($deviceId),
         ];
     }

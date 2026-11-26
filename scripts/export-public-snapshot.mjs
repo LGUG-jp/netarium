@@ -395,9 +395,15 @@ function removeDocSections(content, shouldRemove) {
 // URL・コード・明示アンカーは本文置換から分離する。色コードもIssue番号と区別する。
 const privateNumber = /(?<![\w&])(?:(?:Issue|PR|Pull Request)\s*)?#\d+(?![\da-fA-F])\b/g;
 const commitToken = /\b(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]+\b/gi;
-function externalCommitIds(content) {
-    return new Set([...content.matchAll(/https:\/\/github\.com(?::\d+)?\/(?!LGUG-jp\/netarium(?:-dev)?(?:\/|$))[^/\s)]+\/[^/\s)]+\/commit\/([0-9a-f]{40})\b/gi)]
+function externalCommitIds(content, relPath) {
+    const ids = new Set([...content.matchAll(/https:\/\/github\.com(?::\d+)?\/(?!LGUG-jp\/netarium(?:-dev)?(?:\/|$))[^/\s)]+\/[^/\s)]+\/commit\/([0-9a-f]{40})\b/gi)]
         .map(match => match[1].toLowerCase()));
+    if (relPath === 'tests/README.md') {
+        // 公開配布正本 LGUG-jp/netarium の実資材試験に使う peeled tag SHA だけを保持する。
+        ids.add('6802576c3e54ffc82aae6f2b88a0c81ba72e120e'); // v1.2.0
+        ids.add('c7638baa9abf384d628579790ffdca1c969db361'); // v1.5.2
+    }
+    return ids;
 }
 const removedDocAnchors = new Map();
 function publicProse(text) {
@@ -532,7 +538,7 @@ function transformDocContent(content, relPath) {
     c = c.split(/(`{3,}[\s\S]*?`{3,}|~{3,}[\s\S]*?~{3,}|`[^`\n]+`|\]\([^)]+\)|<[^>\n]+>)/g)
         .map((part, index) => index % 2 ? part : publicProse(part)).join('');
     c = summarizePublicDoc(c, relPath);
-    const externalIds = externalCommitIds(c);
+    const externalIds = externalCommitIds(c, relPath);
     c = c.replace(commitToken, token => externalIds.has(token.toLowerCase()) ? token : '対象変更');
     const retainedAnchors = documentAnchors(c);
     removedDocAnchors.set(relPath, new Set([...documentAnchors(content)].filter(anchor => !retainedAnchors.has(anchor))));
@@ -579,7 +585,7 @@ function documentAnchors(content) {
 const anchorIndex = new Map([...markdownDocs].map(([rel, content]) => [rel, documentAnchors(content)]));
 
 for (const [rel, content] of markdownDocs) {
-    const externalIds = externalCommitIds(content);
+    const externalIds = externalCommitIds(content, rel);
     const prose = content.replace(/\]\([^)]+\)/g, '').replace(/<[^>\n]+>/g, '');
     privateNumber.lastIndex = 0;
     if (privateNumber.test(prose)) privateReferences.push(`${rel}: Private Issue/PR番号`);

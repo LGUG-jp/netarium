@@ -150,12 +150,28 @@ function createValidPng(int $width, int $height, int $targetBytes, bool $uncompr
 // 合成データ生成
 // --------------------------------------------------------------------------
 
+function syntheticConnection(array $link, string $vlan): array
+{
+    $ports = [];
+    foreach (['from', 'to'] as $side) {
+        $ports[] = ['operation' => 'create', 'port' => [
+            'device_id' => $link[$side . '_id'],
+            'name' => $link[$side . '_port_name'],
+            'vlan' => $vlan,
+        ]];
+    }
+    return [
+        'link' => ['operation' => 'create', 'link' => $link],
+        'device_ports' => $ports,
+    ];
+}
+
 function generateSyntheticDataset(string $profile): array
 {
     $devices = [];
     $views = [];
     $placements = [];
-    $links = [];
+    $connections = [];
     $floorPlans = [];
 
     $deviceTypes = ['router', 'switch', 'server', 'pc'];
@@ -223,17 +239,14 @@ function generateSyntheticDataset(string $profile): array
                 if ($fromDev === $toDev) {
                     $toDev = (($toDev % 500) + 1);
                 }
-                $links[] = [
-                    'id' => $linkId,
-                    'view_id' => $v,
+                $connections[] = syntheticConnection([
                     'from_id' => $fromDev,
                     'to_id' => $toDev,
                     'label' => sprintf('Link-%d', $linkId),
-                    'from_port' => sprintf('ge-0/0/%d', $l % 24),
-                    'to_port' => sprintf('ge-0/0/%d', ($l + 1) % 24),
-                    'vlan' => sprintf('%d', 10 + ($l % 5) * 10),
+                    'from_port_name' => "ge-bench-from-{$linkId}",
+                    'to_port_name' => "ge-bench-to-{$linkId}",
                     'memo' => '推奨リンク',
-                ];
+                ], (string)(10 + ($l % 5) * 10));
             }
         }
 
@@ -307,17 +320,14 @@ function generateSyntheticDataset(string $profile): array
                     if ($fromDev === $toDev) {
                         $toDev = (($toDev % 2000) + 1);
                     }
-                    $links[] = [
-                        'id' => $l + 1,
-                        'view_id' => 1,
+                    $connections[] = syntheticConnection([
                         'from_id' => $fromDev,
                         'to_id' => $toDev,
                         'label' => sprintf('DenseLink-%d', $l + 1),
-                        'from_port' => sprintf('p%d', $l % 48),
-                        'to_port' => sprintf('p%d', ($l + 1) % 48),
-                        'vlan' => '100',
+                        'from_port_name' => sprintf('bench-from-%d', $l + 1),
+                        'to_port_name' => sprintf('bench-to-%d', $l + 1),
                         'memo' => '高密度リンク',
-                    ];
+                    ], '100');
                 }
             } else {
                 // 他99ビュー: 各配置10, リンク20
@@ -343,17 +353,14 @@ function generateSyntheticDataset(string $profile): array
                     [$a, $b] = $sparsePairs[$l];
                     $fromDev = $devOffset + $a;
                     $toDev = $devOffset + $b;
-                    $links[] = [
-                        'id' => $linkBase + $l + 1,
-                        'view_id' => $v,
+                    $connections[] = syntheticConnection([
                         'from_id' => $fromDev,
                         'to_id' => $toDev,
                         'label' => sprintf('SpLink-%d', $linkBase + $l + 1),
-                        'from_port' => 'ge1',
-                        'to_port' => 'ge2',
-                        'vlan' => '200',
+                        'from_port_name' => sprintf('bench-from-%d', $linkBase + $l + 1),
+                        'to_port_name' => sprintf('bench-to-%d', $linkBase + $l + 1),
                         'memo' => 'スパースリンク',
-                    ];
+                    ], '200');
                 }
             }
         }
@@ -426,9 +433,31 @@ function generateSyntheticDataset(string $profile): array
         'devices' => $devices,
         'views' => $views,
         'placements' => $placements,
-        'links' => $links,
+        'connections' => $connections,
         'floor_plans' => $floorPlans,
     ];
+}
+
+function seedSyntheticConnections(TestHttpClient $client, array $connections): int
+{
+    $current = $client->get('/api.php?action=load')->assertOk()->getJson();
+    $revision = (int)$current['revision'];
+    $deletes = array_map(static fn(array $link): array => [
+        'link' => ['operation' => 'delete', 'id' => $link['id'], 'expected_revision' => $link['resource_revision']],
+    ], $current['links']);
+    foreach (array_chunk(array_merge($deletes, $connections), 500) as $batch) {
+        // 名前指定の接続と、その端点ポートを同じトランザクションで登録する。
+        $payload = ['links' => [], 'device_ports' => []];
+        foreach ($batch as $row) {
+            $payload['links'][] = $row['link'];
+            foreach ($row['device_ports'] ?? [] as $port) {
+                $payload['device_ports'][] = $port;
+            }
+        }
+        $revision = (int)$client->postJson('/api.php?action=save_connections', $payload)
+            ->assertOk()->getJson()['revision'];
+    }
+    return $revision;
 }
 
 // --------------------------------------------------------------------------
@@ -613,11 +642,10 @@ if ($preparePath !== null) {
             'views' => $dataset['views'],
             'devices' => $dataset['devices'],
             'placements' => $dataset['placements'],
-            'links' => $dataset['links'],
             'canvas_notes' => [],
         ]);
         $saveRes->assertOk();
-        $currentRev = (int)$saveRes->getJson()['revision'];
+        $currentRev = seedSyntheticConnections($client, $dataset['connections']);
         echo "構成保存完了 (revision: {$currentRev})\n";
         $viewRevisions = array_column($client->get('/api.php?action=load')->assertOk()->getJson()['views'], 'resource_revision', 'id');
 
@@ -687,7 +715,7 @@ echo sprintf(
     count($dataset['devices']),
     count($dataset['views']),
     count($dataset['placements']),
-    count($dataset['links']),
+    count($dataset['connections']),
     count($dataset['floor_plans'])
 );
 
@@ -763,7 +791,6 @@ $saveRes = $client->postJson('/api.php?action=save', [
     'views' => $dataset['views'],
     'devices' => $dataset['devices'],
     'placements' => $dataset['placements'],
-    'links' => $dataset['links'],
     'canvas_notes' => [],
 ]);
 if ($saveRes->getStatusCode() !== 200) {
@@ -771,7 +798,7 @@ if ($saveRes->getStatusCode() !== 200) {
     exit(1);
 }
 $saveRes->assertOk();
-$currentRevision = (int)$saveRes->getJson()['revision'];
+$currentRevision = seedSyntheticConnections($client, $dataset['connections']);
 echo "  構成データ保存完了 (revision: {$currentRevision})\n";
 $viewRevisions = array_column($client->get('/api.php?action=load')->assertOk()->getJson()['views'], 'resource_revision', 'id');
 
@@ -886,7 +913,6 @@ for ($run = 0; $run < $totalRuns; $run++) {
         'views' => $loadForSave['views'],
         'devices' => $loadForSave['devices'],
         'placements' => $loadForSave['placements'],
-        'links' => $loadForSave['links'],
         'canvas_notes' => $loadForSave['canvas_notes'],
     ]), $benchLogPath);
     if (!$isWarmup) $metrics['save'][] = $mSave;
@@ -1026,7 +1052,6 @@ try {
         'views' => $currState['views'],
         'devices' => $currState['devices'],
         'placements' => $currState['placements'],
-        'links' => $currState['links'],
         'canvas_notes' => $currState['canvas_notes'],
     ], JSON_UNESCAPED_UNICODE);
 
@@ -1183,7 +1208,6 @@ try {
         'views' => $concurrentState['views'],
         'devices' => $concurrentState['devices'],
         'placements' => $concurrentState['placements'],
-        'links' => $concurrentState['links'],
         'canvas_notes' => $concurrentState['canvas_notes'],
     ], JSON_UNESCAPED_UNICODE);
     $editorClients = [$client, $secClient];
@@ -1270,7 +1294,6 @@ $viewOverRes = $client->postJson('/api.php?action=save', [
     'views' => $overflowViews,
     'devices' => $currState['devices'],
     'placements' => $currState['placements'],
-    'links' => $currState['links'],
     'canvas_notes' => $currState['canvas_notes'],
 ]);
 $boundaryChecks['views_101_rejected'] = [
@@ -1305,7 +1328,6 @@ $placementOverRes = $client->postJson('/api.php?action=save', [
     'views' => $currState['views'],
     'devices' => $overflowDevices,
     'placements' => $v1Placements,
-    'links' => [],
     'canvas_notes' => $currState['canvas_notes'],
 ]);
 $boundaryChecks['placement_2001_rejected'] = [
@@ -1315,36 +1337,22 @@ $boundaryChecks['placement_2001_rejected'] = [
 ];
 echo sprintf("  1ビュー配置2,001件超過: HTTP %d (期待値 400, 応答: %s)\n", $placementOverRes->getStatusCode(), $placementOverRes->getJson()['error'] ?? '');
 
-// 1ビューリンク上限超過 (5,001件)
-$v1Links = [];
-$linkCount = 0;
-for ($i = 1; $i <= 2000 && $linkCount < 5001; $i++) {
-    for ($j = $i + 1; $j <= 2000 && $linkCount < 5001; $j++) {
-        $linkCount++;
-        $v1Links[] = [
-            'id' => $linkCount,
-            'view_id' => 1,
-            'from_id' => $i,
-            'to_id' => $j,
-            'label' => "L-{$linkCount}",
-        ];
-    }
+// 共通接続の登録上限超過。既存機器 2 台に異なるポートを割り当てる有効な候補で検査する。
+$maxLinks = (int)\Netarium\Core\Config::create()['max_links'];
+$overflowLinks = [];
+for ($i = 1; $i <= $maxLinks + 1; $i++) {
+    $overflowLinks[] = ['operation' => 'create', 'link' => [
+        'from_id' => 1, 'to_id' => 2, 'from_port_name' => "overflow-{$i}",
+    ]];
 }
-$validPlacementsForLinks = array_slice($v1Placements, 0, 2000);
-$linkOverRes = $client->postJson('/api.php?action=save', [
-    'revision' => (int)$currState['revision'],
-    'views' => $currState['views'],
-    'devices' => $overflowDevices,
-    'placements' => $validPlacementsForLinks,
-    'links' => $v1Links,
-    'canvas_notes' => $currState['canvas_notes'],
-]);
-$boundaryChecks['link_5001_rejected'] = [
+$linkOverRes = $client->postJson('/api.php?action=save_connections', ['links' => $overflowLinks]);
+$boundaryChecks['common_link_limit_rejected'] = [
     'status' => $linkOverRes->getStatusCode(),
-    'ok' => ($linkOverRes->getStatusCode() === 400),
+    'ok' => $linkOverRes->getStatusCode() === 400 &&
+        str_contains($linkOverRes->getJson()['error'] ?? '', '登録上限'),
     'error' => $linkOverRes->getJson()['error'] ?? '',
 ];
-echo sprintf("  1ビューリンク5,001件超過: HTTP %d (期待値 400, 応答: %s)\n", $linkOverRes->getStatusCode(), $linkOverRes->getJson()['error'] ?? '');
+echo sprintf("  共通接続上限超過: HTTP %d (期待値 400, 応答: %s)\n", $linkOverRes->getStatusCode(), $linkOverRes->getJson()['error'] ?? '');
 
 // 終了処理・サーバー停止
 $server->stop();
@@ -1411,7 +1419,7 @@ $finalReport = [
         'devices' => count($dataset['devices']),
         'views' => count($dataset['views']),
         'placements' => count($dataset['placements']),
-        'links' => count($dataset['links']),
+        'links' => count($dataset['connections']),
         'floor_plans' => count($dataset['floor_plans']),
     ],
     'metrics' => $summaryReport,

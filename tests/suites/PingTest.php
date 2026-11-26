@@ -525,4 +525,46 @@ class PingTest extends TestCase
             @unlink($lockPath);
         }
     }
+
+    public function testReconcileClearsStaleErrorWhenDeviceBecomesReachable(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/Core/Database.php';
+        $db = new PDO('sqlite::memory:');
+        \Netarium\Core\Database::initialize($db);
+        $db->exec("INSERT INTO address_spaces (id, name, ping_reachability) VALUES (1, 'Blocked', 'unreachable'), (2, 'OK', 'reachable')");
+        $db->exec("INSERT INTO ip_segments (id, address_space_id, cidr) VALUES (1, 1, '192.0.2.0/24'), (2, 2, '198.51.100.0/24')");
+        $db->exec("INSERT INTO devices (id, name, type, ip, ip_segment_id) VALUES
+            (1, 'Recovering', 'server', '192.0.2.10', 1),
+            (2, 'Stable', 'server', '198.51.100.10', 2)");
+        $db->exec("INSERT INTO device_monitor_status (device_id, status, last_checked_at, last_response_ms, last_error) VALUES
+            (1, 'unknown', NULL, NULL, 'ネットワーク区分が「到達不可」に設定されているため、Pingをスキップしました'),
+            (2, 'green', '2026-01-01 00:00:00', 4, NULL)");
+
+        $monitor = new \Netarium\Services\Monitoring\PingReachabilityMonitor($db);
+        $before = $monitor->snapshot();
+        $db->exec("UPDATE address_spaces SET ping_reachability = 'reachable' WHERE id = 1");
+        $changedIds = $monitor->reconcile($before, false);
+
+        $this->assertSame([1], $changedIds);
+        $row1 = $db->query("SELECT status, last_checked_at, last_response_ms, last_error FROM device_monitor_status WHERE device_id = 1")->fetch(PDO::FETCH_ASSOC);
+        $this->assertSame(['status' => 'unknown', 'last_checked_at' => null, 'last_response_ms' => null, 'last_error' => null], $row1);
+        $row2 = $db->query("SELECT status, last_checked_at, last_response_ms, last_error FROM device_monitor_status WHERE device_id = 2")->fetch(PDO::FETCH_ASSOC);
+        $this->assertSame(['status' => 'green', 'last_checked_at' => '2026-01-01 00:00:00', 'last_response_ms' => 4, 'last_error' => null], $row2);
+    }
+
+    public function testPingServicePreservesUtf8AndDetectsTtlExpiredFailure(): void
+    {
+        $service = new PingService(new PDO('sqlite::memory:'));
+        $utf8Text = "192.0.2.1 からの応答: 転送中に TTL が期限切れになりました。";
+        $this->assertSame($utf8Text, $service->convertWindowsCommandOutputToUtf8($utf8Text));
+
+        $jaResult = $service->parseWindowsPingOutput($utf8Text, 0);
+        $this->assertSame('red', $jaResult['status']);
+        $this->assertSame('failure', $jaResult['outcome']);
+        $this->assertStringContains('TTL が期限切れ', (string)$jaResult['error']);
+
+        $enResult = $service->parseWindowsPingOutput("Reply from 192.0.2.254: TTL expired in transit.\n", 0);
+        $this->assertSame('red', $enResult['status']);
+        $this->assertSame('failure', $enResult['outcome']);
+    }
 }

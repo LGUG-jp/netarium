@@ -54,8 +54,8 @@
                     </button>
                 </section>
 
-                <section class="devices-csv-import-spec" aria-labelledby="devices-csv-import-spec-title">
-                    <h3 id="devices-csv-import-spec-title">CSV取込仕様</h3>
+                <details id="devices-csv-import-spec" class="devices-csv-import-spec" open>
+                    <summary id="devices-csv-import-spec-title">CSV取込仕様</summary>
                     <div class="devices-csv-import-spec-body">
                         <section>
                             <h4>ファイル仕様</h4>
@@ -70,7 +70,7 @@
                                 <li>idが空欄なら新規登録し、取込実行時に自動採番します。</li>
                                 <li>既存idの行は該当機器を更新し、変更がなければ「変更なし」と判定します。</li>
                                 <li>同じidの重複指定はできません。</li>
-                                <li>additional_ips 以外の空欄は空値として反映します。additional_ips の空欄は既存機器では保持、新規機器では追加 IP なしになります。</li>
+                                <li>additional_ips・facility・floor 以外の空欄は空値として反映します。additional_ips の空欄は既存機器では保持、新規機器では追加 IP なしになります。facility・floor の空欄や階層の未一致時は既存の設置フロア所属を保持し、新規機器では未設定になります。</li>
                                 <li>additional_ips は [] で全削除、JSON 配列で全置換します。配列順を表示順とし、用途ラベルは label に指定します。例: <code>[{"ip":"192.0.2.20","label":"業務"},{"ip":"192.0.2.21","label":"保守"}]</code>（CSV セル内の二重引用符は二重にします）。出力時、追加 IP がなければ [] です。</li>
                                 <li>セグメント所属用の列は増やしません。管理 IP、および追加 IP の IP・用途が不変なら所属を保持します。変更・新規 IP は一意候補へ分類し、複数候補または候補なしは未分類として警告します。</li>
                             </ul>
@@ -100,7 +100,7 @@
                             </ul>
                         </section>
                     </div>
-                </section>
+                </details>
 
                 <section
                     id="devices-csv-import-result"

@@ -99,6 +99,7 @@ $operationGate->acquireShared();
 
 try {
     $db = new PDO('sqlite:' . $dbFile);
+    \Netarium\Core\Database::initialize($db);
 
     \Netarium\Core\AuditLog::begin($config, 'recover_admin', null, $db);
 } catch (Throwable $e) {
@@ -108,8 +109,7 @@ try {
 
 try {
     $passwordHash = \Netarium\Services\Auth\PasswordHashing::hash($password);
-    \Netarium\Core\Database::initialize($db);
-    $db->beginTransaction();
+    $db->exec('BEGIN IMMEDIATE');
     $find = $db->prepare(
         'SELECT id FROM users WHERE username = :username LIMIT 1'
     );

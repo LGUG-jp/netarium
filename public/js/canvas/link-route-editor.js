@@ -1,8 +1,9 @@
-import { appState, getCurrentLinks, getCurrentPlacements, getCurrentView } from '../core/state.js';
+import { appState, getCurrentLinkGroups, getCurrentPlacements, getCurrentView } from '../core/state.js';
 import { render } from './renderer.js';
 import { endLinkMode } from '../core/link-mode.js';
 import { LINK_MANUAL_ROUTE_MAX_POINTS } from '../core/constants.js';
 import { normalizeLinkRouteData } from '../core/link-route-data.js';
+import { getViewLinkRoutingPlacements, pairKey, setViewLinkRoute } from '../core/connection-data.js';
 import { mappedResourceId } from '../core/resource-save.js';
 import { hasResourceConflict, scheduleSave } from '../core/save-queue.js';
 import { eventBus } from '../core/event-bus.js';
@@ -24,7 +25,16 @@ const initializedButtons = new WeakSet();
 const el = id => document.getElementById(id);
 const copy = points => points.map(point => ({ x: point.x, y: point.y }));
 const redraw = () => eventBus.emit('canvas:render-links');
-const currentLink = () => session && getCurrentLinks().find(link => Number(link.id) === session.linkId);
+const routingPlacements = () => getViewLinkRoutingPlacements(getCurrentView(), appState, getCurrentPlacements());
+const RACK_ROUTE_REASON = 'ラックを端点に含む接続は自動経路で表示されるため、経路を変更できません。';
+const currentGroup = () => session && getCurrentLinkGroups().find(group => group.display_key === session.key);
+function selectedGroup() {
+    const key = appState.editingLinkGroupKey;
+    const id = appState.editingLinkId;
+    if (key == null && id == null) return undefined;
+    return getCurrentLinkGroups().find(group => (key == null || group.display_key === key) &&
+        (id == null || group.link_ids.includes(Number(id))));
+}
 const routeStamp = link => JSON.stringify([link.route_mode ?? 'auto', link.manual_route ?? []]);
 function endpointStamp(link) {
     const placements = getCurrentPlacements();
@@ -34,18 +44,18 @@ function endpointStamp(link) {
     }));
 }
 function permitted(link) {
-    return Boolean(link && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
+    return Boolean(link && !link.rack_projected && isCurrentUserAdmin() && !appState.authExpired && !appState.isPinging &&
         !hasResourceConflict('views', link.view_id));
 }
 function resolved(link) {
-    const route = resolveTopologyLinkRoutes(getCurrentLinks(), getCurrentPlacements()).get(Number(link.id));
+    const route = resolveTopologyLinkRoutes(getCurrentLinkGroups(), routingPlacements()).get(link.display_key);
     if (!route || route.length < 2) throw new Error('接続先の機器がないため経路を編集できません');
     manualRouteFromPolyline(route);
     return copy(route);
 }
 function report(error) { showToast(error.message, 'warning'); }
 function available(operation) {
-    if (!session || session.selected == null || session.drag || !permitted(currentLink())) return false;
+    if (!session || session.selected == null || session.drag || !permitted(currentGroup())) return false;
     try { operation(session.points, session.selected); return true; } catch { return false; }
 }
 function setControlReason(id, reason) {
@@ -56,15 +66,22 @@ function setControlReason(id, reason) {
     if (reason) button.title = reason;
     else button.removeAttribute('title');
 }
-function updateControls() {
+function updateControls(selected = selectedGroup()) {
     if (typeof document === 'undefined') return;
-    const selected = getCurrentLinks().find(link => Number(link.id) === Number(appState.editingLinkId));
-    const reason = !isCurrentUserAdmin() ? '管理者権限が必要です'
+    const rackReason = isCurrentUserAdmin() && selected?.rack_projected ? RACK_ROUTE_REASON : '';
+    const reason = rackReason || (!isCurrentUserAdmin() ? '管理者権限が必要です'
         : appState.authExpired ? '認証が失効しています'
         : appState.isPinging ? 'Pingの完了を待ってください'
         : appState.floorPlanAdjustMode ? '図面調整を終了してください'
         : !selected || !getCurrentView() ? '表示中の接続を選択してください'
-        : hasResourceConflict('views', selected.view_id) ? '競合しているビューを再読込してください' : '';
+        : hasResourceConflict('views', selected.view_id) ? '競合しているビューを再読込してください' : '');
+    const section = el('lp-route-section');
+    if (section) section.hidden = !selected || !isCurrentUserAdmin();
+    const message = el('lp-route-reason');
+    if (message) {
+        if (message.textContent !== rackReason) message.textContent = rackReason;
+        message.hidden = !rackReason;
+    }
     setControlReason('lp-route-edit-btn', reason);
     const operationReason = !session ? '経路調整を開始してください'
         : session.drag ? 'ドラッグを確定または中止してください'
@@ -75,6 +92,8 @@ function updateControls() {
         operationReason || '直交性を保って削除できる折れがありません');
     setControlReason('lp-route-auto-btn', reason ||
         (selected?.route_mode !== 'manual' ? 'すでに自動経路です' : ''));
+    const autoButton = el('lp-route-auto-btn');
+    if (autoButton) autoButton.hidden = selected?.route_mode !== 'manual';
 }
 function cancelPreview() {
     if (!session?.drag) return;
@@ -105,11 +124,9 @@ export function finishLinkRouteEdit(reason = 'finish') {
 }
 export function syncLinkRouteEditor() {
     if (session) {
-        const link = currentLink();
-        const placements = getCurrentPlacements();
-        const endpointsPresent = link && [link.from_id, link.to_id].every(id => placements.some(p => Number(p.device_id) === Number(id)));
+        const link = selectedGroup();
         if (Number(appState.currentViewId) !== session.viewId || !getCurrentView()) finishLinkRouteEdit('view');
-        else if (!link || Number(appState.editingLinkId) !== session.linkId || !endpointsPresent) finishLinkRouteEdit('selection');
+        else if (link?.display_key !== session.key) finishLinkRouteEdit('selection');
         else if (!permitted(link)) finishLinkRouteEdit('permission');
         else if (routeStamp(link) !== session.routeStamp || endpointStamp(link) !== session.endpointStamp) finishLinkRouteEdit('external-change');
     }
@@ -118,19 +135,17 @@ export function syncLinkRouteEditor() {
 function commit(points) {
     syncLinkRouteEditor();
     if (!session) return false;
-    const link = currentLink();
+    const link = currentGroup();
     if (!permitted(link) || !requireAdminUiAction()) return false;
     const manual = manualRouteFromPolyline(points);
     const candidate = { ...link, route_mode: 'manual', manual_route: manual };
     const nextPoints = resolveTopologyLinkRoutes(
-        getCurrentLinks().map(row => row === link ? candidate : row), getCurrentPlacements()
-    ).get(session.linkId);
+        getCurrentLinkGroups().map(row => row.display_key === session.key ? candidate : row), routingPlacements()
+    ).get(session.key);
     if (!nextPoints) throw new Error('経路の接続先がありません');
     manualRouteFromPolyline(nextPoints);
-    // 保存応答でオブジェクトが置換されるため、確定時に現在のIDから検索する。
-    link.route_mode = 'manual';
-    link.manual_route = manual;
-    session.routeStamp = routeStamp(link);
+    setViewLinkRoute(appState, link, manual);
+    session.routeStamp = routeStamp(candidate);
     session.points = copy(nextPoints);
     if (session.selected != null) session.selected = Math.min(session.selected, session.points.length - 2);
     markDirty();
@@ -145,12 +160,16 @@ export function startLinkRouteEdit() {
         showToast('図面調整を終了してから経路を編集してください', 'warning');
         return;
     }
-    const link = getCurrentLinks().find(row => Number(row.id) === Number(appState.editingLinkId));
+    const link = selectedGroup();
+    if (link?.rack_projected) {
+        showToast(RACK_ROUTE_REASON, 'warning');
+        return;
+    }
     if (!permitted(link) || !getCurrentView()) {
         showToast('表示中のビューで競合していない接続を選択してください', 'warning');
         return;
     }
-    if (session?.linkId === Number(link.id) && session.viewId === Number(link.view_id)) { syncLinkRouteEditor(); return; }
+    if (session?.key === link.display_key) { syncLinkRouteEditor(); return; }
     try {
         const data = normalizeLinkRouteData(link);
         const points = resolved(link);
@@ -161,7 +180,7 @@ export function startLinkRouteEdit() {
         render();
         finishLinkRouteEdit('replace');
         showCanvasContextToolbar('link-route', finishLinkRouteEdit);
-        session = { linkId: Number(link.id), viewId: Number(link.view_id), points, selected: null,
+        session = { key: link.display_key, viewId: Number(link.view_id), points, selected: null,
             routeStamp: routeStamp(link), endpointStamp: endpointStamp(link), drag: null, svg: appState.currentSvg, focusIndex: null };
         if (data.route_mode === 'auto') {
             commit(points);
@@ -172,7 +191,7 @@ export function startLinkRouteEdit() {
     } catch (error) { report(error); }
 }
 export function getLinkRoutePreview() {
-    return session?.drag ? { linkId: session.linkId, points: copy(session.points) } : null;
+    return session?.drag ? { key: session.key, points: copy(session.points) } : null;
 }
 function transform(operation) {
     syncLinkRouteEditor();
@@ -181,13 +200,12 @@ function transform(operation) {
 }
 function returnToAuto() {
     syncLinkRouteEditor();
-    const link = getCurrentLinks().find(row => Number(row.id) === Number(appState.editingLinkId));
+    const link = selectedGroup();
     if (!permitted(link) || !getCurrentView() || appState.floorPlanAdjustMode ||
         link.route_mode !== 'manual' || !requireAdminUiAction()) return;
     if (!window.confirm('手動経路を破棄して自動経路へ戻しますか？')) return;
     cancelPreview();
-    link.route_mode = 'auto';
-    link.manual_route = [];
+    setViewLinkRoute(appState, link, null);
     markDirty();
     scheduleSave({ immediate: true, silent: true });
     if (session) finishLinkRouteEdit();
@@ -280,25 +298,41 @@ eventBus.on('resource:conflict', syncLinkRouteEditor);
 eventBus.on('save-state:changed', syncLinkRouteEditor);
 eventBus.on('resources:ids-remapped', maps => {
     if (!session) return;
-    session.viewId = mappedResourceId(maps.views, session.viewId);
-    session.linkId = mappedResourceId(maps.links, session.linkId);
+    const [view, from, to] = session.key.split(':').map(Number);
+    const viewId = mappedResourceId(maps.views, view);
+    const fromId = mappedResourceId(maps.devices, from);
+    const toId = mappedResourceId(maps.devices, to);
+    if (viewId === view && fromId === from && toId === to) return;
+    session.viewId = viewId;
+    session.key = `${viewId}:${pairKey(fromId, toId)}`;
     // ID再採番だけでは端点の外部移動として扱わない。
     const stamp = JSON.parse(session.endpointStamp);
-    session.endpointStamp = JSON.stringify(stamp.map(p => p && [mappedResourceId(maps.devices, p[0]), ...p.slice(1)]));
-    syncLinkRouteEditor();
+    const remapped = stamp.map(p => p && [mappedResourceId(maps.devices, p[0]), ...p.slice(1)]);
+    if (fromId > toId) {
+        remapped.reverse();
+        const [mode, points] = JSON.parse(session.routeStamp);
+        session.routeStamp = JSON.stringify([mode, points.reverse()]);
+        session.points.reverse();
+        const lastSegment = (session.drag?.points ?? session.points).length - 2;
+        if (session.selected != null) session.selected = lastSegment - session.selected;
+        if (session.focusIndex != null) session.focusIndex = lastSegment - session.focusIndex;
+        if (session.drag) {
+            session.drag.points.reverse();
+            session.drag.index = session.drag.points.length - 2 - session.drag.index;
+        }
+    }
+    session.endpointStamp = JSON.stringify(remapped);
 });
 
 export function renderLinkRouteEditor(svg, routeMap) {
     svg.setAttribute('aria-hidden', session ? 'false' : 'true');
     if (!session) return;
     session.svg = svg;
-    const points = session.drag ? session.points : routeMap.get(session.linkId);
+    const points = session.drag ? session.points : routeMap.get(session.key);
     if (!points || points.length < 2) return;
     const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     const renderedSession = session;
     group.setAttribute('class', 'link-route-editor');
-    const focusedIndex = document.activeElement?.dataset?.routeSegment;
-    if (focusedIndex != null) session.focusIndex = Number(focusedIndex);
     for (let index = 0; index < points.length - 1; index++) {
         const a = points[index], b = points[index + 1], horizontal = a.y === b.y;
         const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -314,7 +348,7 @@ export function renderLinkRouteEditor(svg, routeMap) {
         hit.addEventListener('click', event => { event.stopPropagation(); if (session !== renderedSession) return; select(); redraw(); });
         const beginDrag = event => {
             event.stopPropagation(); event.preventDefault();
-            if (event.button !== 0 || session !== renderedSession || session.drag || !permitted(currentLink()) || !requireAdminUiAction()) return;
+            if (event.button !== 0 || session !== renderedSession || session.drag || !permitted(currentGroup()) || !requireAdminUiAction()) return;
             select(); hit.focus();
             session.drag = { pointerId: event.pointerId, points: copy(session.points), index, horizontal,
                 origin: screenToWorld(event.clientX, event.clientY), svg, changed: false };

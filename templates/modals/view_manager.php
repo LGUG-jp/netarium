@@ -11,13 +11,13 @@
         >
             <header class="view-manager-header">
                 <h2 id="view-manager-title">
-                    ビュー管理
+                    建物・フロア・ビュー管理
                 </h2>
 
                 <button
                     type="button"
                     class="modal-close-btn"
-                    aria-label="閉じる"
+                    aria-label="建物・フロア・ビュー管理を閉じる"
                     id="close-view-manager-btn"
                 >
                     ×
@@ -25,6 +25,11 @@
             </header>
 
             <div class="view-manager-toolbar">
+                <div class="hierarchy-create-buttons" role="group" aria-label="建物・フロアを新規登録">
+                    <button id="hierarchy-add-building-btn" type="button" class="btn btn-secondary btn-sm">＋ 建物</button>
+                    <button id="hierarchy-add-floor-btn" type="button" class="btn btn-secondary btn-sm">＋ フロア</button>
+                </div>
+                <div class="view-create-group">
                 <div class="view-create-buttons" role="group" aria-label="ビューを新規登録">
                     <button id="view-add-topology-btn" type="button" class="btn btn-primary btn-sm">＋ 論理構成図</button>
                     <button id="view-add-floor-btn" type="button" class="btn btn-primary btn-sm">＋ フロア図</button>
@@ -46,22 +51,8 @@
                     </button>
                 </div>
 
-                <button
-                    id="view-duplicate-btn"
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                >
-                    複製
-                </button>
 
-                <button
-                    id="view-delete-btn"
-                    type="button"
-                    class="btn btn-danger btn-secondary btn-sm"
-                >
-                    削除
-                </button>
-
+                </div>
                 <span id="view-manager-count">
                     0 / 100件
                 </span>
@@ -70,27 +61,48 @@
             <div class="view-manager-body">
                 <aside class="view-manager-list-area">
                     <label for="view-manager-search">
-                        ビュー検索
+                        建物・フロア・ビュー検索
                     </label>
 
                     <input
                         id="view-manager-search"
                         type="search"
-                        placeholder="名称、施設、フロアで検索"
+                        placeholder="建物、フロア、ビュー名で検索"
                     >
 
                     <div
                         id="view-manager-list"
                         class="view-manager-list"
-                        role="listbox"
-                        aria-label="ビュー一覧"
+                        role="tree"
+                        aria-label="建物・フロア・ビュー一覧"
                     ></div>
                 </aside>
+                <div id="hierarchy-editor" class="hierarchy-editor" hidden></div>
 
                 <form
                     id="view-manager-form"
                     class="view-manager-form"
                 >
+                    <div class="view-manager-editor-header">
+                        <h3>ビューを編集</h3>
+                        <div class="view-manager-editor-tools" role="group" aria-label="ビューの補助操作">
+                            <button
+                                id="view-duplicate-btn"
+                                type="button"
+                                class="btn btn-secondary btn-sm"
+                            >
+                                複製
+                            </button>
+                            <button
+                                id="view-history-btn"
+                                type="button"
+                                class="btn btn-secondary btn-sm admin-only"
+                                title="このビューの変更履歴を表示します"
+                            >
+                                変更履歴
+                            </button>
+                        </div>
+                    </div>
                     <input
                         id="vm-id"
                         type="hidden"
@@ -108,19 +120,10 @@
                         required
                     >
                     <p id="vm-name-error" class="form-error" aria-live="polite" hidden></p>
-
-                    <div class="view-manager-field-row">
-                        <div class="view-manager-field">
-                            <label for="vm-facility">施設</label>
-                            <input id="vm-facility" type="text" data-max-length="100">
-                            <p id="vm-facility-error" class="form-error" aria-live="polite" hidden></p>
-                        </div>
-                        <div class="view-manager-field">
-                            <label for="vm-floor">フロア</label>
-                            <input id="vm-floor" type="text" data-max-length="50">
-                            <p id="vm-floor-error" class="form-error" aria-live="polite" hidden></p>
-                        </div>
-                    </div>
+                    <label for="vm-floor-id">所属フロア（任意）</label>
+                    <select id="vm-floor-id"><option value="">未分類</option></select>
+                    <p id="vm-floor-id-error" class="form-error" aria-live="polite" hidden></p>
+                    <p class="form-support">所属を変更しても配置や接続は変わりません。</p>
 
                     <div class="view-manager-field-row">
                         <div class="view-manager-field">
@@ -140,6 +143,14 @@
                     </div>
                     <p id="vm-type-help" class="form-support">ラックと他の種別は相互に変更できません。</p>
 
+                    <div id="vm-connections-setting" hidden>
+                        <label class="view-manager-checkbox" for="vm-show-connections">
+                            <input id="vm-show-connections" type="checkbox" aria-describedby="vm-show-connections-help" checked>
+                            接続線を表示する
+                        </label>
+                        <p id="vm-show-connections-help" class="form-support">非表示にしても共通接続と手動経路は残ります。</p>
+                    </div>
+
                     <fieldset id="vm-rack-fields" hidden>
                         <legend>ラック設定</legend>
                         <div class="view-manager-field-row">
@@ -155,6 +166,11 @@
                             </div>
                         </div>
                         <p id="vm-rack-help">搭載機器の範囲を切り捨てる縮小はできません。</p>
+                        <div class="view-manager-field">
+                            <strong>ラックアイコンの配置先</strong>
+                            <span id="vm-rack-destination">未配置</span>
+                            <button id="vm-rack-go-to-placement" type="button" class="btn btn-secondary btn-sm" hidden>配置先へ移動</button>
+                        </div>
                     </fieldset>
 
                     <div id="vm-floor-plan-actions" class="view-manager-floor-plan-actions" hidden>
@@ -184,7 +200,7 @@
                     <div id="vm-memo-count" class="character-counter" aria-live="polite">0/1000</div>
                     <p id="vm-memo-error" class="form-error" aria-live="polite" hidden></p>
 
-                    <div class="view-manager-form-actions">
+                    <div class="view-manager-conflict-actions">
                         <button
                             id="view-conflict-reload-btn"
                             type="button"
@@ -193,19 +209,21 @@
                         >
                             このビューを再読込
                         </button>
+                    </div>
+
+                    <div class="view-manager-form-actions">
                         <button
-                            id="view-history-btn"
+                            id="view-delete-btn"
                             type="button"
-                            class="btn btn-secondary btn-sm admin-only"
-                            title="このビューの変更履歴を表示します"
+                            class="btn btn-danger btn-secondary btn-sm"
                         >
-                            変更履歴
+                            ビューを削除
                         </button>
                         <button
                             id="view-apply-btn"
                             type="button"
                             class="btn btn-primary btn-sm"
-                            title="入力を適用し、自動保存します"
+                            title="入力内容は「適用」で確定し、自動保存されます。"
                         >
                             適用
                         </button>
@@ -215,7 +233,7 @@
 
             <footer class="view-manager-footer">
                 <p>
-                    入力は「適用」で確定します。登録・複製・削除は直ちに自動保存され、閉じても取り消されません。
+                    入力内容は「適用」で確定し、自動保存されます。登録・複製・削除は直ちに自動保存され、閉じても取り消されません。
                 </p>
             </footer>
         </section>

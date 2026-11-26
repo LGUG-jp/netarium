@@ -91,18 +91,35 @@ class Element {
         this.parentElement = null;
         if (this.id) elements.delete(this.id);
     }
+    contains(target) {
+        return this === target || this.children.some(child => typeof child.contains === 'function' && child.contains(target));
+    }
 }
 const elements = new Map();
 const listeners = new Map();
-const panelInputs = ['name', 'type', 'ip', 'facility', 'floor', 'location', 'manufacturer', 'model', 'asset-number', 'serial-number', 'mac-address', 'memo', 'install-date', 'management-scheme', 'management-port', 'department', 'maintenance-vendor', 'maintenance-expiry', 'coord-x', 'coord-y'];
-const linkInputs = ['label', 'from-port', 'to-port', 'vlan', 'memo', 'system'];
+const panelInputs = ['name', 'type', 'ip', 'floor-id', 'location', 'manufacturer', 'model', 'asset-number', 'serial-number', 'mac-address', 'memo', 'install-date', 'management-scheme', 'management-port', 'department', 'maintenance-vendor', 'maintenance-expiry', 'coord-x', 'coord-y'];
+const linkInputs = ['label', 'from-port', 'to-port', 'memo', 'system'];
 
 // DOM events and queue API are exercised together; drafts never enter the persistence snapshot.
 test('詳細パネルは明示適用まで確定値と保存対象を変更しない', async t => {
     const globals = ['window', 'document', 'fetch', 'confirm', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement'];
     const originals = new Map(globals.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-    for (const id of ['panel', 'link-panel', 'toast', 'p-apply-btn', 'lp-apply-btn', 'lp-swap-btn', 'lp-from-device', 'lp-to-device', 'p-reload-conflict-btn', 'lp-reload-conflict-btn', ...panelInputs.map(id => `p-${id}`), ...linkInputs.map(id => `lp-${id}`)]) elements.set(id, new Element(id));
+    for (const id of ['panel', 'link-panel', 'toast', 'p-apply-btn', 'lp-apply-btn', 'p-reload-conflict-btn', 'lp-reload-conflict-btn', ...panelInputs.map(id => `p-${id}`), ...linkInputs.map(id => `lp-${id}`)]) elements.set(id, new Element(id));
     for (const id of ['lp-system-name', 'lp-system-swatch', 'lp-system-options']) elements.set(id, new Element(id));
+    for (const id of ['lp-legacy-vlan', 'lp-legacy-vlan-value', 'lp-delete-legacy-vlan-btn']) elements.set(id, new Element(id));
+    const endpoints = new Element();
+    elements.get('link-panel').append(endpoints);
+    for (const side of ['from', 'to']) {
+        const endpointId = `lp-${side}-endpoint`;
+        const endpoint = new Element(endpointId);
+        endpoints.append(endpoint);
+        endpoint.append(new Element(`lp-${side}-device`), elements.get(`lp-${side}-port`),
+            new Element(`lp-${side}-port-error`), new Element(`lp-${side}-vlan`));
+        for (const suffix of ['vlan-summary', 'vlan-editor', 'vlan-input', 'vlan-input-error']) {
+            const id = `lp-${side}-${suffix}`;
+            elements.set(id, new Element(id));
+        }
+    }
     const summaryIds = ['basic', 'placement', 'asset', 'management', 'extra'].map(group => `p-summary-${group}`);
     for (const id of [...summaryIds, 'p-last-checked', 'p-response-ms', 'p-last-error']) elements.set(id, new Element(id));
     for (const id of panelInputs.map(id => `p-${id}`)) elements.get('panel').appendChild(elements.get(id));
@@ -155,37 +172,83 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
     });
     let requests = [];
     let failSave = false;
+    let portConflict = false;
     globalThis.fetch = async (url, options) => {
         const payload = JSON.parse(options.body);
         requests.push(payload);
         if (failSave) return new Response(JSON.stringify({ ok: false, error: '保存失敗' }), { status: 422 });
+        if (portConflict) return Response.json({ ok: false, error: 'ポートが更新されました', details: {
+            conflicts: [{ resource: 'device_ports', id: 41, expected_revision: 1, actual_revision: 2 }]
+        } }, { status: 409 });
+        if (url.includes('action=save_connections')) {
+            const ports = appState.devicePorts.map(port => ({ ...port }));
+            const portIds = {};
+            for (const op of payload.device_ports) {
+                if (op.operation === 'create') {
+                    const id = Math.max(0, ...ports.map(row => row.id)) + 1;
+                    portIds[op.id] = id;
+                    ports.push({ ...op.port, id, resource_revision: 2 });
+                } else if (op.operation === 'update') {
+                    Object.assign(ports.find(row => row.id === op.id), op.port, { resource_revision: op.expected_revision + 1 });
+                }
+            }
+            const savedLinks = payload.links.filter(row => row.operation !== 'delete');
+            const links = savedLinks.map(({ id, link, expected_revision }) => {
+                const { from_port_name, to_port_name, ...saved } = { ...appState.links.find(row => row.id === id), ...link };
+                for (const [side, name] of [['from', from_port_name], ['to', to_port_name]]) {
+                    if (name === undefined) continue;
+                    const device_id = saved[`${side}_id`];
+                    let port = ports.find(row => row.device_id === device_id && row.name === name);
+                    if (!port && name !== '') {
+                        port = { id: Math.max(0, ...ports.map(row => row.id)) + 1, device_id, name, resource_revision: 2 };
+                        ports.push(port);
+                    }
+                    saved[`${side}_port_id`] = port?.id ?? null;
+                }
+                return { ...saved, id, resource_revision: expected_revision + 1 };
+            });
+            return new Response(JSON.stringify({
+                ok: true, revision: 2, id_maps: { device_ports: portIds }, device_ports: ports, links,
+                ...(payload.complete_legacy_vlan == null ? {} : { completed_legacy_vlan_link_id: payload.complete_legacy_vlan }),
+                views: [], deleted_link_ids: payload.links.filter(row => row.operation === 'delete').map(row => row.id),
+                deleted_device_port_ids: [], removed_view_link_routes: []
+            }));
+        }
         return new Response(JSON.stringify({
             ok: true, revision: 2, saved_at: '2026-10-03T00:00:00Z',
-            id_maps: { devices: {}, views: {}, placements: {}, links: {} },
+            id_maps: { devices: {}, views: {}, placements: {} },
             devices: payload.devices.filter(row => row.operation !== 'delete').map(row => ({ ...row.device, resource_revision: 2 })),
             views: payload.views.filter(row => row.operation !== 'delete').map(row => ({ ...row.view, resource_revision: 2 })),
             placements: payload.views.flatMap(row => row.placements || []),
-            links: payload.views.flatMap(row => row.links || []),
+            view_link_routes: payload.views.flatMap(row => row.view_link_routes || []),
             canvas_notes: [],
-            deleted_device_ids: [], deleted_view_ids: [], affected_view_ids: payload.views.map(row => row.id)
+            deleted_device_ids: payload.devices.filter(row => row.operation === 'delete').map(row => row.id),
+            deleted_view_ids: [], affected_view_ids: payload.views.map(row => row.id)
         }));
     };
     function reset() {
         queue.clearPendingSave();
+        window.APP_CONFIG.user.isAdmin = true;
         drafts.discardDeviceDrafts();
         appState.devices = [normalizeDevice({ id: 1, resource_revision: 1, name: '機器A', type: 'switch', ip: '192.0.2.1' }), normalizeDevice({ id: 2, resource_revision: 1, name: '機器B', type: 'server', ip: '192.0.2.2' })];
+        appState.buildings = [{ id: 1, name: '建物A' }, { id: 2, name: '建物B' }];
+        appState.floors = [{ id: 11, building_id: 1, name: '1F' }, { id: 21, building_id: 2, name: '1F' }];
         appState.views = [normalizeView({ id: 10, resource_revision: 1, name: 'ビューA' })];
         appState.currentViewId = 10;
         appState.placements = [
             { id: 30, device_id: 1, view_id: 10, x: 100, y: 100 },
             { id: 31, device_id: 2, view_id: 10, x: 200, y: 100 }
         ];
-        appState.links = [normalizeLink({ id: 20, view_id: 10, from_id: 1, to_id: 2, label: 'リンクA', from_port: 'Gi1' })];
+        appState.links = [normalizeLink({ id: 20, from_id: 1, to_id: 2, resource_revision: 1, label: 'リンクA', from_port_id: 41 })];
+        appState.devicePorts = [{ id: 41, device_id: 1, name: 'Gi1', resource_revision: 1 }];
+        appState.legacyLinkVlans = [];
+        appState.viewLinkRoutes = [];
         appState.linkSystems = [];
         appState.deviceImages = [];
         appState.editingDeviceId = null;
         appState.editingLinkId = null;
-        appState.resourceConflicts = { devices: new Map(), views: new Map() };
+        appState.editingLinkGroupKey = null;
+        appState.resourceConflicts = { devices: new Map(), views: new Map(), links: new Map(), device_ports: new Map() };
         appState.appStatus = { state: 'saved', dirty: false, lastError: null };
         appState.authExpired = false;
         for (const id of ['panel', 'link-panel']) { elements.get(id).hidden = true; elements.get(id).classList.add('hidden'); }
@@ -206,6 +269,33 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         if (btn) btn.click();
         await settle();
     };
+
+    await t.test('他画面で同期した管理IPを元の値へ貼り戻すとセグメント候補を再計算する', async t => {
+        reset();
+        const originalSegments = appState.ipSegments;
+        t.after(() => { appState.ipSegments = originalSegments; });
+        appState.ipSegments = [
+            { id: 101, cidr: '192.0.2.0/24' },
+            { id: 102, cidr: '198.51.100.0/24' }
+        ];
+        const device = appState.devices[0];
+        device.ip_segment_id = 101;
+        assert.equal(await panel.openPanel(device), true);
+        const ip = elements.get('p-ip');
+        assert.equal(ip.value, '192.0.2.1');
+
+        Object.assign(device, { ip: '198.51.100.10', ip_segment_id: 102 });
+        panel.syncPanelIfOpen();
+        assert.equal(ip.value, '198.51.100.10');
+        assert.equal(drafts.getDeviceDraft('panel', 1).ip_segment_id, 102);
+
+        ip.value = '192.0.2.1';
+        for (const callback of ip.handlers.input) callback({ target: ip });
+        for (const callback of listeners.get('input') || []) callback({ target: ip });
+        const draft = drafts.getDeviceDraft('panel', 1);
+        assert.equal(draft.ip, '192.0.2.1');
+        assert.equal(draft.ip_segment_id, 101);
+    });
     function dispatchPointer(type, pointerId = 7, clientX = 100, clientY = 100) {
         for (const callback of [...(listeners.get(type) || [])]) callback({ type, pointerId, clientX, clientY });
     }
@@ -247,6 +337,30 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(appState.selectionBox.hidden, true);
         assert.equal(appState.canvas.classList.contains('selecting'), false);
     }
+    await t.test('設置フロアの選択・未設定解除は明示適用し、旧文字列を原文保存する', async () => {
+        reset();
+        const device = appState.devices[0];
+        Object.assign(device, { facility: ' 旧施設 ', floor: ' 旧階 ', floor_id: 11 });
+        resetResourceBaseline(appState);
+        panel.openPanel(device);
+        assert.deepEqual(elements.get('p-floor-id').children.map(option => option.textContent), ['未分類', '建物A / 1F', '建物B / 1F']);
+        edit('p-floor-id', '21', 'change');
+        assert.equal(device.floor_id, 11);
+        assert.equal(drafts.getDeviceDraft('panel', 1).floor_id, 21);
+        assert.equal(buildResourceSave().devices.length, 0);
+        assert.equal(panel.applyPanelValues(), true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.devices[0].floor_id, 21);
+        assert.equal(requests.at(-1).devices[0].device.floor_id, 21);
+        assert.equal(requests.at(-1).devices[0].device.facility, ' 旧施設 ');
+        assert.equal(requests.at(-1).devices[0].device.floor, ' 旧階 ');
+        edit('p-floor-id', '', 'change');
+        assert.equal(drafts.hasDeviceDraftChanges('panel', 1), true);
+        assert.equal(panel.applyPanelValues(), true);
+        await queue.flushSaveQueue({ silent: true });
+        assert.equal(appState.devices[0].floor_id, null);
+        assert.equal(requests.at(-1).devices[0].device.floor_id, null);
+    });
     await t.test('管理ポートを22→2222→22へ戻すと下書きも未変更になり、不要な三択を開かない', () => {
         reset();
         Object.assign(appState.devices[0], { management_scheme: 'ssh', management_port: 22 });
@@ -277,7 +391,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         panel.openPanel(appState.devices[0]);
         for (const [id, value] of [
             ['p-name', '未適用の名称'], ['p-ip', '192.0.2.50'],
-            ['p-facility', '未適用の施設'], ['p-floor', '2F'], ['p-location', '未適用の設置場所'],
+            ['p-floor-id', '21'], ['p-location', '未適用の設置場所'],
             ['p-manufacturer', '未適用のメーカー'], ['p-model', '未適用の型番'],
             ['p-management-scheme', 'ssh'], ['p-management-port', '2222'],
             ['p-department', '未適用の部署'], ['p-memo', '未適用の備考']
@@ -475,7 +589,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(elements.get('lp-apply-btn').disabled, false, '通信中でもリンクの次の入力を禁止しない');
         await settle();
         panel.openLinkPanel(appState.links[0]);
-        assert.equal(requests.at(-1).views[0].links[0].label, '未適用リンク');
+        assert.equal(requests.at(-1).links[0].link.label, '未適用リンク');
         assert.equal(elements.get('lp-memo').value, '応答待ちの下書き');
         window.confirm = () => false;
         assert.equal(panel.revertLinkPanelValues(), false);
@@ -496,12 +610,12 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(panel.hasUnappliedLinkPanelChanges(), true);
         assert.equal(panel.applyLinkPanel({ showMessage: false }), true);
         await settle();
-        assert.equal(requests[0].views[0].links[0].system_id, 1);
+        assert.equal(requests[0].links[0].link.system_id, 1);
         assert.equal(appState.links[0].system_id, 1);
         edit('lp-system', '', 'change');
         panel.applyLinkPanel({ showMessage: false });
         await settle();
-        assert.equal(requests[1].views[0].links[0].system_id, null);
+        assert.equal(requests[1].links[0].link.system_id, null);
         edit('lp-system', '999', 'change');
         assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
         assert.equal(appState.links[0].system_id, null);
@@ -517,140 +631,300 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         panel.setLinkPanelReadOnly(false);
         panel.revertLinkPanelValues();
     });
-    await t.test('機器と入力中のポートを一緒に入れ替え、未適用のまま保持・復元する', async () => {
+    await t.test('右パネルの VLAN設定は端点の入力と保存通知に追従し、閲覧者には値だけを表示する', () => {
         reset();
-        appState.links[0].to_port = 'LAN1';
+        appState.devicePorts[0].vlan = 'access 10';
+        appState.devicePorts.push(
+            { id: 42, device_id: 2, name: 'Gi1', vlan: 'access 20', resource_revision: 1 },
+            { id: 43, device_id: 1, name: 'Gi2', vlan: '', resource_revision: 1 }
+        );
+        const vlanInput = side => elements.get(`lp-${side}-vlan-input`);
+        const readVlans = () => ['from', 'to'].map(side => vlanInput(side).value);
+        panel.openLinkPanel(appState.links[0]);
+        assert.deepEqual(readVlans(), ['access 10', '']);
+        assert.equal(vlanInput('from').disabled, false);
+        assert.equal(vlanInput('to').disabled, true);
+
+        edit('lp-to-port', ' Ｇｉ１ ');
+        assert.deepEqual(readVlans(), ['access 10', 'access 20']);
+        edit('lp-from-port', 'Gi2');
+        assert.deepEqual(readVlans(), ['', 'access 20']);
+        edit('lp-from-port', '未登録ポート');
+        assert.deepEqual(readVlans(), ['', 'access 20']);
+
+        appState.devicePorts[1].vlan = 'trunk 30';
+        eventBus.emit('resources:saved', { device_ports: [appState.devicePorts[1]] });
+        assert.deepEqual(readVlans(), ['', 'trunk 30']);
+        assert.equal(elements.get('lp-from-port').value, '未登録ポート');
+        assert.equal(panel.revertLinkPanelValues(), true);
+        assert.deepEqual(readVlans(), ['access 10', '']);
+        assert.equal(requests.length, 0);
+
+        window.APP_CONFIG.user.isAdmin = false;
+        panel.setLinkPanelReadOnly(true);
+        for (const side of ['from', 'to']) {
+            assert.equal(elements.get(`lp-${side}-vlan-editor`).hidden, true);
+            assert.equal(elements.get(`lp-${side}-vlan-summary`).hidden, false);
+        }
+        assert.equal(elements.get('lp-from-vlan').textContent, 'access 10');
+        assert.equal(elements.get('lp-to-vlan').textContent, '未指定');
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
+    });
+    await t.test('通常の接続でも両端の VLAN を「適用」でポートに保存する', async () => {
+        reset();
+        appState.devicePorts[0].vlan = 'access 10';
         resetResourceBaseline(appState);
         panel.openLinkPanel(appState.links[0]);
-        edit('lp-from-port', 'Gi2');
-        edit('lp-to-port', 'LAN2');
-        assert.equal(panel.swapLinkPanelEndpoints(), true);
-        assert.match(elements.get('lp-from-device').textContent, /機器B/);
-        assert.match(elements.get('lp-from-device').textContent, /192\.0\.2\.2/);
-        assert.match(elements.get('lp-to-device').textContent, /機器A/);
-        assert.match(elements.get('lp-to-device').textContent, /192\.0\.2\.1/);
-        assert.equal(elements.get('lp-from-port').value, 'LAN2');
-        assert.equal(elements.get('lp-to-port').value, 'Gi2');
-        assert.deepEqual([appState.links[0].from_id, appState.links[0].to_id], [1, 2]);
-        assert.deepEqual([appState.links[0].from_port, appState.links[0].to_port], ['Gi1', 'LAN1']);
-        assert.equal(buildResourceSave().views.length, 0);
+        edit('lp-from-vlan-input', '');
+        edit('lp-to-port', 'LAN1');
+        edit('lp-to-vlan-input', 'access 20');
+        assert.equal(panel.hasUnappliedLinkPanelChanges(), true);
         assert.equal(requests.length, 0);
-        assert.equal(elements.get('lp-apply-btn').disabled, false);
-        panel.openLinkPanel(appState.links[0]);
-        assert.equal(elements.get('lp-from-port').value, 'LAN2');
-        window.confirm = () => false;
-        assert.equal(panel.revertLinkPanelValues(), false);
-        assert.equal(elements.get('lp-from-port').value, 'LAN2');
-        window.confirm = () => true;
-        assert.equal(panel.revertLinkPanelValues(), true);
-        assert.equal(elements.get('lp-from-port').value, 'Gi1');
-        assert.equal(elements.get('lp-to-port').value, 'LAN1');
-        assert.match(elements.get('lp-from-device').textContent, /機器A/);
-        panel.swapLinkPanelEndpoints();
-        panel.swapLinkPanelEndpoints();
+        assert.equal(appState.devicePorts[0].vlan, 'access 10');
+        assert.equal(appState.links[0].to_port_id, null);
+
+        assert.equal(await panel.applyLinkPanel({ showMessage: false }), true);
+        const [batch] = requests;
+        assert.deepEqual(batch.links, [{ operation: 'update', id: 20, expected_revision: 1, link: { to_port_name: 'LAN1' } }]);
+        assert.equal(Object.hasOwn(batch, 'complete_legacy_vlan'), false);
+        assert.deepEqual(batch.device_ports[0], { operation: 'update', id: 41, expected_revision: 1, port: { vlan: '' } });
+        assert.equal(batch.device_ports[1].operation, 'create');
+        assert.deepEqual(batch.device_ports[1].port, { device_id: 2, name: 'LAN1', vlan: 'access 20' });
+        assert.equal(appState.links[0].to_port_id, 42);
+        assert.deepEqual(appState.devicePorts.map(port => port.vlan), ['', 'access 20']);
+        assert.equal(elements.get('lp-to-vlan-input').value, 'access 20');
+        assert.equal(elements.get('lp-to-vlan-input').disabled, false);
         assert.equal(panel.hasUnappliedLinkPanelChanges(), false);
-        assert.equal(elements.get('lp-apply-btn').disabled, true);
-        await settle();
-        assert.equal(requests.length, 0);
     });
-    await t.test('同じポート名でも端点交換を適用し、手動経路の中間点順を反転して保存する', async () => {
+    await t.test('未移行VLANは閲覧でき、管理者だけが名前のある端点を編集できる', () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: '20', vlan: '旧 access 20' }];
+        appState.placements.pop(); // 一方だけ配置されたビューからも明細を開ける。
+        appState.devicePorts[0].vlan = '既存 access 10';
+        window.APP_CONFIG.user.isAdmin = false;
+        assert.equal(panel.openLinkPanel(appState.links[0]), true);
+        assert.equal(elements.get('lp-legacy-vlan').hidden, false);
+        assert.equal(elements.get('lp-legacy-vlan-value').textContent, '旧 access 20');
+        assert.equal(elements.get('lp-delete-legacy-vlan-btn').hidden, true);
+        assert.equal(elements.get('lp-from-vlan-editor').hidden, true);
+        assert.equal(elements.get('lp-from-vlan').textContent, '既存 access 10');
+
+        window.APP_CONFIG.user.isAdmin = true;
+        panel.setLinkPanelReadOnly(false);
+        assert.equal(elements.get('lp-delete-legacy-vlan-btn').hidden, false);
+        assert.equal(elements.get('lp-from-vlan-editor').hidden, false);
+        assert.equal(elements.get('lp-from-vlan-input').value, '既存 access 10');
+        assert.equal(elements.get('lp-to-vlan-input').disabled, true);
+        edit('lp-to-port', '新しいポート');
+        assert.equal(elements.get('lp-to-vlan-input').disabled, false);
+        assert.equal(elements.get('lp-delete-legacy-vlan-btn').disabled, true);
+        assert.match(elements.get('lp-delete-legacy-vlan-btn').title, /先に入力を適用/);
+        assert.equal(elements.get('lp-to-vlan-input').value, '', '旧設定を自動コピーしない');
+    });
+    await t.test('ポート名だけの登録では未移行VLANを残す', async () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧設定' }];
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-to-port', 'LAN1');
+        edit('lp-to-vlan-input', '   ');
+        assert.equal(await panel.applyLinkPanel({ showMessage: false }), true);
+        assert.equal(requests[0].complete_legacy_vlan, undefined);
+        assert.equal(appState.devicePorts.find(port => port.id === appState.links[0].to_port_id)?.name, 'LAN1');
+        assert.equal(appState.legacyLinkVlans[0].vlan, '旧設定');
+    });
+
+    await t.test('ポート競合後は入力を戻しても再読込でき、適用はできない', async () => {
+        reset();
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-from-vlan-input', 'access 10');
+        portConflict = true;
+        try {
+            assert.equal(await panel.applyLinkPanel({ showMessage: false }), false);
+        } finally {
+            portConflict = false;
+        }
+        const reload = elements.get('lp-reload-conflict-btn');
+        const assertBlocked = () => {
+            assert.equal(reload.hidden, false);
+            assert.equal(reload.textContent, '競合したポートを再読込');
+            assert.equal(elements.get('lp-apply-btn').disabled, true);
+        };
+        assertBlocked();
+        edit('lp-from-vlan-input', '');
+        assertBlocked();
+        edit('lp-from-vlan-input', 'access 20');
+        assert.equal(panel.revertLinkPanelValues(), true);
+        assertBlocked();
+        assert.equal(panel.closeLinkPanel(), true);
+        assert.equal(panel.openLinkPanel(appState.links[0]), true);
+        edit('lp-label', '別の下書き');
+        assertBlocked();
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
+        assert.equal(requests.length, 1);
+    });
+
+    await t.test('未移行VLANのある接続でもラベルだけの適用では旧設定を残す', async () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧設定' }];
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-label', '新しいラベル');
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), true);
+        await settle();
+        assert.equal(requests[0].links[0].link.label, '新しいラベル');
+        assert.equal(requests[0].complete_legacy_vlan, undefined);
+        assert.equal(appState.legacyLinkVlans[0].vlan, '旧設定');
+    });
+    await t.test('未移行VLANは逆向きの端点でもポートと同時に保存し、失敗時は閉じず入力を保持する', async () => {
+        reset();
+        appState.links[0] = normalizeLink({ id: 20, from_id: 2, to_id: 1, resource_revision: 3, to_port_id: 41 });
+        Object.assign(appState.devicePorts[0], { vlan: 'access 10', resource_revision: 4 });
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧 access 20' }];
+        resetResourceBaseline(appState);
+        panel.openLinkPanel(appState.links[0]);
+        assert.deepEqual(endpoints.children.map(row => row.id), ['lp-to-endpoint', 'lp-from-endpoint']);
+        edit('lp-from-port', ' ＬＡＮ１ ');
+        edit('lp-from-vlan-input', 'x'.repeat(201));
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
+        assert.equal(elements.get('lp-from-vlan-input').getAttribute('aria-invalid'), 'true');
+        assert.equal(requests.length, 0);
+        edit('lp-from-vlan-input', 'access 40');
+        edit('lp-to-vlan-input', 'trunk 10,40');
+        edit('lp-memo', '両端確認済み');
+        failSave = true;
+        const close = panel.closeLinkPanel();
+        await chooseAction('save');
+        assert.equal(await close, false);
+        assert.equal(elements.get('link-panel').hidden, false);
+        assert.equal(elements.get('lp-from-vlan-input').value, 'access 40');
+        assert.equal(elements.get('lp-to-vlan-input').value, 'trunk 10,40');
+        assert.equal(appState.links[0].from_port_id, null);
+        assert.equal(appState.devicePorts[0].vlan, 'access 10');
+        assert.equal(appState.legacyLinkVlans.length, 1);
+
+        failSave = false;
+        const saved = panel.applyLinkPanel({ showMessage: false });
+        assert.equal(appState.devicePorts.length, 1);
+        assert.equal(appState.legacyLinkVlans.length, 1);
+        assert.equal(await saved, true);
+        const batch = requests.at(-1);
+        assert.equal(batch.complete_legacy_vlan, 20);
+        assert.deepEqual(batch.links, [{ operation: 'update', id: 20, expected_revision: 3,
+            link: { memo: '両端確認済み', from_port_name: 'LAN1' } }]);
+        assert.deepEqual(batch.device_ports[0], { operation: 'update', id: 41, expected_revision: 4, port: { vlan: 'trunk 10,40' } });
+        assert.equal(batch.device_ports[1].operation, 'create');
+        assert.deepEqual(batch.device_ports[1].port, { device_id: 2, name: 'LAN1', vlan: 'access 40' });
+        assert.equal(appState.links[0].from_port_id, 42);
+        assert.equal(appState.links[0].to_port_id, 41);
+        assert.deepEqual(appState.devicePorts.map(row => row.vlan), ['trunk 10,40', 'access 40']);
+        assert.equal(appState.legacyLinkVlans.length, 0);
+        assert.equal(elements.get('lp-legacy-vlan').hidden, true);
+        assert.equal(elements.get('lp-from-vlan-editor').hidden, false);
+        assert.equal(elements.get('lp-from-vlan-input').value, 'access 40');
+        assert.equal(panel.hasUnappliedLinkPanelChanges(), false);
+    });
+    await t.test('現行VLANの未編集値は上書きせず、下書き中のポート競合は再適用しない', async () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧設定' }];
+        appState.devicePorts[0].vlan = 'access 10';
+        appState.devicePorts.push({ id: 42, device_id: 2, name: 'Gi1', vlan: '既存設定', resource_revision: 1 });
+        resetResourceBaseline(appState);
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-to-port', 'Gi1');
+        assert.equal(elements.get('lp-to-vlan-input').value, '既存設定');
+        edit('lp-from-vlan-input', '自分の下書き');
+        appState.devicePorts[0].vlan = '別の更新';
+        appState.devicePorts[0].resource_revision = 2;
+        eventBus.emit('resources:saved', { device_ports: [appState.devicePorts[0]] });
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
+        assert.equal(requests.length, 0);
+        assert.equal(elements.get('lp-from-vlan-input').value, '自分の下書き');
+        assert.match(elements.get('lp-from-vlan-input-error').textContent, /変更されました/);
+        assert.equal(panel.revertLinkPanelValues(), true);
+        assert.equal(elements.get('lp-from-vlan-input').value, '別の更新');
+
+        edit('lp-to-port', 'Gi1');
+        resetResourceBaseline(appState);
+        assert.equal(await panel.applyLinkPanel({ showMessage: false }), true);
+        assert.deepEqual(requests[0].device_ports, []);
+        assert.deepEqual(requests[0].links[0].link, { to_port_id: 42 });
+        assert.equal(requests[0].complete_legacy_vlan, 20);
+        assert.deepEqual(appState.legacyLinkVlans, []);
+        assert.equal(appState.devicePorts[1].vlan, '既存設定');
+    });
+    await t.test('下書き中に同名の新規ポートが登録されたら、そのポートへ VLAN を上書きしない', () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧設定' }];
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-to-port', 'LAN2');
+        edit('lp-to-vlan-input', '下書き');
+        appState.devicePorts.push({ id: 42, device_id: 2, name: 'LAN2', vlan: '別の設定', resource_revision: 2 });
+        eventBus.emit('resources:saved', { device_ports: [appState.devicePorts[1]] });
+        assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
+        assert.equal(requests.length, 0);
+        assert.equal(elements.get('lp-to-vlan-input').value, '下書き');
+        assert.equal(appState.devicePorts[1].vlan, '別の設定');
+        assert.equal(appState.links[0].to_port_id, null);
+    });
+    await t.test('接続属性を変えずに既存ポートの VLAN だけでも再設定できる', async () => {
+        reset();
+        appState.legacyLinkVlans = [{ link_id: 20, vlan: '旧設定' }];
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-from-vlan-input', '再設定');
+        assert.equal(await panel.applyLinkPanel({ showMessage: false }), true);
+        assert.equal(requests[0].complete_legacy_vlan, 20);
+        assert.deepEqual(requests[0].links, [{ operation: 'update', id: 20, expected_revision: 1, link: {} }]);
+        assert.deepEqual(requests[0].device_ports, [{ operation: 'update', id: 41, expected_revision: 1, port: { vlan: '再設定' } }]);
+        assert.equal(appState.devicePorts[0].vlan, '再設定');
+        assert.equal(panel.hasUnappliedLinkPanelChanges(), false);
+    });
+    await t.test('保存順と逆の機器 ID 順で端点を表示し、ポート編集・検証は元の機器に対応する', async () => {
         reset();
         const points = [{ x: 150, y: 143 }, { x: 150, y: 180 }, { x: 230, y: 180 }, { x: 230, y: 143 }];
-        Object.assign(appState.links[0], { from_port: 'LAN1', to_port: 'LAN1', vlan: '10', memo: '保存する備考',
-            route_mode: 'manual', manual_route: points.map(point => ({ ...point })) });
+        appState.devices[0].id = 10;
+        appState.placements[0].device_id = 10;
+        Object.assign(appState.devicePorts[0], { device_id: 10, name: 'LAN1', vlan: 'access 10' });
+        appState.devicePorts.push(
+            { id: 42, device_id: 2, name: 'LAN1', vlan: 'native 20', resource_revision: 1 },
+            { id: 43, device_id: 2, name: 'LAN2', vlan: 'access 30', resource_revision: 1 }
+        );
+        Object.assign(appState.links[0], { from_id: 10, to_id: 2, to_port_id: 42, memo: '保存する備考' });
+        appState.viewLinkRoutes = [{ view_id: 10, device_a_id: 2, device_b_id: 10, manual_route: points }];
         resetResourceBaseline(appState);
+        const before = { ...appState.links[0] };
         panel.openLinkPanel(appState.links[0]);
-        panel.swapLinkPanelEndpoints();
-        assert.equal(panel.hasUnappliedLinkPanelChanges(), true);
-        assert.equal(panel.applyLinkPanel({ showMessage: false }), true);
-        await settle();
-        assert.equal(requests.length, 1);
-        const saved = requests[0].views[0].links[0];
-        assert.deepEqual([saved.from_id, saved.to_id, saved.from_port, saved.to_port], [2, 1, 'LAN1', 'LAN1']);
-        assert.equal(saved.route_mode, 'manual');
-        assert.deepEqual(saved.manual_route, points.toReversed());
-        assert.deepEqual([saved.label, saved.vlan, saved.memo], ['リンクA', '10', '保存する備考']);
-        assert.deepEqual(appState.links[0].manual_route, points.toReversed());
+        const displayed = () => endpoints.children.map(row => row.children
+            .filter(element => !element.id.endsWith('-error'))
+            .map(element => element.id.endsWith('-port') ? element.value : element.textContent));
+        assert.deepEqual(displayed(), [['機器B', 'LAN1', 'native 20'], ['機器A', 'LAN1', 'access 10']]);
         assert.equal(panel.hasUnappliedLinkPanelChanges(), false);
-    });
-    await t.test('入れ替え後の入力不正では端点・経路・ポートを部分反映しない', async () => {
-        reset();
-        panel.openLinkPanel(appState.links[0]);
-        const before = JSON.stringify(appState.links[0]);
-        edit('lp-from-port', 'x'.repeat(51));
-        panel.swapLinkPanelEndpoints();
+        assert.equal(elements.get('lp-apply-btn').disabled, true);
+
+        const firstPort = endpoints.children[0].children[1];
+        edit(firstPort.id, 'x'.repeat(51));
         assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
-        assert.equal(elements.get('lp-to-port').getAttribute('aria-invalid'), 'true');
-        assert.equal(JSON.stringify(appState.links[0]), before);
+        assert.equal(firstPort.getAttribute('aria-invalid'), 'true');
+        assert.deepEqual(appState.links[0], before);
         assert.equal(requests.length, 0);
-        edit('lp-to-port', 'Gi9');
+        edit(firstPort.id, 'LAN2');
+        assert.deepEqual(displayed(), [['機器B', 'LAN2', 'access 30'], ['機器A', 'LAN1', 'access 10']]);
         assert.equal(panel.applyLinkPanel({ showMessage: false }), true);
         await settle();
-        const saved = requests[0].views[0].links[0];
-        assert.deepEqual([saved.from_id, saved.to_id, saved.from_port, saved.to_port], [2, 1, '', 'Gi9']);
-    });
-    await t.test('保存応答中の再入れ替えは未適用で残り、次の適用だけで保存する', async () => {
-        reset();
-        appState.links[0].to_port = 'LAN1';
-        resetResourceBaseline(appState);
-        panel.openLinkPanel(appState.links[0]);
-        panel.swapLinkPanelEndpoints();
-        panel.applyLinkPanel({ showMessage: false });
-        panel.swapLinkPanelEndpoints();
-        await settle();
-        panel.openLinkPanel(appState.links[0]);
+
         assert.equal(requests.length, 1);
-        assert.deepEqual([appState.links[0].from_id, appState.links[0].to_id], [2, 1]);
-        assert.equal(elements.get('lp-from-port').value, 'Gi1');
-        assert.equal(elements.get('lp-to-port').value, 'LAN1');
-        assert.match(elements.get('lp-from-device').textContent, /機器A/);
-        assert.equal(panel.hasUnappliedLinkPanelChanges(), true);
-        panel.applyLinkPanel({ showMessage: false });
-        await settle();
-        assert.equal(requests.length, 2);
-        const saved = requests[1].views[0].links[0];
-        assert.deepEqual([saved.from_id, saved.to_id, saved.from_port, saved.to_port], [1, 2, 'Gi1', 'LAN1']);
-    });
-    await t.test('ポートが同じでも入れ替え後の閉鎖は確認し、破棄では確定値を変えない', async () => {
-        reset();
-        appState.links[0].to_port = 'Gi1';
-        resetResourceBaseline(appState);
-        panel.openLinkPanel(appState.links[0]);
-        panel.swapLinkPanelEndpoints();
-        let closing = panel.closeLinkPanel();
-        await chooseAction('cancel');
-        assert.equal(await closing, false);
-        assert.equal(panel.hasUnappliedLinkPanelChanges(), true);
-        closing = panel.closeLinkPanel();
-        await chooseAction('discard');
-        assert.equal(await closing, true);
-        panel.openLinkPanel(appState.links[0]);
+        const saved = requests[0].links[0].link;
+        assert.deepEqual([saved.from_id, saved.to_id, saved.from_port_id, saved.to_port_name], [10, 2, 41, 'LAN2']);
+        assert.deepEqual([appState.links[0].from_port_id, appState.links[0].to_port_id], [41, 43]);
+        assert.deepEqual([saved.label, saved.memo], ['リンクA', '保存する備考']);
+        assert.equal(Object.hasOwn(saved, 'vlan'), false);
+        assert.deepEqual(requests[0].device_ports, []);
+        assert.deepEqual(appState.devicePorts.map(port => port.vlan), ['access 10', 'native 20', 'access 30']);
+        assert.deepEqual(appState.viewLinkRoutes[0].manual_route, points);
+        assert.equal(buildResourceSave().views.length, 0);
         assert.equal(panel.hasUnappliedLinkPanelChanges(), false);
-        assert.match(elements.get('lp-from-device').textContent, /機器A/);
-        assert.deepEqual([appState.links[0].from_id, appState.links[0].to_id], [1, 2]);
-        assert.equal(requests.length, 0);
-    });
-    await t.test('入れ替えは閲覧専用・認証失効・競合・Ping中に変更しない', () => {
-        for (const blocked of ['viewer', 'readonly', 'auth', 'conflict', 'ping']) {
-            reset();
-            window.APP_CONFIG.user.isAdmin = true;
-            appState.isPinging = false;
-            panel.openLinkPanel(appState.links[0]);
-            if (blocked === 'viewer') window.APP_CONFIG.user.isAdmin = false;
-            if (blocked === 'auth') appState.authExpired = true;
-            if (blocked === 'conflict') appState.resourceConflicts.views.set(10, { name: 'ビューA' });
-            if (blocked === 'ping') appState.isPinging = true;
-            panel.setLinkPanelReadOnly(blocked === 'readonly');
-            assert.equal(panel.swapLinkPanelEndpoints(), false, blocked);
-            assert.equal(panel.hasUnappliedLinkPanelChanges(), false, blocked);
-            assert.deepEqual([appState.links[0].from_id, appState.links[0].to_id], [1, 2], blocked);
-            assert.equal(elements.get('lp-from-port').value, 'Gi1', blocked);
-            assert.equal(requests.length, 0, blocked);
-        }
-        window.APP_CONFIG.user.isAdmin = true;
-        appState.isPinging = false;
-        appState.authExpired = false;
-        panel.setLinkPanelReadOnly(false);
+
+        reset();
+        panel.openLinkPanel(appState.links[0]);
+        assert.deepEqual(displayed(), [['機器A', 'Gi1', '未設定'], ['機器B', '', '未指定']]);
     });
     await t.test('他画面で同じ項目が確定された場合は適用失敗でも入力を保持する', () => {
         reset();
@@ -720,7 +994,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(panel.applyPanelValues({ showMessage: false }), true);
         await settle();
         assert.deepEqual(requests[0].devices.map(row => row.id), [2]);
-        appState.resourceConflicts.views.set(10, { name: 'ビューA', message: '競合' });
+        appState.resourceConflicts.links.set(20, { name: 'リンクA', message: '競合' });
         panel.openLinkPanel(appState.links[0]);
         edit('lp-label', '競合リンク');
         assert.equal(panel.applyLinkPanel({ showMessage: false }), false);
@@ -773,7 +1047,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         panel.applyLinkPanel({ showMessage: false });
         await settle();
         assert.equal(requests.length, 2);
-        assert.equal(requests[1].views[0].links[0].label, '保存したいリンク');
+        assert.equal(requests[1].links[0].link.label, '保存したいリンク');
         assert.equal(elements.get('lp-apply-btn').disabled, true);
     });
     await t.test('リンクDeleteは入力中・モーダル・viewer・確認キャンセルでは削除しない', async () => {
@@ -801,8 +1075,16 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         await selection.onKeyDown(key(null));
         assert.equal(appState.links[0].id, 20);
         window.APP_CONFIG.user.isAdmin = true;
-        window.confirm = () => false;
+        let message;
+        window.confirm = text => { message = text; return false; };
+        appState.legacyLinkVlans = [{ link_id: 21, vlan: 'access 21' }];
         await selection.onKeyDown(key(null));
+        assert.doesNotMatch(message, /未移行VLAN/);
+        assert.equal(appState.links[0].id, 20);
+        assert.equal(requests.length, 0);
+        appState.legacyLinkVlans.push({ link_id: '20', vlan: 'access 20' });
+        await selection.onKeyDown(key(null));
+        assert.match(message, /未移行VLANも削除されます/);
         assert.equal(appState.links[0].id, 20);
         assert.equal(requests.length, 0);
         window.confirm = () => true;
@@ -810,7 +1092,7 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         await settle();
         assert.deepEqual(appState.links, []);
         assert.equal(appState.editingLinkId, null);
-        assert.deepEqual(requests[0].views[0].links, []);
+        assert.deepEqual(requests[0].links, [{ operation: 'delete', id: 20, expected_revision: 1 }]);
     });
     await t.test('パネルの複数エラーを同時表示し、支援説明を残して修正項目だけ解除する', () => {
         reset();
@@ -831,5 +1113,70 @@ test('詳細パネルは明示適用まで確定値と保存対象を変更し�
         assert.equal(elements.get('p-ip').getAttribute('aria-invalid'), null);
         assert.equal(elements.get('p-ip').getAttribute('aria-describedby'), 'p-ip-help');
         assert.equal(elements.get('p-management-port').getAttribute('aria-invalid'), 'true');
+    });
+    await t.test('対象機器の再読込で接続が消えたときは未適用入力がない場合だけ接続パネルを閉じる', () => {
+        reset();
+        appState.editingLinkGroupKey = null;
+        panel.openLinkPanel(appState.links[0]);
+        edit('lp-label', '保持したい入力');
+        appState.links = [];
+        eventBus.emit('resource:reloaded', { kind: 'devices', id: 1 });
+        assert.equal(elements.get('link-panel').hidden, false);
+        assert.equal(elements.get('lp-label').value, '保持したい入力');
+
+        reset();
+        for (const id of ['lp-group-summary', 'lp-group-title', 'lp-group-endpoints', 'lp-group-connections',
+            'lp-detail-id', 'lp-detail-fields', 'lp-detail-actions', 'lp-group-back']) {
+            elements.set(id, new Element(id));
+        }
+        appState.links.push(normalizeLink({ id: 21, from_id: 1, to_id: 2, resource_revision: 1, label: 'リンクB' }));
+        panel.openLinkGroup({ display_key: '10:1:2', link_ids: [20, 21], view_id: 10, from_id: 1, to_id: 2 });
+        assert.equal(appState.editingLinkGroupKey, '10:1:2');
+        assert.equal(elements.get('link-panel').hidden, false);
+        appState.devices = appState.devices.filter(row => row.id !== 1);
+        appState.placements = appState.placements.filter(row => row.device_id !== 1);
+        appState.links = [];
+        eventBus.emit('resource:reloaded', { kind: 'devices', id: 1 });
+        assert.equal(elements.get('link-panel').hidden, true);
+        assert.equal(appState.editingLinkGroupKey, null);
+    });
+    await t.test('applyPanelValuesは他画面更新の未編集DOMを上書きせずsyncPanelIfOpenは未変更DOMを同期する', () => {
+        reset();
+        panel.openPanel(appState.devices[0]);
+        drafts.getDeviceDraft('panel', 1).memo = '別画面で更新された備考';
+        edit('p-name', 'パネル入力名');
+        assert.equal(panel.applyPanelValues({ showMessage: false }), true);
+        assert.equal(appState.devices[0].name, 'パネル入力名');
+        assert.equal(appState.devices[0].memo, '別画面で更新された備考');
+
+        reset();
+        panel.openPanel(appState.devices[0]);
+        appState.devices[0].location = '同期された設置場所';
+        panel.syncPanelIfOpen();
+        assert.equal(elements.get('p-location').value, '同期された設置場所');
+    });
+    await t.test('deleteDeviceCompletelyは認証切れや未確認状態で拒否し削除確定時に両スコープの下書きを破棄する', async () => {
+        reset();
+        panel.openPanel(appState.devices[0]);
+        drafts.getDeviceDraft('panel', 1).memo = 'panel draft';
+        drafts.getDeviceDraft('ledger', 1).memo = 'ledger draft';
+
+        appState.authExpired = true;
+        assert.equal(await panel.deleteDeviceCompletely([1]), false);
+        assert.equal(appState.devices.length, 2);
+
+        appState.authExpired = false;
+        appState.appStatus.state = 'unconfirmed';
+        assert.equal(await panel.deleteDeviceCompletely([1]), false);
+        assert.equal(appState.devices.length, 2);
+
+        appState.appStatus.state = 'saved';
+        window.confirm = () => true;
+        assert.equal(await panel.deleteDeviceCompletely([1]), true);
+        await settle();
+        queue.clearPendingSave();
+        assert.equal(appState.devices.some(d => d.id === 1), false);
+        assert.equal(drafts.hasDeviceDraftChanges('panel', 1), false);
+        assert.equal(drafts.hasDeviceDraftChanges('ledger', 1), false);
     });
 });

@@ -70,7 +70,7 @@
             </div>
         </div>
 
-        <!-- 画面全体の右端へ固定。Canvas初期化後、モーダル非表示時だけ操作可能。 -->
+        <!-- 画面全体の右端へ固定。通常キャンバスでモーダルが開いていないときだけ表示する。 -->
         <div class="status-bar-right">
             <div
                 id="canvas-view-controls"

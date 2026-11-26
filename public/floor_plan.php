@@ -13,6 +13,9 @@ use Netarium\Core\ApiException;
 use Netarium\Core\OperationGate;
 
 requirePageAuthentication();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
 
 if (
     ($_SERVER['REQUEST_METHOD'] ?? '') !==

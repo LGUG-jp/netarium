@@ -665,7 +665,13 @@ function renderList() {
 }
 
 async function fetchHistory() {
-    if (!isCurrentUserAdmin() || appState.authExpired) {
+    if (!isCurrentUserAdmin()) {
+        return;
+    }
+    if (appState.authExpired) {
+        errorText = '認証の有効期限が切れました。別タブで再ログインしてから画面を再読み込みしてください。';
+        loading = false;
+        renderList();
         return;
     }
     if (!validateQueryLength()) {

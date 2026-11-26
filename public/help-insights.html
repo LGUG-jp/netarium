@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分析・品質管理 - Netarium 利用ガイド</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="assets/icons/brand/netarium-mark-compact.svg">
+    <link rel="stylesheet" href="css/tokens.css">
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/help.css">
+</head>
+<body>
+    <header class="help-header-bar">
+        <div class="help-header-inner">
+            <a href="help.html" class="help-header-brand">
+                <img src="assets/icons/brand/netarium-logo.svg" width="127" height="32" alt="Netarium">
+                <span>利用ガイド</span>
+            </a>
+            <nav aria-label="機能別ナビゲーション">
+                <ul class="help-nav-list">
+                    <li><a href="help.html" class="help-nav-link">トップ</a></li>
+                    <li><a href="help-canvas.html" class="help-nav-link">構成図</a></li>
+                    <li><a href="help-devices.html" class="help-nav-link">機器・台帳</a></li>
+                    <li><a href="help-views.html" class="help-nav-link">建物・ビュー・ラック</a></li>
+                    <li><a href="help-insights.html" class="help-nav-link" aria-current="page">分析・品質</a></li>
+                    <li><a href="help-admin.html" class="help-nav-link">保存・管理</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="help-layout">
+        <aside class="help-toc">
+            <details id="help-toc" open>
+                <summary>目次</summary>
+                <nav aria-label="章目次">
+                    <ol>
+                        <li><a href="#dashboard">ダッシュボード（4タブ構成と指標）</a></li>
+                        <li><a href="#data-quality">データ品質診断と「設定不要」</a></li>
+                    </ol>
+                </nav>
+            </details>
+        </aside>
+
+        <main class="help-container" id="help-content">
+            <h1>分析・品質管理ガイド</h1>
+            <p>
+                システム全体の状況を集計する<strong>ダッシュボード</strong>と、台帳や接続の抜け漏れ・不整合を検出する<strong>データ品質診断</strong>の使い方を説明します（いずれも管理者専用）。
+            </p>
+
+            <section>
+                <h2 id="dashboard" tabindex="-1">ダッシュボード（4タブ構成と指標）</h2>
+                <p>上部バーの<strong>「ダッシュボード」</strong>から開きます。4つのタブで全体の状況を把握し、一部の指標やボタンから機器台帳・データ品質診断・IPアドレス管理・ラックビューへ直接移動できます。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/dashboard.webp" data-help-image data-caption="ダッシュボード：4タブ構成と運用状況の概要" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/dashboard.webp" width="848" height="488" loading="lazy" alt="ダッシュボード画面。上部に運用状況・資産・保守・ネットワーク・データ品質の4タブと更新ボタン、下部に総機器数・未配置・入力不足・保守期限超過のKPI、監視状態グラフ、データ品質件数を表示。">
+                    </a>
+                    <figcaption>「運用状況」「資産・保守」「ネットワーク」「データ品質」の4タブで運用状況を集約確認し、一部の指標やボタンから対象一覧へ移動します。</figcaption>
+                </figure>
+
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">タブ名</th><th scope="col">確認できる主な指標と絞り込み遷移</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">運用状況</th>
+                            <td>
+                                <ul>
+                                    <li><strong>主要KPI:</strong> 総機器数、未配置、入力不足（必須・推奨項目の不足機器数）、保守期限超過。</li>
+                                    <li><strong>監視状態:</strong> OK／NG／未確認の台数と割合。<strong>OK率</strong>の分母は全登録機器数（Ping「到達不可」の機器も含む）です。「未確認」には未実行・到達不可・IP重複によるスキップを含みます。</li>
+                                    <li><strong>データ品質:</strong> 保存済みDB基準のエラー件数、警告件数、図面未登録のフロアビュー件数。</li>
+                                </ul>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">資産・保守</th>
+                            <td>
+                                <ul>
+                                    <li><strong>保守期限の見通し:</strong> 「年度別」（当年度から5年度分＋それ以降、年度開始月を変更可）と「残存期間別」を切り替えられます。設定はブラウザーに保存します。年月のみの期限は月末扱い、期限当日は「期限超過」に含めません。「期限未登録」「設定不要」「形式不正」は別に表示します。</li>
+                                    <li><strong>機器内訳:</strong> 「内訳を見る」で設置建物・フロア別（建物の割合は全機器、フロアの割合はその建物内の機器が分母）と機器種別別を確認し、対象絞り込みで台帳を開けます。</li>
+                                    <li><strong>ラック管理:</strong> 登録ラック数・搭載機器数（実機器IDの一意件数）。「ラック一覧を見る」で各ラックの空きU数（両スロット空きのU数）とスロット占有率を確認し、ラックビューへ移動できます。</li>
+                                </ul>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">ネットワーク</th>
+                            <td>
+                                <ul>
+                                    <li><strong>ポート・共通接続:</strong> 登録ポート数、共通接続数、ポート登録機器数に加え、次の3項目を表示します。
+                                        <ul>
+                                            <li><strong>登録ポートの接続状況:</strong> 登録ポート数が分母です（実機スイッチの空きポート数や使用率ではありません）。</li>
+                                            <li><strong>接続端点のポート指定状況:</strong> 保存済みデータが基準で、共通接続数の2倍（1接続につき2端点）が分母です。</li>
+                                            <li><strong>共通接続の構成内訳:</strong> 共通接続数が分母で、機器の設置フロアに基づいて分類します。</li>
+                                        </ul>
+                                    </li>
+                                    <li><strong>IPアドレス管理:</strong> ネットワーク区分数、セグメント数、登録IP件数（管理IP＋追加IPの非空件数であり実使用数ではありません。表示専用）、未分類IP件数（クリックで未分類IP一覧を開けます）。「IP管理を開く」から区分一覧へ移動できます。</li>
+                                </ul>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">データ品質</th>
+                            <td>
+                                <ul>
+                                    <li><strong>品質診断サマリー:</strong> エラー・警告・情報・設定不要（項目数）、カテゴリ別内訳、要確認の旧接続・未移行VLAN件数。</li>
+                                    <li><strong>機器台帳の項目別登録状況:</strong> 推奨項目・管理IP・保守期限ごとの登録率。<strong>「設定不要」とした機器は登録率の分母から除外</strong>します。</li>
+                                </ul>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>集計の基準と数値を読むときの注意</h3>
+                <ul>
+                    <li><strong>画面基準と保存済みDB基準の違い:</strong> 「運用状況」の機器数・監視状態や「資産・保守」の期限・内訳・ラック、「ネットワーク」のポート・共通接続（接続端点のポート指定状況を除く）は画面上の最新データを集計します。一方、データ品質関連・IPアドレス管理集計・接続端点のポート指定状況は<strong>保存済みDB</strong>が基準です。</li>
+                    <li><strong>品質連動の指標が「—」になる場合:</strong> 未保存の変更があるとき、未取得・取得失敗のとき、または他者の更新でリビジョンが一致しないときは「—」になります。未保存なら保存し、取得失敗ならダッシュボード右上の<strong>「更新」</strong>を押します。リビジョン不一致の場合は、画面を再読み込みしてから<strong>「更新」</strong>してください。</li>
+                    <li><strong>IPアドレス管理集計の「—」と注意表示:</strong> 未取得・取得中・取得失敗のときだけ「—」になります。取得済みであれば、未保存の変更やリビジョン不一致があっても数値を残したまま「画面データと差異がある可能性があります。」を表示します。</li>
+                    <li><strong>項目別登録状況:</strong> 値が入力されているかどうかの集計であり、入力内容の正確さまでは保証しません。</li>
+                </ul>
+            </section>
+
+            <section>
+                <h2 id="data-quality" tabindex="-1">データ品質診断と「設定不要」</h2>
+                <p>上部バーの<strong>「管理」→「データ品質診断」</strong>を開くと、保存済みDB全体を対象にデータの抜け漏れ・重複・参照不整合を診断します。</p>
+                <figure class="help-figure">
+                    <a href="assets/help/data-quality.webp" data-help-image data-caption="データ品質診断：重大度別件数・カテゴリ・設定不要切替" aria-haspopup="dialog" aria-controls="help-image-dialog">
+                        <img src="assets/help/data-quality.webp" width="848" height="521" loading="lazy" alt="データ品質診断画面。上部にエラー・警告・情報・合計の件数カードと再診断ボタン、左に診断カテゴリ一覧、右に問題一覧と「設定不要も表示」チェックボックスを表示。">
+                    </a>
+                    <figcaption>重大度やカテゴリで問題を絞り込み、修正導線から対象を是正するか「詳細」から項目単位で「設定不要」を登録します。</figcaption>
+                </figure>
+
+                <h3>重大度の区分と診断の進め方</h3>
+                <table class="help-table">
+                    <thead>
+                        <tr><th scope="col" class="help-table-column-label">区分</th><th scope="col">意味と主な対象</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">エラー</th>
+                            <td>整合性や形式の重大な問題（参照先が存在しない配置・接続・ポート、重複接続、日付やポート番号の形式不正など）。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">警告</th>
+                            <td>確認・修正を推奨する問題（未配置機器、IP・MAC・管理番号等の重複、Ping対象の識別不可、フロア不一致、図面未登録、旧接続・未移行VLANの保留、推奨項目の不足など）。</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">情報</th>
+                            <td>運用上の補足・確認項目（接続端点のポート未指定、保守期限未登録、IP未設定による監視対象外相当、機器名称の類似、保守期限30日以内など）。</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <ol>
+                    <li>上部の重大度カード（「エラー」「警告」「情報」「合計」）や左側の「診断カテゴリ」で一覧を絞り込みます。右上の<strong>「再診断」</strong>で最新DBを再検査できます。</li>
+                    <li>各問題の修正導線（ポート未指定の「接続を確認」、保守期限未登録の「台帳で確認」など）から対象画面へ移動して修正します。</li>
+                    <li>機器個票で修正を保存し、未保存変更がない状態で診断画面へ戻ると自動的に再診断します。</li>
+                </ol>
+                <p class="note">上部の「合計」件数は機器数ではなく、<strong>診断問題のグループ数</strong>です（1台の機器に複数問題があればそれぞれ数え、重複グループは1件にまとめます）。</p>
+
+                <h3>「設定不要」の登録・再表示・解除</h3>
+                <p>入力する予定がない項目について、未登録の警告・情報を一覧から隠す機能です。管理者間で共有され、バックアップにも保存されます。</p>
+                <ul>
+                    <li><strong>対象範囲:</strong> 機器の未設定項目（IPアドレス、推奨項目、保守期限）の項目単位、および共通接続の端点ポート（「始点ポート」「終点ポート」）の端点単位です。</li>
+                    <li><strong>修正済みとの違い:</strong> 「設定不要」は値を入力した状態（修正済み）ではありません。同じ機器の他の不足項目や、接続の反対側の端点は通常一覧に残ります。</li>
+                    <li><strong>登録方法:</strong> 問題行の<strong>「詳細」</strong>を開き、該当項目の<strong>「設定不要にする」</strong>を押します。</li>
+                    <li><strong>再表示と手動解除:</strong> 一覧見出しの<strong>「設定不要も表示（N項目）」</strong>をオンにすると設定不要の項目を確認できます（再表示しただけでは解除されません。Nは上部の診断件数やダッシュボードの問題件数には含めません）。手動で解除するには、再表示した対象行の<strong>「詳細」</strong>を開き、該当項目の<strong>「設定不要を解除」</strong>を押します。</li>
+                    <li><strong>自動解除条件:</strong> 対象の項目へ値を保存したとき、対象の機器・接続を削除したとき、または該当する接続の端点を別の機器へ付け替えたときは、「設定不要」が自動的に解除されます。</li>
+                </ul>
+            </section>
+
+            <div class="help-page-footer-nav">
+                <a href="help-views.html" class="btn btn-secondary btn-sm">← 前へ：建物・ビュー・ラック</a>
+                <a href="help-admin.html" class="btn btn-primary btn-sm">次へ：保存・管理 →</a>
+            </div>
+
+            <footer class="footer-close">
+                <button id="help-tab-close" type="button" class="btn btn-secondary">このタブを閉じる</button>
+                <p id="help-tab-close-notice" class="help-close-notice form-support" hidden>ブラウザのタブを閉じてください。</p>
+            </footer>
+        </main>
+    </div>
+
+    <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-title">
+        <header class="help-image-header">
+            <h2 id="help-image-title">操作ガイド画像</h2>
+            <button id="help-image-close" type="button" class="btn btn-secondary btn-sm" autofocus>閉じる</button>
+        </header>
+        <div class="help-image-scroll" tabindex="0" role="region" aria-label="拡大画像（矢印キーでスクロール）"><img id="help-image-preview" alt=""></div>
+        <p id="help-image-caption" class="form-support"></p>
+    </dialog>
+
+    <script src="js/help.js"></script>
+</body>
+</html>

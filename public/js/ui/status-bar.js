@@ -42,7 +42,7 @@ export function markSaved(
     revision,
     savedAt = null
 ) {
-    const conflictCount = (appState.resourceConflicts?.devices?.size || 0) + (appState.resourceConflicts?.views?.size || 0);
+    const conflictCount = Object.values(appState.resourceConflicts || {}).reduce((count, map) => count + map.size, 0);
     appState.appStatus.dirty = conflictCount > 0;
     appState.appStatus.state = conflictCount > 0 ? 'conflict' : 'saved';
     if (conflictCount === 0) appState.appStatus.lastError = null;
@@ -255,17 +255,14 @@ export function renderStatusBar() {
     stateElement.className =
         `status-save-state ${state.className}`;
 
-    const conflicts = [
-        ...appState.resourceConflicts?.devices?.values() || [],
-        ...appState.resourceConflicts?.views?.values() || []
-    ];
+    const conflicts = Object.values(appState.resourceConflicts || {}).flatMap(map => [...map.values()]);
     if (conflicts.length) stateElement.classList.add('status-conflict');
     stateElement.textContent = state.label +
         (conflicts.length && appState.appStatus.state !== 'conflict' ? ` / 競合 ${conflicts.length}件` :
             conflicts.length ? ` (${conflicts.length}件)` : '');
     stateElement.title = [
         appState.appStatus.lastError,
-        ...conflicts.map(item => `${item.kind === 'devices' ? '機器' : 'ビュー'}「${item.name || item.id}」: ${item.message}`)
+        ...conflicts.map(item => `${({ devices: '機器', views: 'ビュー', links: '接続', device_ports: 'ポート' })[item.kind]}「${item.name || item.id}」: ${item.message}`)
     ].filter(Boolean).join('\n');
 
     const confirmBtn = document.getElementById('status-confirm-save-btn');

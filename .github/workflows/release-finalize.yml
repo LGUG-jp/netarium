@@ -68,6 +68,9 @@ jobs:
           docker build --platform linux/amd64 -t "${TARGET_IMAGE}" .
           echo "Running image verification..."
           docker run --rm --platform linux/amd64 "${TARGET_IMAGE}" php -r '
+          if (version_compare(PHP_VERSION, "8.5.13", "<")) {
+              fwrite(STDERR, "PHP version below 8.5.13: " . PHP_VERSION . "\n"); exit(1);
+          }
           foreach (["pdo_sqlite", "sqlite3", "fileinfo", "zip", "gd", "exif", "mbstring", "intl"] as $ext) {
               if (!extension_loaded($ext)) { fwrite(STDERR, "Missing extension: $ext\n"); exit(1); }
           }
@@ -75,6 +78,7 @@ jobs:
           if (version_compare($sqliteVer, "3.51.3", "<")) {
               fwrite(STDERR, "SQLite version below 3.51.3: $sqliteVer\n"); exit(1);
           }
+          echo "PHP ", PHP_VERSION, " / SQLite ", $sqliteVer, "\n";
           '
           docker run --rm --platform linux/amd64 "${TARGET_IMAGE}" apache2ctl -t
       - name: Log in to GitHub Container Registry

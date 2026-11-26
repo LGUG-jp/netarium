@@ -15,6 +15,7 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
     const element = id => {
         if (!elements.has(id)) elements.set(id, {
             id, textContent: '', title: '', hidden: false, disabled: false, dataset: {}, style: {}, children: [],
+            options: [], value: '',
             classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } }, setAttribute() {},
             removeAttribute() {}, getAttribute() { return null; }, focus() {},
             appendChild(child) { this.children.push(child); }, append(...rows) { this.children.push(...rows); },
@@ -87,7 +88,7 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         };
     };
     const success = payload => {
-        const maps = { devices: {}, views: {}, placements: {}, links: {}, canvas_notes: {} };
+        const maps = { devices: {}, views: {}, placements: {}, canvas_notes: {} };
         for (const id of resources.createPendingResourceSave(payload).newIds.canvas_notes) maps.canvas_notes[id] = id + 1000;
         for (const kind of ['devices', 'views']) {
             for (const operation of payload[kind]) {
@@ -102,7 +103,7 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
             ...row.view, id: map('views', row.id), resource_revision: (row.expected_revision || 0) + 1
         }));
         const placements = [];
-        const links = [];
+        const view_link_routes = [];
         const canvas_notes = [];
         for (const operation of payload.views) {
             if (operation.operation === 'delete') continue;
@@ -110,16 +111,16 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
                 maps.placements[placement.id] = placement.id;
                 placements.push({ ...placement, device_id: map('devices', placement.device_id), view_id: map('views', placement.view_id) });
             }
-            for (const link of operation.links) {
-                maps.links[link.id] = link.id;
-                links.push({ ...link, from_id: map('devices', link.from_id), to_id: map('devices', link.to_id), view_id: map('views', link.view_id) });
+            for (const route of operation.view_link_routes) {
+                view_link_routes.push({ ...route, device_a_id: map('devices', route.device_a_id),
+                    device_b_id: map('devices', route.device_b_id), view_id: map('views', route.view_id) });
             }
             for (const note of operation.canvas_notes) {
                 canvas_notes.push({ ...note, id: map('canvas_notes', note.id), view_id: map('views', note.view_id) });
             }
         }
         return {
-            ok: true, revision: appState.dataRevision + 1, id_maps: maps, devices, views, placements, links, canvas_notes,
+            ok: true, revision: appState.dataRevision + 1, id_maps: maps, devices, views, placements, view_link_routes, canvas_notes,
             deleted_device_ids: payload.devices.filter(row => row.operation === 'delete').map(row => row.id),
             deleted_view_ids: payload.views.filter(row => row.operation === 'delete').map(row => row.id),
             affected_view_ids: payload.views.map(row => map('views', row.id))
@@ -488,6 +489,21 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         assert.equal(await queue.flushSaveQueue({ silent: true }), false);
         assert.equal(appState.appStatus.state, 'error');
         assert.equal(queue.hasResourceConflict('devices', 10), false);
+    });
+
+    await t.test('操作中の一時拒否409は競合にせず次回の明示保存で同じ変更を送れる', async () => {
+        fixture();
+        appState.devices[0].memo = '保護する変更';
+        handler = async () => json({ ok: false, error: '別の操作が実行中です', details: { reason: 'operation_busy' } }, 409);
+        assert.equal(await queue.flushSaveQueue({ silent: true }), false);
+        assert.equal(calls.length, 1);
+        assert.equal(appState.appStatus.state, 'error');
+        assert.equal(queue.hasResourceConflict('devices', 10), false);
+        assert.equal(queue.getPendingSave(), null);
+        handler = async (_, payload) => json(success(payload));
+        assert.equal(await queue.flushSaveQueue({ silent: true }), true);
+        assert.deepEqual(calls.map(call => call.action), ['save_resources', 'save_resources']);
+        assert.deepEqual(calls[1].payload, calls[0].payload);
     });
 
     await t.test('競合ビューをcascade削除する機器削除は送信しない', async () => {
@@ -886,5 +902,41 @@ test('確定保存キューの応答・競合・再読込境界', async t => {
         assert.deepEqual(appState.canvasNotes, []);
         assert.deepEqual(toolbar.getCurrentData().canvas_notes, []);
         assert.equal(appState.nextCanvasNoteId, 1);
+    });
+
+    await t.test('削除済みでもsavedBaselineに残る機器IDをallocateLocalIdが再利用しない', async () => {
+        fixture();
+        const { allocateLocalId } = await import('../public/js/core/state.js');
+        appState.devices = [10, 20].map(id => normalizeDevice({ id, resource_revision: 1, name: `SW-${id}`, type: 'switch', ip: '' }));
+        resources.resetResourceBaseline(appState);
+        appState.devices = appState.devices.filter(row => row.id !== 20);
+        appState.nextDeviceId = 20;
+        const allocated = allocateLocalId('devices');
+        assert.notEqual(allocated, 20);
+        assert.equal(allocated, 21);
+    });
+
+    await t.test('inspectPendingResourceSaveは前後空白トリムと新規追加IP採番をコミット済み判定する', async () => {
+        fixture();
+        const { toSaveDevice } = await import('../public/js/core/state.js');
+        const edited = normalizeDevice({
+            id: 10, resource_revision: 1, name: '  SW-10-trimmed  ', type: 'switch',
+            ip: ' 192.0.2.10 ', ip_segment_id: 1, memo: '\t　memo text　 \r\n',
+            additional_ips: [{ id: null, ip: ' 192.0.2.11 ', label: ' 管理 ', sort_order: 0, segment_id: 1 }],
+            ip_conflicts_confirmed: true
+        });
+        const pending = resources.createPendingResourceSave({
+            devices: [{ operation: 'update', id: 10, expected_revision: 1, device: toSaveDevice(edited) }],
+            views: []
+        });
+        const remote = remoteData();
+        remote.devices = [normalizeDevice({
+            id: 10, resource_revision: 2, name: 'SW-10-trimmed', type: 'switch',
+            ip: '192.0.2.10', ip_segment_id: 1, memo: '　memo text　',
+            additional_ips: [{ id: 501, ip: '192.0.2.11', label: '管理', sort_order: 0, segment_id: 1 }]
+        })];
+        assert.equal(resources.inspectPendingResourceSave(pending, remote), 'saved');
+        remote.devices[0].memo = 'memo text';
+        assert.equal(resources.inspectPendingResourceSave(pending, remote), 'conflict');
     });
 });

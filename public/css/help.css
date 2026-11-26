@@ -276,6 +276,12 @@ body {
     background: var(--neutral-bg);
     text-align: left;
 }
+.help-index-col-category {
+    width: 25%;
+}
+.help-index-col-item {
+    width: 35%;
+}
 .help-layout {
     display: grid;
     grid-template-columns: 220px minmax(0, 860px);

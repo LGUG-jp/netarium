@@ -46,7 +46,6 @@ function renderFooter() {
     }
     const ledgerButton = document.getElementById('ledger-ping-results-btn');
     if (ledgerButton) ledgerButton.disabled = !complete;
-    // 進捗はフッターの共通busy-labelだけで表示し、一時通知との重複を避ける。
     const toastMessage = document.getElementById('status-toast-message');
     if (toastMessage) toastMessage.hidden = Boolean(running);
 }
@@ -167,8 +166,22 @@ export function downloadPingResultsCsv() {
     return true;
 }
 
+function updateLedgerPingProgress(update) {
+    const progress = document.getElementById('ledger-ping-progress');
+    if (progress) progress.textContent = update.running ? (update.message ?? '') : '';
+    const announcement = document.getElementById('ledger-ping-announcement');
+    if (!announcement) return;
+    // 経過秒は画面だけ更新し、読み上げは開始と結果の通知に限る。
+    if (update.running && Array.isArray(update.targets)) {
+        announcement.textContent = `Ping実行中: ${update.targets.length}件`;
+    } else if (!update.running) {
+        announcement.textContent = update.error ? 'Ping処理に失敗しました' : 'Pingが完了しました';
+    }
+}
+
 function handlePingUpdated(update = {}) {
     if (update.running) {
+        updateLedgerPingProgress(update);
         // targetsがある開始イベントだけsnapshotを作り、進捗イベントでは差し替えない。
         if (!Array.isArray(update.targets)) return;
         closePingResults();
@@ -179,6 +192,7 @@ function handlePingUpdated(update = {}) {
         return;
     }
     if (!latestRun || latestRun.phase !== 'running') return;
+    updateLedgerPingProgress(update);
     latestRun = completePingResultRun(latestRun, update.results, update.completedAt, update.error);
     renderFooter();
 }

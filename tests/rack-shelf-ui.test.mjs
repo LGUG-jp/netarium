@@ -60,7 +60,7 @@ test('棚板ブロック・所属詳細・追加取消・削除拒否・権限�
             ok: true, revision: 2, id_maps: { devices: deviceIds, rack_shelves: shelfIds },
             devices: appState.devices.map(row => ({ ...row, id: deviceIds[row.id] || row.id, resource_revision: 2 })),
             views: appState.views.map(view => ({ ...view, resource_revision: view.resource_revision + 1 })),
-            placements: [], links: [], canvas_notes: [], rack_settings: appState.rackSettings,
+            placements: [], view_link_routes: [], canvas_notes: [], rack_settings: appState.rackSettings,
             rack_mounts: appState.rackMounts, rack_shelves: appState.rackShelves.map(row => ({ ...row, id: shelfIds[row.id] || row.id })),
             rack_shelf_devices: appState.rackShelfDevices.map(row => ({ ...row, device_id: deviceIds[row.device_id] || row.device_id, shelf_id: shelfIds[row.shelf_id] || row.shelf_id })),
             affected_view_ids: appState.views.map(view => view.id), deleted_device_ids: [], deleted_view_ids: []
@@ -206,6 +206,7 @@ test('棚板ブロック・所属詳細・追加取消・削除拒否・権限�
         await document.querySelector('.rack-mount-form').dispatch('submit'); await settle();
         assert.equal(appState.rackShelves[0].start_u, 3);
         assert.deepEqual(appState.rackShelfDevices, members);
+        assert.ok(document.querySelector('.rack-mount-actions'), '同じラックの設定保存では閉じない');
         await closeDialog();
         shelf.openShelfDialog({ viewId: 1, shelfId: -1 });
         dom.get('rack-shelf-view').value = '8'; await document.querySelector('.rack-mount-form').dispatch('change');
@@ -213,7 +214,7 @@ test('棚板ブロック・所属詳細・追加取消・削除拒否・権限�
         await document.querySelector('.rack-mount-form').dispatch('submit'); await settle();
         assert.equal(appState.rackShelves[0].view_id, 8);
         assert.deepEqual(appState.rackShelfDevices, members);
-        if (document.querySelector('.rack-mount-actions')) await closeDialog();
+        assert.equal(document.querySelector('.rack-mount-actions'), null, '移設確定後に元のダイアログが閉じる');
         appState.rackShelves = before; appState.views.pop(); appState.rackSettings.pop(); resetResourceBaseline(appState);
         shelf.openShelfDialog({ viewId: 1, startU: 4 });
         assert.equal([...document.querySelector('.rack-mount-device-area').children].some(node => node.classList.contains('rack-transfer-card')), false);

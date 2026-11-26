@@ -23,6 +23,9 @@ class UploadDeviceImageAction implements ActionInterface
         $replaceImageId = isset($_POST['replace_image_id']) && trim((string)$_POST['replace_image_id']) !== ''
             ? (int)$_POST['replace_image_id']
             : null;
+        $expectedDeviceRevision = array_key_exists('expected_device_revision', $_POST)
+            ? (int)$_POST['expected_device_revision']
+            : null;
 
         if (!isset($_FILES['image']) || !is_array($_FILES['image'])) {
             throw new ApiException('アップロードする画像を選択してください', 400);
@@ -35,7 +38,8 @@ class UploadDeviceImageAction implements ActionInterface
             $_FILES['image'],
             $caption,
             $replaceImageId,
-            $config
+            $config,
+            $expectedDeviceRevision
         );
 
         $auditSuccess = AuditLog::finish('success', [

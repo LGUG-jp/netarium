@@ -93,8 +93,30 @@ export const DATA_QUALITY_CATEGORY_LABELS = Object.freeze({
     format: '書式',
     placement: '配置',
     monitoring: '監視',
+    maintenance: '保守',
     floor_plan: 'フロア図面',
     naming: '名称'
+});
+
+// QualityDiagnosticService::getDataQualityDeviceFieldLabels() と同じ項目名。
+export const DATA_QUALITY_DEVICE_FIELD_LABELS = Object.freeze({
+    name: '名称',
+    type: '種別',
+    ip: 'IPアドレス',
+    floor_id: '設置フロア',
+    location: '設置場所',
+    manufacturer: 'メーカー',
+    model: '型番',
+    asset_number: '管理番号',
+    serial_number: 'シリアル番号',
+    mac_address: 'MACアドレス',
+    memo: '備考',
+    management_scheme: '管理接続方式',
+    management_port: '管理接続ポート',
+    department: '担当部署',
+    maintenance_vendor: '保守ベンダー',
+    install_date: '導入年月',
+    maintenance_expiry: '保守期限'
 });
 
 /*
@@ -110,7 +132,12 @@ export const DASHBOARD_QUALITY_CODES = Object.freeze({
     unplacedDevice: 'unplaced_device',
     missingRequiredFields: 'missing_required_fields',
     missingRecommendedFields: 'missing_recommended_fields',
-    floorViewWithoutPlan: 'floor_view_without_plan'
+    floorViewWithoutPlan: 'floor_view_without_plan',
+    managementIpMissing: 'monitoring_not_applicable',
+    maintenanceExpiryMissing: 'maintenance_expiry_missing',
+    linkPortsMissing: 'link_ports_missing',
+    legacyLinkConflict: 'legacy_link_conflict',
+    legacyLinkVlan: 'legacy_link_vlan'
 });
 
 export const MANAGEMENT_DEFAULT_PORTS = Object.freeze({
